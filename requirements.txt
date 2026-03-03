@@ -1,0 +1,23 @@
+numpy
+scipy
+opencv-python
+pyrealsense2
+h5py
+torch
+matplotlib
+loguru
+pyserial
+pyav
+
+# HuggingFace / LeRobot
+huggingface-hub
+lerobot
+
+# airo robotics stack
+airo-camera-toolkit
+airo-robots
+airo-spatial-algebra
+ur-analytic-ik
+
+# tactile sensor (internal)
+# sensor-comm-dds

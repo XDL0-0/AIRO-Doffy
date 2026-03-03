@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.venv/
+env/
+venv/
+
+# Project-specific
+datasets/
+*.npz
+*.hdf5
+torque_log.npz
+eval_results/
+policies/
+upload_to_github.sh
