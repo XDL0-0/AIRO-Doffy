@@ -145,8 +145,15 @@ class InferenceRobotController:
         self.torque_mode = cfg.TORQUE_MODE
         self.initial_joint = cfg.INITIAL_JOINT
 
+        ruckig_params = None
+        if cfg.RUCKIG_ENABLE and self.torque_mode:
+            ruckig_params = {
+                "max_vel": cfg.RUCKIG_MAX_VEL,
+                "max_acc": cfg.RUCKIG_MAX_ACC,
+                "max_jerk": cfg.RUCKIG_MAX_JERK,
+            }
         self.ur, self.ik = make_robot(
-            cfg.UR_IP, cfg.ROBOT_TYPE, self.torque_mode, self.initial_joint
+            cfg.UR_IP, cfg.ROBOT_TYPE, self.torque_mode, self.initial_joint, ruckig_params
         )
         self.gripper = FastRobotiq2F85(cfg.UR_IP)
         self.gripper.open()
@@ -264,8 +271,8 @@ class InferenceCameraManager:
         for i, dev in enumerate(devices):
             serial = dev.get_info(rs.camera_info.serial_number)
             cam = Realsense(
-                fps=60,
-                resolution=Realsense.RESOLUTION_480,
+                fps=cfg.REALSENSE_FPS,
+                resolution=cfg.REALSENSE_RESOLUTION,
                 enable_depth=False,
                 enable_pointcloud=False,
                 enable_hole_filling=False,
@@ -287,6 +294,7 @@ class TactileDataHolder:
     without depending on CameraUDPManager."""
 
     def __init__(self):
+        self._lock = threading.Lock()
         self.tactile_data: np.ndarray | None = None
         self.tactile_byte: bytes | None = None
         self.data = (None, {"Joystick_Press": False})

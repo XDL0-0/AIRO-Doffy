@@ -10,7 +10,10 @@ from config import Config
 from ur_teleop import URTeleop
 from dataset_new import DatasetRecorder
 from camera_udp import CameraUDPManager
+from WebRTC_udp import WebRTCUDPManager
 from tactile import MagtouchIliasSerialReader, MagtouchIliasSerialReaderConfig
+
+CameraManager = CameraUDPManager | WebRTCUDPManager
 
 cfg = Config()
 
@@ -22,27 +25,40 @@ MIN_DT = 1.0 / TELEOP_HZ
 
 def collect_loop(
     teleop: URTeleop,
-    cu_manager: CameraUDPManager,
+    cu_manager: CameraManager,
     dataset: DatasetRecorder,
     collect_rate: int,
     stop_event: threading.Event,
+    pause_event: threading.Event | None = None,
 ) -> None:
     """Sample state/action at *collect_rate* Hz and buffer into *dataset*."""
     dt = 1.0 / collect_rate
     while not stop_event.is_set():
         t0 = time.time()
 
+        # Skip collection while export is in progress
+        if pause_event is not None and pause_event.is_set():
+            time.sleep(dt)
+            continue
+
         collecting = cu_manager.data_collecting_state
         has_motion = cu_manager.is_movement_exist() or teleop.reset_sign
 
         if collecting and has_motion:
-            state, action, force = teleop.get_state_snapshot()
+            # ── Atomic snapshot: one lock covers ALL cu_manager modalities ──
             with cu_manager._lock:
                 images = dict(cu_manager.camera_images)
-                tactile = cu_manager.tactile_data
+                depth_imgs = dict(cu_manager.depth_images) if cu_manager.depth_mode else None
+                # .copy() to break shared reference; None is fine (dataset handles it)
+                tactile = cu_manager.tactile_data.copy() if cu_manager.tactile_data is not None else None
+
+            # Robot state uses its own _state_lock inside get_state_snapshot()
+            state, action, force, extra = teleop.get_state_snapshot()
 
             force_val = force if (cfg.FORCE_COLLECT and cfg.TORQUE_MODE) else None
-            dataset.data_collection(state, action, images, tactile, force_val)
+            dataset.data_collection(
+                state, action, images, tactile, force_val, depth_imgs, extra
+            )
 
         elapsed = time.time() - t0
         remaining = dt - elapsed
@@ -52,8 +68,9 @@ def collect_loop(
 
 def export_loop(
     dataset: DatasetRecorder,
-    cu_manager: CameraUDPManager,
+    cu_manager: CameraManager,
     stop_event: threading.Event,
+    pause_event: threading.Event | None = None,
 ) -> None:
     """Wait for export signals and write episodes to disk."""
     try:
@@ -63,8 +80,13 @@ def export_loop(
                     utils.logger.error("No data to export")
                     cu_manager.data_export_state = False
                 else:
+                    # Pause collection to avoid frames leaking across episodes
+                    if pause_event is not None:
+                        pause_event.set()
                     dataset.data_export(cu_manager)
                     dataset._reset_data_dict()
+                    if pause_event is not None:
+                        pause_event.clear()
                     utils.logger.info(
                         f"Episode {dataset.recorded_episodes - 1} exported successfully"
                     )
@@ -88,8 +110,12 @@ def export_loop(
 def main() -> None:
     stop_event = threading.Event()
     utils.logger.info(f"TASK: {cfg.TASK_NAME}")
+    utils.logger.info(f"VIDEO_TRANSPORT: {cfg.VIDEO_TRANSPORT}")
 
-    cu_manager = CameraUDPManager()
+    if cfg.VIDEO_TRANSPORT.lower() == "webrtc":
+        cu_manager = WebRTCUDPManager()
+    else:
+        cu_manager = CameraUDPManager()
     teleop = URTeleop(cu_manager.test_connection())
 
     if cfg.TACTILE_TRANSFER:
@@ -109,14 +135,17 @@ def main() -> None:
     dataset = DatasetRecorder(cu_manager.camera_num)
     cu_manager.start_comms_threads()
 
+    # Synchronization: pause collection during episode export
+    pause_event = threading.Event()
+
     t_collect = threading.Thread(
         target=collect_loop,
-        args=(teleop, cu_manager, dataset, cfg.COLLECT_RATE, stop_event),
+        args=(teleop, cu_manager, dataset, cfg.COLLECT_RATE, stop_event, pause_event),
         daemon=True,
     )
     t_export = threading.Thread(
         target=export_loop,
-        args=(dataset, cu_manager, stop_event),
+        args=(dataset, cu_manager, stop_event, pause_event),
         daemon=True,
     )
     t_collect.start()
@@ -132,8 +161,9 @@ def main() -> None:
             with cu_manager._lock:
                 data = cu_manager.data
                 fine = cu_manager.fine_mode
-            if data is not None:
-                teleop.step(data, fine, dt)
+                hand = dict(cu_manager.hand_data) if cu_manager.hand_data else None
+            if data is not None or hand is not None:
+                teleop.step(data, fine, dt, hand_data=hand)
 
             loop_time = time.time() - prev_time
             if loop_time < MIN_DT:

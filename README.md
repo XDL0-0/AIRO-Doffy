@@ -1,72 +1,110 @@
-# VR Teleoperation for UR Robots 🚀
+# VR Teleoperation for UR Robots
 
-A high-performance codebase for controlling UR robots (UR3e, UR5e) using VR controllers via UDP. It features real-time camera streaming to the VR headset, low-latency robot control, tactile sensing integration, dataset recording (HDF5 & LeRobot formats), and policy inference evaluation.
+A high-performance codebase for controlling UR robots (UR3e, UR5e) using VR controllers or hand tracking via UDP. It features camera streaming to the VR headset via **HD chunked UDP** or **WebRTC** (aiortc), low-latency robot control, tactile sensing integration, dataset recording (HDF5 & LeRobot formats), and policy inference evaluation.
 
-## 🌟 Key Features
+## Key Features
 - **Low-Latency Teleoperation**: Real-time VR controller tracking to robot end-effector mapping with analytical IK and safety limits.
+- **Hand Tracking Support**: Receive and visualize 24-bone hand skeleton data from Meta Quest hand tracking (text and binary protocols).
+- **HD Video Streaming**: Two transport options:
+  - **UDP** (`camera_udp.py`): Chunked JPEG transfer, compatible with `UdpSocketMultiHD.cs`.
+  - **WebRTC** (`WebRTC_udp.py`): aiortc-based multi-track video (H.264/VP8) with WebSocket signaling + DataChannel for control. Lower bandwidth, NAT-friendly.
 - **Fast Gripper Control**: Custom non-blocking TCP socket implementation for the Robotiq 2F-85 gripper.
-- **VR Streaming**: High-framerate UDP multi-camera streaming directly to your VR Headset.
 - **Tactile & Force Integration**: Supports MagTouch tactile sensors and UR force/torque readings with calibration and gravity compensation.
 - **Dataset Recording**: Save robotic trajectories directly in ACT (HDF5) or Hugging Face `lerobot` formats.
 - **Policy Inference & Evaluation**: Load trained AI policies (e.g., ACT, Diffusion, Pi0) and evaluate them offline or run live robotics inference.
+- **Hand Visualizer**: Real-time matplotlib 3D hand skeleton visualization with finger bone connections and dynamic axis scaling.
 
-## 🛠️ Installation
+## Installation
 
 ### 1. Prerequisites
-- **Python 3.10+** (Recommended: Conda or pyenv)
+- **Python 3.10+** (Recommended: Conda environment `airo-mono`)
 - **Robot**: Compatible UR Robot (e.g., UR3e, UR5e) with RTDE enabled.
 - **Cameras**: Intel RealSense Cameras.
-- **VR Setup**: VR headset connected and running the compatible Unity UDP receiver.
+- **VR Setup**: VR headset running the compatible Unity app with `DualControllerSender` / `HandTrackingSender` + `UdpSocketMultiHD` receiver.
 
 ### 2. Dependencies
-First, install the required standard Python packages:
+Install the required Python packages:
 ```bash
-pip install numpy opencv-python pyrealsense2 scipy h5py torch matplotlib loguru pyserial
+pip install -r requirements.txt
 ```
 
-Additionally, this project depends on custom robotic libraries. Ensure the following are securely installed in your environment:
+Or install individually:
+```bash
+pip install numpy opencv-python pyrealsense2 scipy h5py torch matplotlib loguru pyserial ruckig pyav huggingface-hub
+
+# Additional dependencies for WebRTC streaming mode:
+pip install aiortc aiohttp av
+```
+
+Additionally, this project depends on custom robotic libraries. Ensure the following are installed in your environment:
 - `airo-robots` (UR RTDE & Robotiq control)
 - `airo-camera-toolkit` (RealSense wrappers)
 - `airo-spatial-algebra` (SE3 containers)
 - `ur_analytic_ik` (Analytic Inverse Kinematics for UR)
 - `lerobot` (For Hugging Face dataset creation and policy inference)
-- `sensor_comm_dds` (For tactile sensor communication)
+- `sensor_comm_dds` (For tactile sensor communication, optional)
 
-## ⚙️ Configuration
-The system uses `config.py` as its central brain. Adjust these primary settings before running:
-- **Network Interfaces**: `UR_IP`, `PC_IP`, `VR_IP`.
-- **Robot Configuration**: `ROBOT_TYPE` (e.g., "ur3e"), `INITIAL_JOINT`.
-- **Dataset Options**: `DATASET_DIR` and `DATASET_TYPE` ('a' for ACT/HDF5, 'l' for LeRobot).
-- **Sensor Toggles**: Toggle `TACTILE_TRANSFER` and `FORCE_COLLECT` to enable/disable data collection from auxiliary sensors.
+## Configuration
+The system uses `config.py` as its central configuration. Key settings:
 
-## 🚀 How to Run
+### Network & Robot
+| Parameter | Description | Default |
+|---|---|---|
+| `UR_IP` | UR robot IP address | `10.42.0.162` |
+| `PC_IP` | Host PC IP address | `10.10.131.72` |
+| `VR_IP` | VR headset IP address | `10.10.131.166` |
+| `ROBOT_TYPE` | Robot model (`ur3e` / `ur5e`) | `ur3e` |
+
+### Tracking & Streaming
+| Parameter | Description | Default |
+|---|---|---|
+| `TRACKING_MODE` | VR input mode: `"controller"` or `"hand"` | `controller` |
+| `REALSENSE_RESOLUTION` | Camera resolution `(width, height)` | `(640, 480)` |
+| `REALSENSE_FPS` | Camera framerate | `60` |
+| `JPEG_QUALITY` | JPEG encoding quality for VR streaming (1-100) | `50` |
+| `HD_CHUNK_SIZE` | Max payload bytes per UDP chunk (UDP mode only) | `60000` |
+| `SIGNALING_PORT` | WebSocket port for WebRTC signaling (WebRTC mode) | `8765` |
+
+### Dataset
+| Parameter | Description | Default |
+|---|---|---|
+| `DATASET_DIR` | Dataset save path | `./datasets/...` |
+| `DATASET_TYPE` | `"a"` = ACT/HDF5, `"l"` = LeRobot | `l` |
+| `TACTILE_TRANSFER` | Enable tactile sensor data | `False` |
+| `FORCE_COLLECT` | Enable F/T sensor recording | `True` |
+
+## How to Run
 
 ### 1. Data Collection & Teleoperation
 Initiate the main teleoperation and dataset recording loop:
 ```bash
 python main.py
 ```
-- Real-time camera streams will pop up in the VR headset automatically.
-- Controller movements dictate the Robot Pose / Gripper aperture.
-- Squeeze trigger & buttons to map to dataset recording start / stop segments.
+- Real-time camera streams will appear in the VR headset automatically.
+- Controller movements dictate the robot pose / gripper aperture.
+- Squeeze trigger & buttons to start / stop dataset recording.
 
-### 2. Live Policy Inference
-Execute a previously trained Hugging Face or local AI policy directly onto the robot:
+### 2. Standalone VR Data Receiver
+Test VR connection without robot hardware:
 ```bash
-# Run with a HuggingFace Hub policy identifier
-python inference.py --policy username/my_act_policy
+# Controller mode — print controller data
+python vr_data.py
 
-# Run with a locally saved checkpoint
+# Hand tracking mode — 3D hand visualizer
+python vr_data.py --visualize
+```
+
+### 3. Live Policy Inference
+Execute a previously trained AI policy directly onto the robot:
+```bash
+python inference.py --policy username/my_act_policy
 python inference.py --policy ./checkpoints/my_policy --device cuda --fps 10
 ```
 
-### 3. Offline Policy Evaluation
-Evaluate a trained open-loop policy against your recorded dataset, generating metric summaries and trajectory plots:
+### 4. Offline Policy Evaluation
+Evaluate a trained policy against recorded dataset:
 ```bash
-# Evaluate using the dataset assigned within the policy's train_config.json
 python eval_policy.py --policy username/my_policy
-
-# Evaluate exclusively on specific local episodes and skip plotting display
 python eval_policy.py \
     --policy ./checkpoints/my_policy \
     --dataset ./datasets/my_dataset_lero \
@@ -74,6 +112,49 @@ python eval_policy.py \
     --no-show
 ```
 
-## 🐛 Codebase Diagnostics
-- **Bug Status**: Code architecture looks solid, concurrent multi-threading is cleanly implemented. 
-- *Note on Concurrency*: Collection (`collect_loop`) and Export (`export_loop`) mechanisms both interact with the central data dictionary. Mutual-exclusion flags act correctly in standard operations. If rapidly toggling recording modes, ensure visual confirmation that no misaligned lengths result during frame packaging into HDF5/LeRobot formats. No critical structural bugs were identified.
+## VR Data Protocols
+
+### Controller Data (via `DualControllerSender.cs`)
+```
+<timestamp_ms>,<left: 14 values>,<right: 14 values>
+```
+Per-hand fields: `px,py,pz, rx,ry,rz,rw, jx,jy, trigger, grip, AX, BY, joyPress`
+
+### Hand Tracking Data (via `HandTrackingSender.cs`)
+Text protocol:
+```
+H,<L|R>,<timestamp_ms>,<bone0_x>,<bone0_y>,<bone0_z>,...  (24 bones x 3 floats)
+```
+Binary protocol:
+```
+HB,<base64-encoded: [0x48, side, count_lo, count_hi, x0,y0,z0, ...]>
+```
+
+### HD Video Chunks — UDP Mode (via `UdpSocketMultiHD.cs`)
+Each UDP packet: 12-byte big-endian header + JPEG payload
+```
+[frameId: u32] [chunkIndex: u16] [totalChunks: u16] [totalBytes: u32] [payload...]
+```
+
+### WebRTC Video — WebRTC Mode (via `WebRTCVideoReceiver.cs`)
+- **Signaling**: WebSocket on `SIGNALING_PORT` (default 8765), JSON envelope: `{"type": "offer"|"answer"|"ice_candidate"|"hello", "session_id": "...", "payload": {...}}`
+- **Video**: Single `RTCPeerConnection` with one `VideoStreamTrack` per camera (H.264/VP8 codec).
+- **Control**: DataChannel `"control"` replaces UDP port 8005 for resolution/zoom commands.
+
+## Project Structure
+```
+airo-doffy/
+├── config.py           # Central configuration
+├── main.py             # Data collection entry point
+├── camera_udp.py       # Camera streaming (UDP chunks) + VR data reception
+├── WebRTC_udp.py       # Camera streaming (WebRTC) + VR data reception
+├── parse_vr.py         # VR data parsing (controller + hand tracking)
+├── ur_teleop.py        # Robot teleoperation (IK + servo)
+├── vr_data.py          # Standalone VR receiver + hand visualizer
+├── dataset_new.py      # Dataset recording (HDF5 / LeRobot)
+├── inference.py        # Policy inference
+├── tactile.py          # Tactile sensor interface
+├── udp_comms.py        # Two-way UDP communication
+├── utils.py            # Filters, safety checks, helpers
+└── example from VR/    # Unity C# source & Python examples
+```

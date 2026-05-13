@@ -1,18 +1,24 @@
 from airo_robots.manipulators import URrtde
 from airo_spatial_algebra.se3 import SE3Container
 import numpy as np
+import logging
 
 from config import Config
+
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
+
 cfg = Config()
 robot = URrtde("10.42.0.162", URrtde.UR3E_CONFIG)
 robot.move_to_joint_configuration(cfg.INITIAL_JOINT,0.3).wait()
-print(f"initialization complete!")
+logger.info("Initialization complete.")
 # robot = URrtde("localhost", URrtde.UR5E_CONFIG)
 task_frame = robot.get_tcp_pose()   # [x,y,z, rx,ry,rz] expressed in base coordinate system, meters & radians
 SE = SE3Container.from_homogeneous_matrix(task_frame)
 task_frame = np.concatenate([SE.translation,SE.orientation_as_euler_angles])
-print(task_frame)
-print(robot.get_tcp_force())
+logger.info(f"Task frame: {task_frame}")
+logger.info(f"TCP force: {robot.get_tcp_force()}")
 selection_vector = [1, 1, 0, 0, 0, 0]    # [Fx,Fy,Fz, Tx,Ty,Tz] corresponds to [x,y,z, Rx,Ry,Rz]
 wrench = [0, 0, 8.0, 0, 0, 0]           # About 8N downward force
 type_ = 2

@@ -5,6 +5,11 @@ import h5py
 import argparse
 import matplotlib.pyplot as plt
 import IPython
+import logging
+
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 # Prevent errors, comment out if IPython is not needed
 try:
@@ -19,7 +24,7 @@ STATE_NAMES = JOINT_NAMES + ["gripper"]
 def load_hdf5(dataset_dir, dataset_name):
     dataset_path = os.path.join(dataset_dir, dataset_name + '.hdf5')
     if not os.path.isfile(dataset_path):
-        print(f'Dataset does not exist at \n{dataset_path}\n')
+        logger.error(f"Dataset does not exist at {dataset_path}")
         exit()
 
     with h5py.File(dataset_path, 'r') as root:
@@ -181,7 +186,7 @@ def save_videos(video, tactile, dt, video_path=None):
 
             out.write(frame_img)
         out.release()
-        print(f'Saved video to: {video_path}')
+        logger.info(f"Saved video to: {video_path}")
 
     elif isinstance(video, dict):
         cam_names = list(video.keys())
@@ -209,7 +214,7 @@ def save_videos(video, tactile, dt, video_path=None):
 
             out.write(image)
         out.release()
-        print(f'Saved video to: {video_path}')
+        logger.info(f"Saved video to: {video_path}")
 
 
 def visualize_joints(qpos_list, command_list, plot_path=None, ylim=None, label_overwrite=None):
@@ -255,7 +260,7 @@ def visualize_joints(qpos_list, command_list, plot_path=None, ylim=None, label_o
 
     plt.tight_layout()
     plt.savefig(plot_path)
-    print(f'Saved qpos plot to: {plot_path}')
+    logger.info(f"Saved qpos plot to: {plot_path}")
     plt.close()
 
 
@@ -281,6 +286,6 @@ if __name__ == '__main__':
 
     if not os.path.exists(dataset_dir):
         os.makedirs(dataset_dir, exist_ok=True)
-        print(f"Warning: Created {dataset_dir}, but it is likely empty.")
+        logger.warning(f"Created {dataset_dir}, but it is likely empty.")
 
     main(episode_num, dataset_dir, record_rate=10, if_multi=True)

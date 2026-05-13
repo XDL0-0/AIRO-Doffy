@@ -27,6 +27,11 @@ import glob
 import os
 import re
 from pathlib import Path
+import logging
+
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 
 def natural_key(string):
@@ -75,7 +80,7 @@ def main(data_dir: str, *, push_to_hub: bool = False):
     if not hdf5_files:
         raise ValueError(f"No HDF5 files found in {data_dir}")
 
-    print(f"Found {len(hdf5_files)} HDF5 files")
+    logger.info(f"Found {len(hdf5_files)} HDF5 files")
 
     # Create LeRobot dataset, define features to store
     # OpenPi assumes that proprio is stored in `state` and actions in `action`
@@ -136,9 +141,11 @@ def main(data_dir: str, *, push_to_hub: bool = False):
 
     # Then iterate and process
     for file_idx, hdf5_file in enumerate(hdf5_files):
-        print(f"\\nProcessing file {file_idx + 1}/{len(hdf5_files)}: {os.path.basename(hdf5_file)}")
+        logger.info(
+            f"Processing file {file_idx + 1}/{len(hdf5_files)}: {os.path.basename(hdf5_file)}"
+        )
         data = load_act_dataset(hdf5_file)
-        print(f"Including {data['n_steps']} steps")
+        logger.info(f"Including {data['n_steps']} steps")
         for step_idx in range(data['n_steps']):
             dataset.add_frame(
                 {

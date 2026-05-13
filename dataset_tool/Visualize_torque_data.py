@@ -1,5 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import logging
+
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 
 def plot_torque_log(filename="torque_log.npz"):
@@ -7,9 +12,9 @@ def plot_torque_log(filename="torque_log.npz"):
         # Load data
         loaded = np.load(filename)
         data = loaded['data']
-        print(f"Loaded data shape: {data.shape}")
+        logger.info(f"Loaded data shape: {data.shape}")
     except FileNotFoundError:
-        print(f"Error: File {filename} not found. Run the robot control first.")
+        logger.error(f"File {filename} not found. Run the robot control first.")
         return
 
     # --- Parse data columns ---

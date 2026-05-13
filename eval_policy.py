@@ -345,15 +345,17 @@ def _dim_names(n_dims):
 
 def print_metrics(metrics, episode_idx, n_dims):
     names = _dim_names(n_dims)
-
-    print(f"\n{'=' * 78}")
-    print(f"  Episode {episode_idx}")
-    print(f"{'=' * 78}")
-    print(f"  {'':10s} {'MSE':>10s} {'MAE':>10s} {'RMSE':>10s} {'R²':>10s} {'Score':>8s}")
-    print(f"  {'-' * 68}")
+    lines = [
+        "",
+        "=" * 78,
+        f"  Episode {episode_idx}",
+        "=" * 78,
+        f"  {'':10s} {'MSE':>10s} {'MAE':>10s} {'RMSE':>10s} {'R²':>10s} {'Score':>8s}",
+        f"  {'-' * 68}",
+    ]
 
     for i, name in enumerate(names):
-        print(
+        lines.append(
             f"  {name:10s}"
             f" {metrics['mse_j'][i]:10.6f}"
             f" {metrics['mae_j'][i]:10.6f}"
@@ -362,16 +364,22 @@ def print_metrics(metrics, episode_idx, n_dims):
             f" {metrics['score_j'][i]:8.1f}"
         )
 
-    print(f"  {'-' * 68}")
-    print(
+    lines.extend(
+        [
+            f"  {'-' * 68}",
+            (
         f"  {'Overall':10s}"
         f" {metrics['mse']:10.6f}"
         f" {metrics['mae']:10.6f}"
         f" {metrics['rmse']:10.6f}"
         f" {metrics['r2']:10.4f}"
         f" {metrics['score']:8.1f}"
+            ),
+            "=" * 78,
+            "",
+        ]
     )
-    print(f"{'=' * 78}\n")
+    utils.logger.info("\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -640,18 +648,26 @@ def main():
         avg_r = np.mean([m["rmse"] for m in all_metrics])
         avg_r2 = np.mean([m["r2"] for m in all_metrics])
 
-        print(f"\n{'#' * 78}")
-        print(f"  OVERALL  ({len(all_metrics)} episodes)")
-        print(f"{'#' * 78}")
-        print(f"  Avg Score : {avg_s:.1f} / 100")
-        print(f"  Avg RMSE  : {avg_r:.6f}")
-        print(f"  Avg R²    : {avg_r2:.4f}")
-        print(f"{'#' * 78}\n")
+        utils.logger.info(
+            "\n".join(
+                [
+                    "",
+                    "#" * 78,
+                    f"  OVERALL  ({len(all_metrics)} episodes)",
+                    "#" * 78,
+                    f"  Avg Score : {avg_s:.1f} / 100",
+                    f"  Avg RMSE  : {avg_r:.6f}",
+                    f"  Avg R²    : {avg_r2:.4f}",
+                    "#" * 78,
+                    "",
+                ]
+            )
+        )
 
         if not args.no_plot:
             plot_summary(all_metrics, episode_indices, save_dir)
     else:
-        print(f"\n  Final Score: {all_metrics[0]['score']:.1f} / 100\n")
+        utils.logger.info(f"Final Score: {all_metrics[0]['score']:.1f} / 100")
 
     if not args.no_plot:
         utils.logger.info(f"Plots saved to {save_dir}/")

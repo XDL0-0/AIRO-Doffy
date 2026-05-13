@@ -26,17 +26,22 @@ class DatasetRecorder:
         self.push_to_hub = cfg.PUSH_TO_HUB if self.dataset_type == "l" else False
         self.tactile_mode = cfg.TACTILE_TRANSFER
         self.force_mode = cfg.FORCE_COLLECT and cfg.TORQUE_MODE
+        self.depth_mode = cfg.DEPTH_INFO_ENABLE
         self.fps = cfg.COLLECT_RATE
+        self.resolution = cfg.REALSENSE_RESOLUTION  # (width, height)
 
         suffix = "_lero" if self.dataset_type == "l" else "_hdf5"
         self.dataset_dir = Path(cfg.DATASET_DIR + suffix)
 
-        self.feature_dim = 8 if self.save_eef else 7
+        self.collect_tcp_extra = self.data_type == "both"
+        self.feature_dim = 7 if self.collect_tcp_extra else (8 if self.save_eef else 7)
+        self.tcp_pose_dim = 7
 
         self.data_dict: dict[str, list] = {}
         self.collect_step = 0
         self.lerobot_dataset = None
         self.recorded_episodes = 0
+        self._lerobot_episode_started = False
 
         utils.logger.info(f"Dataset Dir: {self.dataset_dir}")
         utils.logger.info(f"Dataset Type: {self.dataset_type}")
@@ -53,13 +58,19 @@ class DatasetRecorder:
             "/observations/qpos": [],
             "/action": [],
         }
+        if self.collect_tcp_extra:
+            self.data_dict["/extra/tcp_pose"] = []
         if self.force_mode:
             self.data_dict["/observations/force"] = []
         if self.tactile_mode:
             self.data_dict["/observations/tactile"] = []
         for i in range(self.camera_num):
             self.data_dict[f"/observations/images/camera_{i}"] = []
+        if self.depth_mode:
+            for i in range(self.camera_num):
+                self.data_dict[f"/observations/depth/camera_{i}"] = []
         self.collect_step = 0
+        self._lerobot_episode_started = False
 
     # ── Dataset initialisation ────────────────────────────────────────────
 
@@ -90,7 +101,7 @@ class DatasetRecorder:
 
         repo_id = self.dataset_dir.name
         root = self.dataset_dir
-        h, w = 480, 640
+        w, h = self.resolution  # (width, height) → unpack
 
         features = {
             "action": {
@@ -110,12 +121,25 @@ class DatasetRecorder:
                 "shape": (6,),
                 "names": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
             }
+        if self.collect_tcp_extra:
+            features["extra.tcp_pose"] = {
+                "dtype": "float32",
+                "shape": (self.tcp_pose_dim,),
+                "names": ["qx", "qy", "qz", "qw", "x", "y", "z"],
+            }
         for i in range(self.camera_num):
             features[f"observation.images.camera_{i}"] = {
                 "dtype": "video",
                 "shape": (h, w, 3),
                 "names": ["height", "width", "channel"],
             }
+        if self.depth_mode:
+            for i in range(self.camera_num):
+                features[f"observation.depth.camera_{i}"] = {
+                    "dtype": "image",
+                    "shape": (h, w, 1),
+                    "names": ["height", "width", "channel"],
+                }
         if self.tactile_mode:
             features["observation.tactile"] = {
                 "dtype": "float32",
@@ -130,7 +154,7 @@ class DatasetRecorder:
 
             loaded_keys = {
                 k for k in self.lerobot_dataset.features
-                if k.startswith(("action", "observation."))
+                if k.startswith(("action", "observation.", "extra."))
             }
             if loaded_keys != expected_keys:
                 missing = expected_keys - loaded_keys
@@ -173,10 +197,30 @@ class DatasetRecorder:
         camera_images: dict[str, np.ndarray],
         tactile_data: np.ndarray | None = None,
         force_data: np.ndarray | None = None,
+        depth_images: dict[str, np.ndarray] | None = None,
+        extra_data: dict[str, np.ndarray] | None = None,
     ) -> None:
         self.collect_step += 1
+
+        # ── LeRobot: per-cycle add_frame (skip data_dict buffer) ──────────
+        if self.dataset_type == "l":
+            self._lerobot_add_frame(
+                state,
+                action,
+                camera_images,
+                tactile_data,
+                force_data,
+                depth_images,
+                extra_data,
+            )
+            return
+
+        # ── HDF5: buffer into data_dict as before ─────────────────────────
         self.data_dict["/observations/qpos"].append(state)
         self.data_dict["/action"].append(action)
+        if self.collect_tcp_extra:
+            tcp_pose = self._get_tcp_pose_extra(extra_data)
+            self.data_dict["/extra/tcp_pose"].append(tcp_pose)
 
         if self.force_mode and force_data is not None:
             self.data_dict["/observations/force"].append(force_data)
@@ -184,67 +228,97 @@ class DatasetRecorder:
             self.data_dict["/observations/tactile"].append(tactile_data)
         for name, img in camera_images.items():
             self.data_dict[f"/observations/images/{name}"].append(img)
+        if self.depth_mode and depth_images is not None:
+            for name, depth in depth_images.items():
+                self.data_dict[f"/observations/depth/{name}"].append(depth)
+
+    def _lerobot_add_frame(
+        self,
+        state: np.ndarray,
+        action: np.ndarray,
+        camera_images: dict[str, np.ndarray],
+        tactile_data: np.ndarray | None,
+        force_data: np.ndarray | None,
+        depth_images: dict[str, np.ndarray] | None,
+        extra_data: dict[str, np.ndarray] | None,
+    ) -> None:
+        """Build one frame dict and call add_frame immediately (LeRobot only)."""
+        if self.lerobot_dataset is None:
+            utils.logger.error("LeRobot Dataset not initialized!")
+            return
+
+        # Create episode buffer on first frame of this episode
+        if not self._lerobot_episode_started:
+            self.lerobot_dataset.create_episode_buffer(
+                episode_index=self.recorded_episodes
+            )
+            self._lerobot_episode_started = True
+
+        frame_data: dict = {
+            "observation.state": np.array(state, dtype=np.float32),
+            "action": np.array(action, dtype=np.float32),
+            "task": self.task_description,
+        }
+
+        if self.force_mode and force_data is not None:
+            frame_data["observation.force"] = np.array(force_data, dtype=np.float32)
+        if self.collect_tcp_extra:
+            frame_data["extra.tcp_pose"] = self._get_tcp_pose_extra(extra_data)
+        if self.tactile_mode:
+            # Always write tactile — zeros fallback if sensor isn't ready yet
+            if tactile_data is not None:
+                frame_data["observation.tactile"] = np.array(tactile_data, dtype=np.float32)
+            else:
+                frame_data["observation.tactile"] = np.zeros((41, 3), dtype=np.float32)
+
+        for name, img in camera_images.items():
+            frame_data[f"observation.images.{name}"] = np.array(img, dtype=np.uint8)
+
+        if self.depth_mode and depth_images is not None:
+            for name, depth in depth_images.items():
+                depth_m = np.array(depth, dtype=np.float32)
+                depth_uint16 = (np.clip(depth_m, 0, 65.535) * 1000).astype(np.uint16)
+                frame_data[f"observation.depth.{name}"] = depth_uint16[..., np.newaxis]
+
+        self.lerobot_dataset.add_frame(frame_data)
+
+    def _get_tcp_pose_extra(
+        self, extra_data: dict[str, np.ndarray] | None
+    ) -> np.ndarray:
+        if extra_data is not None and "tcp_pose" in extra_data:
+            return np.array(extra_data["tcp_pose"], dtype=np.float32)
+        return np.zeros((self.tcp_pose_dim,), dtype=np.float32)
 
     # ── Data export ───────────────────────────────────────────────────────
 
     def data_export(self, cu_manager) -> None:
         t0 = time.time()
-        max_timesteps = len(self.data_dict["/observations/qpos"])
 
-        utils.logger.info(f"max_timesteps: {max_timesteps}")
         utils.logger.info(f"collect_step: {self.collect_step}")
 
         if self.dataset_type == "l":
-            self._export_lerobot(max_timesteps)
+            self._export_lerobot()
         elif self.dataset_type == "a":
+            max_timesteps = len(self.data_dict["/observations/qpos"])
+            utils.logger.info(f"max_timesteps: {max_timesteps}")
             self._export_hdf5(max_timesteps, cu_manager)
 
         self.recorded_episodes += 1
         utils.logger.info(f"Saving took {time.time() - t0:.1f}s")
 
-    def _export_lerobot(self, max_timesteps: int) -> None:
+    def _export_lerobot(self) -> None:
+        """Finalize the current episode. Frames were already added per-cycle."""
         if self.lerobot_dataset is None:
             utils.logger.error("LeRobot Dataset not initialized!")
             return
+        if not self._lerobot_episode_started:
+            utils.logger.error("No LeRobot episode in progress!")
+            return
 
         utils.logger.info(
-            f"Exporting Episode {self.recorded_episodes} to LeRobot format..."
+            f"Saving Episode {self.recorded_episodes} "
+            f"({self.collect_step} frames already added)..."
         )
-        self.lerobot_dataset.create_episode_buffer(
-            episode_index=self.recorded_episodes
-        )
-
-        for i in range(max_timesteps):
-            if i % 50 == 0:
-                utils.logger.info(f"Processing frame {i}/{max_timesteps}...")
-
-            frame_data = {
-                "observation.state": np.array(
-                    self.data_dict["/observations/qpos"][i], dtype=np.float32
-                ),
-                "action": np.array(
-                    self.data_dict["/action"][i], dtype=np.float32
-                ),
-                "task": self.task_description,
-            }
-
-            if self.force_mode:
-                frame_data["observation.force"] = np.array(
-                    self.data_dict["/observations/force"][i], dtype=np.float32
-                )
-            if self.tactile_mode:
-                frame_data["observation.tactile"] = np.array(
-                    self.data_dict["/observations/tactile"][i], dtype=np.float32
-                )
-            for key in self.data_dict:
-                if "images" in key:
-                    cam_name = key.split("/")[-1]
-                    frame_data[f"observation.images.{cam_name}"] = np.array(
-                        self.data_dict[key][i], dtype=np.uint8
-                    )
-
-            self.lerobot_dataset.add_frame(frame_data)
-
         self.lerobot_dataset.save_episode()
         utils.logger.info("LeRobot episode saved.")
 
@@ -258,19 +332,34 @@ class DatasetRecorder:
 
             obs.create_dataset("qpos", (max_timesteps, self.feature_dim))
             root.create_dataset("action", (max_timesteps, self.feature_dim))
+            if self.collect_tcp_extra:
+                extra_grp = root.create_group("extra")
+                extra_grp.create_dataset("tcp_pose", (max_timesteps, self.tcp_pose_dim))
 
             if self.force_mode:
                 obs.create_dataset("force", (max_timesteps, 6))
             if self.tactile_mode:
                 obs.create_dataset("tactile", (max_timesteps, 41, 3))
 
+            w, h = self.resolution
+            img_shape = (h, w)  # (height, width) for numpy
             for name in cu_manager.camera_images:
                 image_grp.create_dataset(
                     name,
-                    (max_timesteps, *Realsense.RESOLUTION_480[::-1], 3),
+                    (max_timesteps, *img_shape, 3),
                     dtype="uint8",
-                    chunks=(1, *Realsense.RESOLUTION_480[::-1], 3),
+                    chunks=(1, *img_shape, 3),
                 )
+
+            if self.depth_mode:
+                depth_grp = obs.create_group("depth")
+                for name in cu_manager.camera_images:
+                    depth_grp.create_dataset(
+                        name,
+                        (max_timesteps, *img_shape),
+                        dtype="float32",
+                        chunks=(1, *img_shape),
+                    )
 
             for name, array in self.data_dict.items():
                 root[name][...] = array[:max_timesteps]

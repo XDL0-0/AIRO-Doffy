@@ -3,14 +3,17 @@ import numpy as np
 import os
 import h5py
 import cv2
+import logging
 from airo_robots.manipulators.hardware.ur_rtde import URrtde
 import pyrealsense2 as rs
 from airo_robots.grippers import Robotiq2F85
 from airo_camera_toolkit.cameras.realsense.realsense import Realsense
 from airo_spatial_algebra.se3 import SE3Container
+from dataset_tool.Visualize_hdf5_episodes import render_tactile_frame
 
-print(cv2.getBuildInformation())
-from ur_analytic_ik import ur3e as ik
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 data_type = "qpos"
 
@@ -39,6 +42,11 @@ for i in range(from_episode_idx, to_episode_idx):
         qpos = root['/observations/qpos'][()]
         # qvel = root['/observations/qvel'][()]
         action = root['/action'][()]
+        # ── Load tactile data if present ──
+        tactile = None
+        if 'tactile' in root['/observations']:
+            tactile = root['/observations/tactile'][()]  # (T, 41, 3)
+            logger.info(f"Tactile data loaded: shape={tactile.shape}")
         if camera_test=='y':
             image_camera_0 = root[f'/observations/images/camera_0'][()]
             image_camera_1 = root[f'/observations/images/camera_1'][()]
@@ -46,7 +54,7 @@ for i in range(from_episode_idx, to_episode_idx):
 
     qpos_len = len(qpos)
     action_len = len(action)
-    print(f"qpos_lens:{qpos_len}\naction_len:{action_len}")
+    logger.info(f"qpos_len={qpos_len}, action_len={action_len}")
     episode_start_idx = 0
 
     # dataset_initial_image = dataset[episode_start_idx][dataset_image_key]
@@ -60,7 +68,7 @@ for i in range(from_episode_idx, to_episode_idx):
         tcp_target = SE3Container.from_euler_angles_and_translation(dataset_initial_pose[0:3],
                                                                     dataset_initial_pose[3:6])
         tcp_target_pose = tcp_target.homogeneous_matrix
-        print(tcp_target_pose.shape)
+        logger.info(f"Initial TCP target pose shape: {tcp_target_pose.shape}")
         # joint_solution = self.ik.inverse_kinematics_closest_with_tcp(tcp_target_pose, self.tcp_transform,
         #                                                              *self.ur.get_joint_configuration())
         ur.servo_to_tcp_pose(tcp_target_pose,0.5)
@@ -70,7 +78,7 @@ for i in range(from_episode_idx, to_episode_idx):
         tcp_target = SE3Container.from_quaternion_and_translation(dataset_initial_pose[0:4],
                                                                     dataset_initial_pose[4:7])
         tcp_target_pose = tcp_target.homogeneous_matrix
-        print(tcp_target_pose.shape)
+        logger.info(f"Initial TCP target pose shape: {tcp_target_pose.shape}")
         # joint_solution = self.ik.inverse_kinematics_closest_with_tcp(tcp_target_pose, self.tcp_transform,
         #                                                              *self.ur.get_joint_configuration())
         ur.servo_to_tcp_pose(tcp_target_pose, 0.5)
@@ -84,18 +92,18 @@ for i in range(from_episode_idx, to_episode_idx):
         camera_series_num = []
         camera_list = {}
         if camera_num == 0:
-            print("no Realsense connected")
+            logger.warning("No RealSense connected.")
         else:
             for i, device in enumerate(devices):
-                print(f"camera {i}: {device.get_info(rs.camera_info.name)}")
-                print(f"series number: {device.get_info(rs.camera_info.serial_number)}")
+                logger.info(f"camera {i}: {device.get_info(rs.camera_info.name)}")
+                logger.info(f"serial number: {device.get_info(rs.camera_info.serial_number)}")
                 camera_series_num.append(device.get_info(rs.camera_info.serial_number))
         for i in range(camera_num):
             camera_list[f'camera_{i}'] = Realsense(fps=30, resolution=Realsense.RESOLUTION_480, enable_depth=False,
                                                    enable_hole_filling=False, serial_number=camera_series_num[i])
         dataset_initial_image_0 = image_camera_0[0]
         dataset_initial_image_1 = image_camera_1[0]
-        print(dataset_initial_image_0)
+        logger.debug(f"Initial dataset image 0 shape: {dataset_initial_image_0.shape}")
         # dataset_initial_image = dataset_initial_image.transpose(1, 2, 0).astype(np.uint8)
 
         while True:
@@ -104,12 +112,10 @@ for i in range(from_episode_idx, to_episode_idx):
             # blend the two images
             blended_image_0 = cv2.addWeighted(dataset_initial_image_0, 0.3, img_0, 0.5, 0)
             blended_image_1 = cv2.addWeighted(dataset_initial_image_1, 0.5, img_1, 0.5, 0)
-            # print(f"blended_image.shape = {blended_image.shape}")
             cv2.imshow("image-0", blended_image_0)
             cv2.imshow("image-1", blended_image_1)
-            # print(f"img.shape = {img.shape}")
             k = cv2.waitKey(1)
-            print(f"k = {k}")
+            logger.debug(f"OpenCV keypress: {k}")
             if k == ord('q'):
                 break
 
@@ -131,28 +137,32 @@ for i in range(from_episode_idx, to_episode_idx):
             tcp_target = SE3Container.from_euler_angles_and_translation(dataset_pose[0:3],
                                                                         dataset_pose[3:6])
             tcp_target_pose = tcp_target.homogeneous_matrix
-            print(tcp_target_pose.shape)
-            # joint_solution = self.ik.inverse_kinematics_closest_with_tcp(tcp_target_pose, self.tcp_transform,
-            #                                                              *self.ur.get_joint_configuration())
+            logger.debug(f"TCP target pose shape: {tcp_target_pose.shape}")
             ur.servo_to_tcp_pose(tcp_target_pose, 1.0/fps)
         elif data_type == "tcp_quat":
-            print(dataset_pose)
+            logger.debug(f"Dataset pose: {dataset_pose}")
             ur.gripper.move(dataset_pose[7], 0.1)
             tcp_target = SE3Container.from_quaternion_and_translation(dataset_pose[0:4],
                                                                         dataset_pose[4:7])
             tcp_target_pose = tcp_target.homogeneous_matrix
-            print(tcp_target_pose.shape)
-            # joint_solution = self.ik.inverse_kinematics_closest_with_tcp(tcp_target_pose, self.tcp_transform,
-            #                                                              *self.ur.get_joint_configuration())
+            logger.debug(f"TCP target pose shape: {tcp_target_pose.shape}")
             ur.servo_to_tcp_pose(tcp_target_pose, 1.0/fps)
 
+        # ── Tactile visualisation during replay ──
+        if tactile is not None:
+            tactile_img = render_tactile_frame(tactile[i])
+            cv2.imshow("Tactile Replay", tactile_img)
+            cv2.waitKey(1)
 
         interval = time.time() - start_time
-        # print(f"Current interval: {1/interval:.2f}hz", end='\r', flush=True)
         if interval<1.0/fps:
             time.sleep(1.0 / fps - interval)
-        print(f"Current interval: {1/(time.time() - start_time):5.2f}hz", end='\r', flush=True)
+        logger.info(f"Current interval: {1/(time.time() - start_time):5.2f}hz")
+
+    # Close tactile window after episode
+    if tactile is not None:
+        cv2.destroyWindow("Tactile Replay")
 
 
 
-print(f"{i} episode replay finished")
+logger.info(f"{i} episode replay finished")

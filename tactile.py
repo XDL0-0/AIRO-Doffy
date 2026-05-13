@@ -101,7 +101,7 @@ class MagtouchIliasSerialReader:
             format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
         )
         logger.add(
-            lambda msg: print(msg.rstrip(), end="\r", flush=True),
+            lambda msg: sys.stderr.write(msg.rstrip() + "\r") or sys.stderr.flush(),
             format="{message}",
             filter=lambda record: "refresh" in record["extra"],
         )
@@ -247,8 +247,11 @@ class MagtouchIliasSerialReader:
 
             new_data = self.get_data()
             filtered = self._kalman_update(new_data) if self.use_kalman else new_data
-            cu.tactile_data = filtered
-            cu.tactile_byte = filtered.astype(np.int32).tobytes()
+            # .copy() prevents race: Kalman mutates self.kalman_x in-place
+            snapshot = filtered.copy()
+            with cu._lock:
+                cu.tactile_data = snapshot
+                cu.tactile_byte = snapshot.astype(np.int32).tobytes()
 
             ctr += 1
             if ctr == 300:
@@ -258,9 +261,11 @@ class MagtouchIliasSerialReader:
                 t_start = time.time()
 
             joystick_press = False
-            if hasattr(cu, "data") and cu.data is not None:
+            with cu._lock:
+                data = cu.data
+            if data is not None:
                 try:
-                    joystick_press = bool(cu.data[1]["Joystick_Press"])
+                    joystick_press = bool(data[1]["Joystick_Press"])
                 except (IndexError, KeyError, TypeError):
                     pass
 
@@ -281,7 +286,7 @@ class MagtouchIliasSerialReader:
 
             new_data = self.get_data()
             filtered = self._kalman_update(new_data) if self.use_kalman else new_data
-            print(filtered[0:3, :])
+            logger.info(f"Filtered tactile preview:\n{filtered[0:3, :]}")
 
             ctr += 1
             if ctr == 300:

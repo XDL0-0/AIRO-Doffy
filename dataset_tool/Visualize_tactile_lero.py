@@ -277,7 +277,7 @@ def visualize_dataset(
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            print("Ctrl-C received. Exiting.")
+            logging.info("Ctrl-C received. Exiting.")
 
 
 def main():
@@ -390,6 +390,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 

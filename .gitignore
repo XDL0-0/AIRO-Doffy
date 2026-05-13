@@ -21,9 +21,26 @@ venv/
 
 # Project-specific
 datasets/
+datasets/**
 *.npz
 *.hdf5
 torque_log.npz
 eval_results/
 policies/
 upload_to_github.sh
+
+# Cache files and directories
+.cache/
+**/.cache/
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+**/.mypy_cache/
+.ruff_cache/
+**/.ruff_cache/
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+*.cache
+*.cache.*
+*.tmp
+*.temp

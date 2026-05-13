@@ -6,6 +6,11 @@ Licensed under Apache License 2.0.
 
 import socket
 import threading
+from collections import deque
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 class UdpComms:
@@ -26,8 +31,7 @@ class UdpComms:
         self.suppress_warnings = suppress_warnings
 
         self._rx_lock = threading.Lock()
-        self._is_data_received = False
-        self._data_rx = None
+        self._rx_queue: deque[str] = deque(maxlen=128)
 
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -54,14 +58,18 @@ class UdpComms:
         self._sock.sendto(data, (self.send_ip, self.udp_send_port))
 
     def read(self) -> str | None:
-        """Return data received since the last call, or None."""
+        """Return the oldest unread packet, or None if queue is empty."""
         with self._rx_lock:
-            if self._is_data_received:
-                self._is_data_received = False
-                data = self._data_rx
-                self._data_rx = None
-                return data
+            if self._rx_queue:
+                return self._rx_queue.popleft()
         return None
+
+    def read_all(self) -> list[str]:
+        """Return all buffered packets (oldest first) and clear the queue."""
+        with self._rx_lock:
+            items = list(self._rx_queue)
+            self._rx_queue.clear()
+        return items
 
     # ── internal ──────────────────────────────────────────────────────────
 
@@ -71,14 +79,14 @@ class UdpComms:
                 "Attempting to receive data without enabling RX in constructor"
             )
         try:
-            data, _ = self._sock.recvfrom(1024)
+            data, _ = self._sock.recvfrom(4096)
             return data.decode("utf-8")
         except OSError as e:
             is_windows_reset = hasattr(e, "winerror") and e.winerror == 10054
             is_linux_error = hasattr(e, "errno") and e.errno in [9, 104]
             if is_windows_reset or is_linux_error:
                 if not self.suppress_warnings:
-                    print("Not connected to the other application yet.")
+                    logger.warning("Not connected to the other application yet.")
                 return None
             raise
 
@@ -87,8 +95,7 @@ class UdpComms:
             data = self._receive_blocking()
             if data is not None:
                 with self._rx_lock:
-                    self._data_rx = data
-                    self._is_data_received = True
+                    self._rx_queue.append(data)
 
     # ── backward-compatible aliases ───────────────────────────────────────
     SendData = send

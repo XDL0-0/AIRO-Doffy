@@ -1,18 +1,33 @@
-"""Camera capture + UDP streaming to VR headset, and VR data reception.
+"""Camera capture + WebRTC streaming to VR headset, and VR data reception.
 
-Supports HD chunked image transfer (matching UdpSocketMultiHD.cs) and
-both controller / hand-tracking data from the VR headset.
+Replaces the chunked-JPEG-over-UDP camera streaming in camera_udp.py with
+WebRTC (aiortc).  Each Realsense camera becomes a VideoStreamTrack in a
+single RTCPeerConnection.  A DataChannel named "control" replaces the old
+UDP socket_2 resolution/zoom commands.
+
+All other UDP channels (VR pose data on socket_0, record control on
+socket_1, tactile on socket_tactile) are kept unchanged.
+
+Dependencies:
+    pip install aiortc aiohttp av
 """
 
 from __future__ import annotations
 
-import struct
+import asyncio
+import json
 import cv2
 import time
 import threading
 import numpy as np
 import pyrealsense2 as rs
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
+from aiortc.contrib.media import MediaRelay
+from av import VideoFrame
+from aiortc.mediastreams import VideoStreamTrack
+from aiohttp import web
 
 import utils
 import udp_comms as U
@@ -26,12 +41,65 @@ TACTILE_FPS = 100
 VR_RECEIVE_HZ = 100
 CONNECTION_TIMEOUT = 30.0
 
-# HD chunk protocol header: !IHHI = uint32 + uint16 + uint16 + uint32 = 12 bytes
-HD_HEADER_FMT = "!IHHI"
-HD_HEADER_SIZE = 12
+
+# ── WebRTC video track ───────────────────────────────────────────────────
 
 
-class CameraUDPManager:
+class RealsenseCameraTrack(VideoStreamTrack):
+    """A VideoStreamTrack that reads frames from a shared camera data dict.
+
+    Each instance is bound to one camera index.  The camera read thread
+    (running in the main manager) writes BGR images into *camera_data*; this
+    track's ``recv()`` picks them up, applies zoom, JPEG‑quality conversion,
+    and wraps the result in an ``av.VideoFrame``.
+    """
+
+    kind = "video"
+
+    def __init__(
+        self,
+        manager: "WebRTCUDPManager",
+        cam_idx: int,
+    ):
+        super().__init__()
+        self._manager = manager
+        self._cam_idx = cam_idx
+        self._frame_interval = 1.0 / STREAM_FPS
+
+    async def recv(self) -> VideoFrame:
+        pts, time_base = await self.next_timestamp()
+
+        # Busy-wait until a frame is available (shouldn't be long).
+        raw = None
+        while raw is None:
+            with self._manager._lock:
+                raw = self._manager.camera_data.get(f"camera_{self._cam_idx}")
+            if raw is None:
+                await asyncio.sleep(0.005)
+
+        frame_bgr, frame_rgb = self._manager.data_process(raw, self._cam_idx)
+
+        # Store RGB version for dataset collection purposes.
+        with self._manager._lock:
+            self._manager.camera_images[f"camera_{self._cam_idx}"] = frame_rgb
+
+        video_frame = VideoFrame.from_ndarray(frame_bgr, format="bgr24")
+        video_frame.pts = pts
+        video_frame.time_base = time_base
+        return video_frame
+
+
+# ── Manager ───────────────────────────────────────────────────────────────
+
+
+class WebRTCUDPManager:
+    """WebRTC video streaming + UDP VR data reception.
+
+    Drop-in replacement for ``CameraUDPManager`` — same public attributes
+    (``data``, ``hand_data``, ``camera_images``, ``depth_images``, etc.)
+    and methods (``test_connection``, ``start_comms_threads``, ``close``).
+    """
+
     def __init__(self):
         cfg = Config()
         self.running = True
@@ -39,17 +107,17 @@ class CameraUDPManager:
         self.vr_ip = cfg.VR_IP
         self.ip_port = cfg.IP_PORT
         self.initial_port = cfg.IP_PORT
+        self.signaling_port = cfg.SIGNALING_PORT
         self.tactile_transfer_status = cfg.TACTILE_TRANSFER
         self.tactile_port = cfg.TACTILE_PORT
         self.tracking_mode = cfg.TRACKING_MODE
         self.jpeg_quality = cfg.JPEG_QUALITY
-        self.hd_chunk_size = cfg.HD_CHUNK_SIZE
         self.realsense_resolution = cfg.REALSENSE_RESOLUTION
         self.realsense_fps = cfg.REALSENSE_FPS
 
         self._lock = threading.Lock()
         self.data: list[dict] | None = None
-        self.hand_data: Dict[str, dict] = {}   # {"L": {...}, "R": {...}}
+        self.hand_data: Dict[str, dict] = {}
         self.fine_mode: str | None = None
         self.data_collecting_state = False
         self.data_export_state = False
@@ -60,12 +128,22 @@ class CameraUDPManager:
         self.tactile_byte: bytes | None = None
         self.tactile_data: np.ndarray | None = None
 
-        self._frame_counters: Dict[int, int] = {}
-
         self.camera_num, self.camera_series_num = self._detect_cameras()
         self.camera_zoom: List[float] = [1.0] * self.camera_num
+
+        # UDP sockets: only for VR data RX + tactile TX  (no camera TX sockets)
         self.socket_list, self.camera_list = self._create_udp_and_cameras()
         self.threads: List[threading.Thread] = []
+
+        # WebRTC state
+        self._pc: Optional[RTCPeerConnection] = None
+        self._control_channel = None
+        self._video_tracks: List[RealsenseCameraTrack] = []
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop_thread: Optional[threading.Thread] = None
+        self._signaling_runner: Optional[web.AppRunner] = None
+        self._ws_connections: Dict[str, web.WebSocketResponse] = {}
+        self._session_id: Optional[str] = None
 
     # ── Camera detection ──────────────────────────────────────────────────
 
@@ -130,6 +208,12 @@ class CameraUDPManager:
     def _create_udp_and_cameras(
         self,
     ) -> Tuple[Dict[str, U.UdpComms], Dict[str, Realsense]]:
+        """Create UDP sockets for VR data and cameras.
+
+        Unlike CameraUDPManager we do NOT allocate per-camera TX sockets.
+        We only need RX sockets for VR pose (socket_0) and record control
+        (socket_1), plus an optional tactile TX socket.
+        """
         socket_list: Dict[str, U.UdpComms] = {}
         camera_list: Dict[str, Realsense] = {}
 
@@ -137,19 +221,24 @@ class CameraUDPManager:
             f"PC IP: {self.pc_ip}, VR IP: {self.vr_ip}, base_port={self.ip_port}"
         )
 
+        # ── Create cameras (no per-camera UDP sockets) ────────────────────
         n = min(self.camera_num, MAX_CAMERAS)
         if self.camera_num > MAX_CAMERAS:
             utils.logger.warning(
-                f"Only {MAX_CAMERAS} camera sockets supported, got {self.camera_num}"
+                f"Only {MAX_CAMERAS} cameras supported, got {self.camera_num}"
             )
-
         for i in range(n):
-            self._alloc_socket(i, (i < 3), socket_list)
             self._create_camera(i, camera_list)
 
-        min_sockets = 3
-        for i in range(n, max(min_sockets, n)):
-            self._alloc_socket(i, True, socket_list)
+        # ── Allocate RX-only UDP sockets for VR data ──────────────────────
+        # socket_0: VR pose data (controller / hand tracking)
+        self._alloc_socket(0, True, socket_list)
+        # socket_1: record control (Start / Stop)
+        self._alloc_socket(1, True, socket_list)
+        # socket_2: resolution control — now handled by WebRTC DataChannel,
+        # but we still allocate the socket for backward compatibility so the
+        # port numbering stays consistent if needed.
+        self._alloc_socket(2, True, socket_list)
 
         if self.tactile_transfer_status:
             utils.logger.info("Initializing tactile transfer socket...")
@@ -160,59 +249,6 @@ class CameraUDPManager:
             f"{len(camera_list)} cameras, {len(socket_list)} UDP sockets created."
         )
         return socket_list, camera_list
-
-    # ── HD chunked image sending ─────────────────────────────────────────
-
-    def send_hd_frame(
-        self, sock: U.UdpComms, frame_bgr: np.ndarray,
-        cam_idx: int = 0, quality: int | None = None,
-    ) -> int:
-        """Encode frame to JPEG and send via chunked HD protocol.
-
-        Protocol matches UdpSocketMultiHD.cs / python_sender_hd.py:
-            Header (12B big-endian): frameId(u32) chunkIdx(u16) totalChunks(u16) totalBytes(u32)
-            Payload: JPEG data slice
-
-        Each camera has its own independent frame counter so that VR-side
-        reassembly sees a monotonically increasing sequence per socket.
-
-        Returns the number of chunks sent.
-        """
-        if quality is None:
-            quality = self.jpeg_quality
-
-        ok, buf = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        if not ok:
-            return 0
-
-        image_bytes: bytes = buf.tobytes()
-        total_bytes = len(image_bytes)
-        chunk_size = self.hd_chunk_size
-        num_chunks = (total_bytes + chunk_size - 1) // chunk_size
-
-        # Per-camera frame counter — avoids interleaving IDs across cameras
-        ctr = self._frame_counters.get(cam_idx, 0)
-        frame_id = ctr & 0xFFFFFFFF
-        self._frame_counters[cam_idx] = ctr + 1
-
-        raw_sock = sock._sock
-        target = (sock.send_ip, sock.udp_send_port)
-
-        for i in range(num_chunks):
-            start = i * chunk_size
-            end = min(start + chunk_size, total_bytes)
-            payload = image_bytes[start:end]
-
-            header = struct.pack(
-                HD_HEADER_FMT,
-                frame_id,
-                i,
-                num_chunks,
-                total_bytes & 0xFFFFFFFF,
-            )
-            raw_sock.sendto(header + payload, target)
-
-        return num_chunks
 
     # ── Image processing ──────────────────────────────────────────────────
 
@@ -234,7 +270,7 @@ class CameraUDPManager:
     def data_process(
         self, frame: np.ndarray, cam_idx: int
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Prepare frame for VR streaming: returns (bgr_zoomed, original_rgb)."""
+        """Prepare frame for streaming: returns (bgr_zoomed, original_rgb)."""
         if frame.dtype != np.uint8:
             frame = (frame * 255).astype(np.uint8)
 
@@ -246,7 +282,7 @@ class CameraUDPManager:
         frame_bgr_zoomed = self.center_zoom(frame_bgr, zoom_factor)
         return frame_bgr_zoomed, frame
 
-    # ── VR resolution / zoom control parsing ──────────────────────────────
+    # ── VR resolution / zoom control parsing (from DataChannel) ───────────
 
     def _parse_resolution_control(self, s: str) -> None:
         s = s.strip(";")
@@ -259,7 +295,7 @@ class CameraUDPManager:
             key, value = map(str.strip, item.split(",", 1))
 
             if key.isdigit():
-                cam_idx = (int(key) % self.initial_port) // 2
+                cam_idx = int(key)
                 if cam_idx < self.camera_num:
                     zoom_val = float(value[1:])
                     if not np.isclose(self.camera_zoom[cam_idx], zoom_val):
@@ -285,12 +321,197 @@ class CameraUDPManager:
             return False
         return bool(d[1]["GripTrigger"]) or abs(d[1]["Joystick"][1]) > 0.7
 
+    # ── WebRTC Signaling Server ───────────────────────────────────────────
+
+    async def _ws_handler(self, request: web.Request) -> web.WebSocketResponse:
+        """Handle one WebSocket connection for WebRTC signaling."""
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        utils.logger.info("Signaling: WebSocket client connected")
+
+        sid: str = ""
+        try:
+            async for msg in ws:
+                if msg.type != web.WSMsgType.TEXT:
+                    continue
+                data = json.loads(msg.data)
+                msg_type = data.get("type", "")
+                sid = data.get("session_id", sid)
+                payload = data.get("payload", {})
+
+                if msg_type == "hello":
+                    self._session_id = sid
+                    self._ws_connections[sid] = ws
+                    # Acknowledge
+                    await ws.send_json({
+                        "type": "hello_ack",
+                        "session_id": sid,
+                        "payload": {},
+                    })
+                    utils.logger.info(f"Signaling: hello from session {sid}")
+
+                elif msg_type == "start_video":
+                    utils.logger.info("Signaling: start_video received")
+                    # PeerConnection is created when we receive the offer
+
+                elif msg_type == "offer":
+                    sdp = payload.get("sdp", "")
+                    utils.logger.info("Signaling: received offer from VR")
+                    await self._handle_offer(sdp, ws, sid)
+
+                elif msg_type == "ice_candidate":
+                    await self._handle_ice_candidate(payload)
+
+                elif msg_type == "stop_video":
+                    utils.logger.info("Signaling: stop_video received")
+                    await self._close_peer()
+
+                else:
+                    utils.logger.debug(f"Signaling: unknown type '{msg_type}'")
+
+        except Exception as e:
+            utils.logger.error(f"Signaling WS error: {e}")
+        finally:
+            self._ws_connections.pop(sid, None)
+            utils.logger.info("Signaling: WebSocket client disconnected")
+
+        return ws
+
+    async def _handle_offer(
+        self, sdp: str, ws: web.WebSocketResponse, sid: str
+    ) -> None:
+        """Process an SDP offer from the VR headset and send back an answer."""
+        # Close any previous peer connection
+        await self._close_peer()
+
+        self._pc = RTCPeerConnection()
+
+        # ── Add video tracks ──────────────────────────────────────────────
+        self._video_tracks = []
+        for i in range(self.camera_num):
+            track = RealsenseCameraTrack(self, i)
+            self._pc.addTrack(track)
+            self._video_tracks.append(track)
+            utils.logger.info(f"WebRTC: added video track for camera_{i}")
+
+        # ── DataChannel for resolution/zoom control ───────────────────────
+        self._control_channel = self._pc.createDataChannel("control")
+
+        @self._control_channel.on("open")
+        def on_open():
+            utils.logger.info("WebRTC DataChannel 'control' opened")
+
+        @self._control_channel.on("message")
+        def on_message(message):
+            # Resolution/zoom control from VR
+            utils.logger.debug(f"DataChannel control msg: {message}")
+            self._parse_resolution_control(message)
+
+        # ── ICE candidate callback ────────────────────────────────────────
+        @self._pc.on("icecandidate")
+        async def on_icecandidate(candidate):
+            if candidate is None:
+                return
+            await ws.send_json({
+                "type": "ice_candidate",
+                "session_id": sid,
+                "payload": {
+                    "candidate": candidate.candidate,
+                    "sdpMid": candidate.sdpMid,
+                    "sdpMLineIndex": candidate.sdpMLineIndex,
+                },
+            })
+
+        @self._pc.on("connectionstatechange")
+        async def on_connectionstatechange():
+            state = self._pc.connectionState
+            utils.logger.info(f"WebRTC connection state: {state}")
+            if state == "failed":
+                await self._close_peer()
+
+        # ── Set remote offer, create answer ───────────────────────────────
+        offer = RTCSessionDescription(sdp=sdp, type="offer")
+        await self._pc.setRemoteDescription(offer)
+
+        answer = await self._pc.createAnswer()
+        await self._pc.setLocalDescription(answer)
+
+        await ws.send_json({
+            "type": "answer",
+            "session_id": sid,
+            "payload": {"sdp": self._pc.localDescription.sdp},
+        })
+        utils.logger.info("WebRTC: answer sent to VR")
+
+    async def _handle_ice_candidate(self, payload: dict) -> None:
+        """Add a remote ICE candidate from the VR headset."""
+        if self._pc is None:
+            return
+        candidate_str = payload.get("candidate", "")
+        if not candidate_str:
+            return
+        sdp_mid = payload.get("sdpMid", "")
+        sdp_mline_index = payload.get("sdpMLineIndex", 0)
+        
+        from aiortc.sdp import candidate_from_sdp
+        try:
+            # candidate_str usually starts with "candidate:"
+            # candidate_from_sdp expects the line content
+            if candidate_str.startswith("candidate:"):
+                candidate = candidate_from_sdp(candidate_str.split(":", 1)[1])
+            else:
+                candidate = candidate_from_sdp(candidate_str)
+            candidate.sdpMid = sdp_mid
+            candidate.sdpMLineIndex = sdp_mline_index
+            await self._pc.addIceCandidate(candidate)
+        except Exception as e:
+            utils.logger.error(f"WebRTC: Failed to parse ICE candidate: {e}")
+
+    async def _close_peer(self) -> None:
+        """Shut down the current PeerConnection."""
+        if self._pc is not None:
+            await self._pc.close()
+            self._pc = None
+        self._video_tracks = []
+        self._control_channel = None
+        utils.logger.info("WebRTC PeerConnection closed.")
+
+    # ── Async event loop management ───────────────────────────────────────
+
+    def _start_async_loop(self) -> None:
+        """Start the asyncio event loop in a background thread."""
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._run_signaling_server())
+
+    async def _run_signaling_server(self) -> None:
+        """Run the WebSocket signaling server until the manager stops."""
+        app = web.Application()
+        app.router.add_get("/", self._ws_handler)
+
+        runner = web.AppRunner(app)
+        await runner.setup()
+        self._signaling_runner = runner
+
+        site = web.TCPSite(runner, self.pc_ip, self.signaling_port)
+        await site.start()
+        utils.logger.info(
+            f"Signaling server started at ws://{self.pc_ip}:{self.signaling_port}"
+        )
+
+        # Keep running until self.running is False
+        try:
+            while self.running:
+                await asyncio.sleep(0.5)
+        finally:
+            await self._close_peer()
+            await runner.cleanup()
+            utils.logger.info("Signaling server stopped.")
+
     # ── Thread functions ──────────────────────────────────────────────────
 
     def _camera_read_thread(self, camera: Realsense, idx: int) -> None:
         utils.logger.info(f"RX camera thread {idx} starts!")
-        consecutive_errors = 0
-        MAX_RETRIES = 10
         while self.running:
             try:
                 img = camera.get_rgb_image()
@@ -304,60 +525,9 @@ class CameraUDPManager:
                     self.camera_data[f"camera_{idx}"] = img
                     if depth is not None:
                         self.depth_images[f"camera_{idx}"] = depth
-                consecutive_errors = 0  # reset on success
                 time.sleep(1 / STREAM_FPS)
-            except RuntimeError as e:
-                consecutive_errors += 1
-                if consecutive_errors >= MAX_RETRIES:
-                    utils.logger.error(
-                        f"RX camera {idx}: {MAX_RETRIES} consecutive errors, giving up: {e}"
-                    )
-                    break
-                utils.logger.warning(
-                    f"RX camera {idx}: RuntimeError ({consecutive_errors}/{MAX_RETRIES}), "
-                    f"retrying in 1s: {e}"
-                )
-                time.sleep(1.0)
-
-    def _camera_send_thread(self, socket: U.UdpComms, idx: int) -> None:
-        utils.logger.info(f"TX camera thread {idx} starts!")
-        stats_t0 = time.time()
-        stats_frames = 0
-        stats_chunks = 0
-        stats_bytes = 0
-        STATS_INTERVAL = 5.0  # seconds between stats log lines
-
-        while self.running:
-            try:
-                with self._lock:
-                    raw = self.camera_data.get(f"camera_{idx}")
-                if raw is None:
-                    time.sleep(1 / STREAM_FPS)
-                    continue
-                frame_bgr, frame_rgb = self.data_process(raw, idx)
-                with self._lock:
-                    self.camera_images[f"camera_{idx}"] = frame_rgb
-                n_chunks = self.send_hd_frame(socket, frame_bgr, cam_idx=idx)
-                stats_frames += 1
-                stats_chunks += n_chunks
-
-                # Periodic stats
-                now = time.time()
-                elapsed = now - stats_t0
-                if elapsed >= STATS_INTERVAL:
-                    fps = stats_frames / elapsed
-                    utils.logger.info(
-                        f"TX camera_{idx}: {stats_frames} frames in {elapsed:.1f}s "
-                        f"({fps:.1f} fps), {stats_chunks} chunks sent"
-                    )
-                    stats_t0 = now
-                    stats_frames = 0
-                    stats_chunks = 0
-
-            except OSError as e:
-                utils.logger.error(f"TX camera_{idx} OSError: {e}")
+            except RuntimeError:
                 break
-            time.sleep(1 / STREAM_FPS)
 
     def _tactile_send_thread(self, socket: U.UdpComms) -> None:
         utils.logger.info("TX tactile thread starts!")
@@ -387,16 +557,17 @@ class CameraUDPManager:
                         if parsed:
                             with self._lock:
                                 self.data = parsed
-                                self.hand_data.clear()
 
                     elif ptype in ("hand_text", "hand_binary"):
                         hand = parse_hand_data(raw_data)
                         if hand:
                             with self._lock:
                                 self.hand_data[hand["side"]] = hand
-                                self.data = None
 
                 record_control = socket_list["socket_1"].read() if "socket_1" in socket_list else None
+
+                # Resolution control can also come from UDP socket_2 for
+                # backward compatibility, but primarily uses DataChannel now.
                 resolution_control = socket_list["socket_2"].read() if "socket_2" in socket_list else None
 
                 if resolution_control:
@@ -427,11 +598,7 @@ class CameraUDPManager:
         socket_list: Dict[str, U.UdpComms],
         camera_list: Dict[str, Realsense],
     ) -> None:
-        for i in range(self.camera_num):
-            image = camera_list[f"camera_{i}"].get_rgb_image()
-            frame_bgr, _ = self.data_process(image, i)
-            self.send_hd_frame(socket_list[f"socket_{i}"], frame_bgr, cam_idx=i)
-
+        """Poll VR data sockets (no image sending in WebRTC mode)."""
         for raw in socket_list["socket_0"].read_all():
             ptype = detect_packet_type(raw)
             if ptype == "controller":
@@ -439,14 +606,16 @@ class CameraUDPManager:
                 if parsed:
                     with self._lock:
                         self.data = parsed
+                        self.hand_data.clear()
             elif ptype in ("hand_text", "hand_binary"):
                 hand = parse_hand_data(raw)
                 if hand:
                     with self._lock:
                         self.hand_data[hand["side"]] = hand
+                        self.data = None
 
     def test_connection(self) -> list[dict]:
-        """Block until VR sends initial data. Raises TimeoutError after deadline."""
+        """Block until VR sends initial data.  Raises TimeoutError after deadline."""
         printed = False
         t0 = time.time()
         while True:
@@ -459,8 +628,6 @@ class CameraUDPManager:
                 utils.logger.info("Data received! VR connected!")
                 if d is not None:
                     return d
-                # In hand mode, return a dummy controller structure so callers
-                # that expect list[dict] don't crash during init.
                 return [
                     _dummy_controller("LTouch"),
                     _dummy_controller("RTouch"),
@@ -481,6 +648,7 @@ class CameraUDPManager:
     def start_comms_threads(self) -> None:
         self.threads = []
 
+        # ── Camera read threads (same as original) ────────────────────────
         for i in range(self.camera_num):
             t = threading.Thread(
                 target=self._camera_read_thread,
@@ -491,7 +659,7 @@ class CameraUDPManager:
             self.threads.append(t)
 
         utils.logger.info("Waiting for cameras to warm up...")
-        deadline = time.time() + 20.0
+        deadline = time.time() + 10.0
         while len(self.camera_data) < self.camera_num:
             if time.time() > deadline:
                 utils.logger.error("Timeout waiting for cameras!")
@@ -499,15 +667,17 @@ class CameraUDPManager:
             time.sleep(0.1)
         utils.logger.info(f"Cameras ready: {list(self.camera_data.keys())}")
 
-        for i in range(self.camera_num):
-            t = threading.Thread(
-                target=self._camera_send_thread,
-                args=(self.socket_list[f"socket_{i}"], i),
-                daemon=True,
-            )
-            t.start()
-            self.threads.append(t)
+        # ── WebRTC signaling + video (replaces camera send threads) ───────
+        self._loop_thread = threading.Thread(
+            target=self._start_async_loop,
+            daemon=True,
+        )
+        self._loop_thread.start()
+        utils.logger.info(
+            f"WebRTC signaling thread started on port {self.signaling_port}"
+        )
 
+        # ── VR data receive thread ────────────────────────────────────────
         t = threading.Thread(
             target=self._vr_receive_thread, args=(self.socket_list,), daemon=True
         )
@@ -515,6 +685,7 @@ class CameraUDPManager:
         self.threads.append(t)
         utils.logger.info("RX VR data thread started")
 
+        # ── Tactile TX thread (optional) ──────────────────────────────────
         if self.tactile_transfer_status:
             t = threading.Thread(
                 target=self._tactile_send_thread,
@@ -526,8 +697,14 @@ class CameraUDPManager:
             utils.logger.info("TX tactile data thread started")
 
     def close(self) -> None:
-        utils.logger.info("Stopping CameraUDPManager...")
+        utils.logger.info("Stopping WebRTCUDPManager...")
         self.running = False
+
+        # Shut down the async loop
+        if self._loop is not None and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._loop_thread is not None:
+            self._loop_thread.join(timeout=3.0)
 
         for t in self.threads:
             if t.is_alive():
@@ -549,7 +726,7 @@ class CameraUDPManager:
             except Exception as e:
                 utils.logger.warning(f"Error closing {name}: {e}")
 
-        utils.logger.info("CameraUDPManager resources released.")
+        utils.logger.info("WebRTCUDPManager resources released.")
 
 
 def _dummy_controller(name: str) -> dict:
