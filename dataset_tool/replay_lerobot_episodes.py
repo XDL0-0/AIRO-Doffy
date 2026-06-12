@@ -19,8 +19,9 @@ Dataset structure expected:
                   └── file-000.mp4
 
 Usage:
+  # Replay a local LeRobot dataset
   python -m dataset_tool.replay_lerobot_episodes \
-      --dataset_dir ./datasets/pick_and_place_lero\
+      --dataset_dir ./datasets/pnp_long_lero\
       --from_episode 0 \
       --to_episode 66 \
       --robot_ip 10.42.0.162 \
@@ -29,7 +30,18 @@ Usage:
       --show_video \
       --tactile
 
-      [--data_type qpos]       # qpos | eef | tcp_quat
+
+  # Replay a LeRobot dataset from the Hugging Face Hub
+  python -m dataset_tool.replay_lerobot_episodes \
+      --repo_id IXDLI/pnp_long_filtered_deltaTCP \
+      --robot_ip 10.42.0.162 \
+      --from_episode 0 \
+      --to_episode 10 \
+      --data_type delta_tcp \
+      --align_camera
+
+      
+      [--data_type qpos]       # qpos | eef | tcp_quat | delta_tcp
       [--no_robot]             # dry-run: print actions only, no robot needed
       [--show_video]           # replay dataset camera videos
       [--tactile]              # show tactile replay if observation.tactile exists
@@ -46,6 +58,7 @@ import re
 import warnings
 import sys
 import logging
+from pathlib import Path
 
 
 import numpy as np
@@ -60,8 +73,16 @@ logger = logging.getLogger(__name__)
 # Argument parsing
 # ──────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="Replay a LeRobot dataset on UR3e")
-parser.add_argument("--dataset_dir", type=str, required=True,
-                    help="Path to the LeRobot dataset root folder")
+parser.add_argument("--dataset_dir", type=str, default=None,
+                    help="Path to a local LeRobot dataset root folder, or a Hugging Face dataset repo id if the path does not exist")
+parser.add_argument("--repo_id", type=str, default=None,
+                    help="Hugging Face dataset repo id, e.g. username/my_lerobot_dataset")
+parser.add_argument("--hf_revision", type=str, default=None,
+                    help="Optional Hugging Face Hub revision, branch, tag, or commit")
+parser.add_argument("--hf_token", type=str, default=None,
+                    help="Optional Hugging Face token for private datasets. If omitted, the cached/login token is used.")
+parser.add_argument("--local_files_only", action="store_true",
+                    help="Use only local Hugging Face cache files; do not download from the Hub")
 parser.add_argument("--from_episode", type=int, default=0)
 parser.add_argument("--to_episode",   type=int, default=None,
                     help="Exclusive upper bound. Defaults to total_episodes.")
@@ -70,7 +91,7 @@ parser.add_argument("--robot_type",   type=str, default="ur3e",
                     choices=["ur3e", "ur5e"],
                     help="Robot model passed to make_robot()")
 parser.add_argument("--data_type",    type=str, default="qpos",
-                    choices=["qpos", "eef", "tcp_quat"],
+                    choices=["qpos", "eef", "tcp_quat", "delta_tcp"],
                     help="Representation used in the dataset")
 
 parser.add_argument("--no_robot",     action="store_true",
@@ -96,10 +117,48 @@ parser.add_argument("--fps_override", type=float, default=None,
                     help="Override FPS from info.json")
 args = parser.parse_args()
 
+def resolve_dataset_dir() -> tuple[Path, str | None]:
+    """Resolve a local LeRobot root, downloading a Hub snapshot when requested."""
+    dataset_ref = args.repo_id or args.dataset_dir
+    if dataset_ref is None:
+        parser.error("Provide either --dataset_dir for a local dataset or --repo_id for a Hugging Face dataset.")
+
+    if args.repo_id is None:
+        local_path = Path(dataset_ref).expanduser()
+        if local_path.exists():
+            return local_path.resolve(), None
+
+    repo_id = args.repo_id or dataset_ref
+    logger.info(f"Local dataset not found; resolving Hugging Face dataset: {repo_id}")
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise ImportError(
+            "huggingface_hub is required to replay datasets from the Hub. "
+            "Install it with `pip install huggingface-hub`."
+        ) from exc
+
+    snapshot_path = snapshot_download(
+        repo_id=repo_id,
+        repo_type="dataset",
+        revision=args.hf_revision,
+        token=args.hf_token,
+        local_files_only=args.local_files_only,
+    )
+    return Path(snapshot_path).resolve(), repo_id
+
+dataset_dir, hf_repo_id = resolve_dataset_dir()
+args.dataset_dir = str(dataset_dir)
+
 # ──────────────────────────────────────────────
 # Load meta/info.json
 # ──────────────────────────────────────────────
 info_path = os.path.join(args.dataset_dir, "meta", "info.json")
+if not os.path.isfile(info_path):
+    raise FileNotFoundError(
+        f"Could not find LeRobot metadata at {info_path}. "
+        "Expected a v3 LeRobot dataset root containing meta/info.json."
+    )
 with open(info_path, "r") as f:
     info = json.load(f)
 
@@ -110,6 +169,8 @@ to_episode     = args.to_episode if args.to_episode is not None else total_episo
 
 logger.info("=" * 60)
 logger.info(f"Dataset   : {args.dataset_dir}")
+if hf_repo_id:
+    logger.info(f"HF repo   : {hf_repo_id}")
 logger.info(f"Episodes  : {args.from_episode} -> {to_episode}  (total={total_episodes})")
 logger.info(f"FPS       : {fps}")
 logger.info(f"Data type : {args.data_type}")
@@ -163,30 +224,61 @@ def get_feature_columns(df: pd.DataFrame, key: str) -> list[str]:
 # ──────────────────────────────────────────────
 # Helper: chunk + file index from episode index
 # ──────────────────────────────────────────────
-def episode_to_parquet_path(episode_idx: int) -> str:
+def episode_to_parquet_paths(episode_idx: int) -> tuple[list[str], bool]:
+    """Return candidate parquet files for an episode.
+
+    LeRobot v3 datasets usually store each episode in the path described by
+    info.json:data_path. Older/local exports may instead place multiple
+    episodes in one parquet file, so callers can fall back to scanning a chunk.
+    """
     chunk_idx = episode_idx // chunks_size
-    # file index within chunk
-    file_idx  = episode_idx % chunks_size  # rough — real LeRobot uses episode_index column
-    # glob the chunk folder and pick the right file
+    file_idx = episode_idx % chunks_size
+
+    data_path_template = info.get(
+        "data_path",
+        "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+    )
+    episode_path = os.path.join(
+        args.dataset_dir,
+        data_path_template.format(chunk_index=chunk_idx, file_index=file_idx),
+    )
+    if os.path.isfile(episode_path):
+        return [episode_path], True
+
     chunk_dir = os.path.join(args.dataset_dir, "data", f"chunk-{chunk_idx:03d}")
     parquet_files = sorted(glob.glob(os.path.join(chunk_dir, "*.parquet")))
     if not parquet_files:
-        raise FileNotFoundError(f"No parquet files found in {chunk_dir}")
-    # Return all parquet files in this chunk (we'll filter by episode_index inside)
-    return parquet_files
+        raise FileNotFoundError(
+            f"No episode parquet found at {episode_path}, and no parquet files found in {chunk_dir}"
+        )
+    return parquet_files, False
 
 def load_episode_data(episode_idx: int) -> pd.DataFrame:
     """Load rows for a specific episode from the parquet dataset."""
-    parquet_files = episode_to_parquet_path(episode_idx)
+    parquet_files, exact_episode_file = episode_to_parquet_paths(episode_idx)
     frames = []
+    read_errors = []
     for pf in parquet_files:
-        df = pd.read_parquet(pf)
+        try:
+            df = pd.read_parquet(pf)
+        except Exception as exc:
+            message = f"{pf}: {exc}"
+            if exact_episode_file:
+                raise ValueError(
+                    f"Could not read the parquet file for episode_index={episode_idx}. "
+                    f"The file may be incomplete or corrupted: {message}"
+                ) from exc
+            read_errors.append(message)
+            logger.warning(f"Skipping unreadable parquet while searching for episode {episode_idx}: {message}")
+            continue
+
         if "episode_index" in df.columns:
             df = df[df["episode_index"] == episode_idx]
             if len(df) > 0:
                 frames.append(df)
     if not frames:
-        raise ValueError(f"No data found for episode_index={episode_idx}")
+        suffix = f" Read errors: {'; '.join(read_errors)}" if read_errors else ""
+        raise ValueError(f"No data found for episode_index={episode_idx}.{suffix}")
     result = pd.concat(frames).sort_values("frame_index").reset_index(drop=True)
     return result
 
@@ -218,13 +310,18 @@ def extract_array(row, col_names: list[str], expected_tail_shape: tuple[int, ...
             arr = arr.reshape(expected_tail_shape)
     return arr
 
+def unnormalize_gripper(width: float) -> float:
+    """Convert dataset gripper value to robot gripper width."""
+    return float(width) * 0.085
+
 # ──────────────────────────────────────────────
 # Robot initialisation (skip in dry-run)
 # ──────────────────────────────────────────────
 ur             = None
 gripper        = None
 ik_solver      = None
-tcp_transform  = None  # flange→TCP, used with IK when torque_mode + eef/tcp_quat
+tcp_transform  = None  # flange→TCP, used with IK when torque_mode + eef/tcp_quat/delta_tcp
+delta_tcp_target_pose = None  # commanded TCP target used to integrate delta_tcp actions
 
 if not args.no_robot:
     from ur_teleop import make_robot, FastRobotiq2F85
@@ -720,7 +817,7 @@ def render_tactile_frame(tactile_frame, height=480, width=320) -> np.ndarray:
 # ──────────────────────────────────────────────
 def move_initial_gripper(width: float) -> None:
     """Move gripper at episode start without blocking replay/alignment forever."""
-    action = ur.gripper.move(float(width))
+    action = ur.gripper.move(unnormalize_gripper(width))
     if args.initial_gripper_timeout <= 0:
         logger.info("Initial gripper command sent; not waiting (--initial_gripper_timeout <= 0).")
         return
@@ -733,7 +830,19 @@ def move_initial_gripper(width: float) -> None:
             f"  ⚠  Initial gripper wait timed out after {args.initial_gripper_timeout:.1f}s; continuing."
         )
 
+def wait_initial_robot_action(action, label: str) -> None:
+    """Wait for the initial robot move so delta replay starts from the intended pose."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        status = action.wait(timeout=2.0, sleep_resolution=0.02)
+    if getattr(status, "name", "") == "TIMEOUT":
+        logger.warning(f"  ⚠  Initial {label} move timed out; continuing.")
+
 def move_to_initial_pose(pose: np.ndarray):
+    global delta_tcp_target_pose
+    if args.data_type == "delta_tcp":
+        delta_tcp_target_pose = None
+
     if args.no_robot:
         logger.info(f"[dry-run] move to initial pose: {np.round(pose, 4)}")
         return
@@ -742,7 +851,7 @@ def move_to_initial_pose(pose: np.ndarray):
     # do not use servo_to_joint_configuration / servo_to_tcp_pose.
     if args.torque_mode:
         from airo_spatial_algebra.se3 import SE3Container
-        if args.data_type == "qpos":
+        if args.data_type in {"qpos", "delta_tcp"}:
             ur.tmp_move(np.asarray(pose[:6], dtype=float))
             move_initial_gripper(pose[6])
         elif args.data_type == "eef":
@@ -767,47 +876,83 @@ def move_to_initial_pose(pose: np.ndarray):
             move_initial_gripper(pose[7])
         return
 
-    if args.data_type == "qpos":
-        ur.servo_to_joint_configuration(pose[:6], 0.5)
+    if args.data_type in {"qpos", "delta_tcp"}:
+        action = ur.servo_to_joint_configuration(pose[:6], 0.5)
+        wait_initial_robot_action(action, "joint")
         move_initial_gripper(pose[6])
 
     elif args.data_type == "eef":
         from airo_spatial_algebra.se3 import SE3Container
         tcp = SE3Container.from_euler_angles_and_translation(
             pose[:3], pose[3:6])
-        ur.servo_to_tcp_pose(tcp.homogeneous_matrix, 0.5)
+        action = ur.servo_to_tcp_pose(tcp.homogeneous_matrix, 0.5)
+        wait_initial_robot_action(action, "TCP")
         move_initial_gripper(pose[6])
 
     elif args.data_type == "tcp_quat":
         from airo_spatial_algebra.se3 import SE3Container
         tcp = SE3Container.from_quaternion_and_translation(
             pose[:4], pose[4:7])
-        ur.servo_to_tcp_pose(tcp.homogeneous_matrix, 0.5)
+        action = ur.servo_to_tcp_pose(tcp.homogeneous_matrix, 0.5)
+        wait_initial_robot_action(action, "TCP")
         move_initial_gripper(pose[7])
 
 # ──────────────────────────────────────────────
 # Execute one step
 # ──────────────────────────────────────────────
+def delta_tcp_target_from_action(pose: np.ndarray) -> np.ndarray:
+    """Integrate delta TCP actions on the commanded target, not measured feedback.
+
+    UR servo commands track with a proportional controller and therefore lag the
+    command. If we add each dataset delta to measured TCP feedback, the replayed
+    path shrinks. Accumulating on the last commanded target preserves the dataset
+    scale.
+    """
+    global delta_tcp_target_pose
+    from airo_spatial_algebra.se3 import SE3Container
+
+    if delta_tcp_target_pose is None:
+        if args.torque_mode:
+            delta_tcp_target_pose = np.asarray(ur.get_cached_tcp_pose(), dtype=float)
+        else:
+            delta_tcp_target_pose = np.asarray(ur.get_tcp_pose(), dtype=float)
+
+    current_target = SE3Container.from_homogeneous_matrix(delta_tcp_target_pose)
+    delta_translation = np.asarray(pose[:3], dtype=float)
+    delta_rotation, _ = cv2.Rodrigues(np.asarray(pose[3:6], dtype=float))
+    target_rotation = delta_rotation @ current_target.rotation_matrix
+    target_translation = current_target.translation + delta_translation
+    target = SE3Container.from_rotation_matrix_and_translation(
+        target_rotation, target_translation
+    )
+    delta_tcp_target_pose = target.homogeneous_matrix.copy()
+    return delta_tcp_target_pose
+
+
 def execute_step(pose: np.ndarray, dt: float):
     if args.no_robot:
         return
     if args.data_type == "qpos":
-        ur.gripper.move(pose[6], 0.1)
+        ur.gripper.move(unnormalize_gripper(pose[6]), 0.1)
         ur.servo_to_joint_configuration(pose[:6], dt)
 
     elif args.data_type == "eef":
         from airo_spatial_algebra.se3 import SE3Container
-        ur.gripper.move(pose[6], 0.1)
+        ur.gripper.move(unnormalize_gripper(pose[6]), 0.1)
         tcp = SE3Container.from_euler_angles_and_translation(
             pose[:3], pose[3:6])
         ur.servo_to_tcp_pose(tcp.homogeneous_matrix, dt)
 
     elif args.data_type == "tcp_quat":
         from airo_spatial_algebra.se3 import SE3Container
-        ur.gripper.move(pose[7], 0.1)
+        ur.gripper.move(unnormalize_gripper(pose[7]), 0.1)
         tcp = SE3Container.from_quaternion_and_translation(
             pose[:4], pose[4:7])
         ur.servo_to_tcp_pose(tcp.homogeneous_matrix, dt)
+
+    elif args.data_type == "delta_tcp":
+        ur.gripper.move(unnormalize_gripper(pose[6]), 0.1)
+        ur.servo_to_tcp_pose(delta_tcp_target_from_action(pose), dt)
 
 
 def execute_step_torque(pose: np.ndarray):
@@ -816,10 +961,10 @@ def execute_step_torque(pose: np.ndarray):
 
     if args.data_type == "qpos":
         ur.target_pos = np.asarray(pose[:6], dtype=float)
-        ur.gripper.move(pose[6], 0.1)
+        ur.gripper.move(unnormalize_gripper(pose[6]), 0.1)
 
     elif args.data_type == "eef":
-        ur.gripper.move(pose[6], 0.1)
+        ur.gripper.move(unnormalize_gripper(pose[6]), 0.1)
         tcp = SE3Container.from_euler_angles_and_translation(pose[:3], pose[3:6])
         q_seed = np.asarray(ur.get_cached_joint_configuration(), dtype=float)
         sol = ik_solver.inverse_kinematics_closest_with_tcp(
@@ -829,11 +974,22 @@ def execute_step_torque(pose: np.ndarray):
             ur.target_pos = np.asarray(sol[0], dtype=float)
 
     elif args.data_type == "tcp_quat":
-        ur.gripper.move(pose[7], 0.1)
+        ur.gripper.move(unnormalize_gripper(pose[7]), 0.1)
         tcp = SE3Container.from_quaternion_and_translation(pose[:4], pose[4:7])
         q_seed = np.asarray(ur.get_cached_joint_configuration(), dtype=float)
         sol = ik_solver.inverse_kinematics_closest_with_tcp(
             tcp.homogeneous_matrix, tcp_transform, *q_seed
+        )
+        if sol:
+            ur.target_pos = np.asarray(sol[0], dtype=float)
+
+    elif args.data_type == "delta_tcp":
+        ur.gripper.move(unnormalize_gripper(pose[6]), 0.1)
+
+        tcp_target_pose = delta_tcp_target_from_action(pose)
+        q_seed = np.asarray(ur.get_cached_joint_configuration(), dtype=float)
+        sol = ik_solver.inverse_kinematics_closest_with_tcp(
+            tcp_target_pose, tcp_transform, *q_seed
         )
         if sol:
             ur.target_pos = np.asarray(sol[0], dtype=float)
@@ -861,11 +1017,14 @@ for ep_idx in range(args.from_episode, to_episode):
     # Detect column names from the first successfully loaded episode.
     if state_cols is None or action_cols is None:
         # Try to figure out which columns hold the state
-        try:
+        if args.data_type == "delta_tcp":
             state_cols = get_columns(df, "observation.state", state_names)
-        except KeyError:
-            # fall back to action columns as state proxy
-            state_cols = get_columns(df, "action", action_names)
+        else:
+            try:
+                state_cols = get_columns(df, "observation.state", state_names)
+            except KeyError:
+                # fall back to action columns as state proxy
+                state_cols = get_columns(df, "action", action_names)
         action_cols = get_columns(df, "action", action_names)
         tactile_cols = get_feature_columns(df, "observation.tactile")
         logger.info(f"State columns  : {state_cols}")

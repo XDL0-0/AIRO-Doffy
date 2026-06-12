@@ -36,6 +36,11 @@ class DatasetRecorder:
         self.collect_tcp_extra = self.data_type == "both"
         self.feature_dim = 7 if self.collect_tcp_extra else (8 if self.save_eef else 7)
         self.tcp_pose_dim = 7
+        self.timestamp_names = (
+            ["collect", "robot_state", "robot_action", "vr_input", "tactile"]
+            + [f"camera_{i}" for i in range(self.camera_num)]
+        )
+        self.timestamp_dim = len(self.timestamp_names)
 
         self.data_dict: dict[str, list] = {}
         self.collect_step = 0
@@ -57,6 +62,7 @@ class DatasetRecorder:
         self.data_dict = {
             "/observations/qpos": [],
             "/action": [],
+            "/extra/timestamps_ns": [],
         }
         if self.collect_tcp_extra:
             self.data_dict["/extra/tcp_pose"] = []
@@ -113,6 +119,11 @@ class DatasetRecorder:
                 "dtype": "float32",
                 "shape": (self.feature_dim,),
                 "names": [f"joint_{i}" for i in range(self.feature_dim)],
+            },
+            "extra.timestamps_ns": {
+                "dtype": "int64",
+                "shape": (self.timestamp_dim,),
+                "names": self.timestamp_names,
             },
         }
         if self.force_mode:
@@ -198,10 +209,8 @@ class DatasetRecorder:
         tactile_data: np.ndarray | None = None,
         force_data: np.ndarray | None = None,
         depth_images: dict[str, np.ndarray] | None = None,
-        extra_data: dict[str, np.ndarray] | None = None,
+        extra_data: dict[str, object] | None = None,
     ) -> None:
-        self.collect_step += 1
-
         # ── LeRobot: per-cycle add_frame (skip data_dict buffer) ──────────
         if self.dataset_type == "l":
             self._lerobot_add_frame(
@@ -216,11 +225,15 @@ class DatasetRecorder:
             return
 
         # ── HDF5: buffer into data_dict as before ─────────────────────────
+        self.collect_step += 1
         self.data_dict["/observations/qpos"].append(state)
         self.data_dict["/action"].append(action)
         if self.collect_tcp_extra:
             tcp_pose = self._get_tcp_pose_extra(extra_data)
             self.data_dict["/extra/tcp_pose"].append(tcp_pose)
+        self.data_dict["/extra/timestamps_ns"].append(
+            self._get_timestamps_extra(extra_data)
+        )
 
         if self.force_mode and force_data is not None:
             self.data_dict["/observations/force"].append(force_data)
@@ -240,16 +253,15 @@ class DatasetRecorder:
         tactile_data: np.ndarray | None,
         force_data: np.ndarray | None,
         depth_images: dict[str, np.ndarray] | None,
-        extra_data: dict[str, np.ndarray] | None,
+        extra_data: dict[str, object] | None,
     ) -> None:
         """Build one frame dict and call add_frame immediately (LeRobot only)."""
         if self.lerobot_dataset is None:
-            utils.logger.error("LeRobot Dataset not initialized!")
-            return
+            self._init_lerobot()
 
         # Create episode buffer on first frame of this episode
         if not self._lerobot_episode_started:
-            self.lerobot_dataset.create_episode_buffer(
+            self.lerobot_dataset.episode_buffer = self.lerobot_dataset.create_episode_buffer(
                 episode_index=self.recorded_episodes
             )
             self._lerobot_episode_started = True
@@ -264,6 +276,7 @@ class DatasetRecorder:
             frame_data["observation.force"] = np.array(force_data, dtype=np.float32)
         if self.collect_tcp_extra:
             frame_data["extra.tcp_pose"] = self._get_tcp_pose_extra(extra_data)
+        frame_data["extra.timestamps_ns"] = self._get_timestamps_extra(extra_data)
         if self.tactile_mode:
             # Always write tactile — zeros fallback if sensor isn't ready yet
             if tactile_data is not None:
@@ -281,13 +294,39 @@ class DatasetRecorder:
                 frame_data[f"observation.depth.{name}"] = depth_uint16[..., np.newaxis]
 
         self.lerobot_dataset.add_frame(frame_data)
+        self.collect_step += 1
 
     def _get_tcp_pose_extra(
-        self, extra_data: dict[str, np.ndarray] | None
+        self, extra_data: dict[str, object] | None
     ) -> np.ndarray:
         if extra_data is not None and "tcp_pose" in extra_data:
             return np.array(extra_data["tcp_pose"], dtype=np.float32)
         return np.zeros((self.tcp_pose_dim,), dtype=np.float32)
+
+    def _get_timestamps_extra(
+        self, extra_data: dict[str, object] | None
+    ) -> np.ndarray:
+        values = np.zeros((self.timestamp_dim,), dtype=np.int64)
+        if extra_data is None:
+            return values
+
+        scalar_keys = [
+            "collect_timestamp_ns",
+            "robot_state_timestamp_ns",
+            "robot_action_timestamp_ns",
+            "vr_input_timestamp_ns",
+            "tactile_timestamp_ns",
+        ]
+        for idx, key in enumerate(scalar_keys):
+            value = extra_data.get(key)
+            if value is not None:
+                values[idx] = int(np.asarray(value).item())
+
+        camera_timestamps = extra_data.get("camera_timestamps_ns")
+        if isinstance(camera_timestamps, dict):
+            for cam_idx in range(self.camera_num):
+                values[5 + cam_idx] = int(camera_timestamps.get(f"camera_{cam_idx}", 0))
+        return values
 
     # ── Data export ───────────────────────────────────────────────────────
 
@@ -296,31 +335,40 @@ class DatasetRecorder:
 
         utils.logger.info(f"collect_step: {self.collect_step}")
 
+        exported = False
         if self.dataset_type == "l":
-            self._export_lerobot()
+            exported = self._export_lerobot()
         elif self.dataset_type == "a":
             max_timesteps = len(self.data_dict["/observations/qpos"])
             utils.logger.info(f"max_timesteps: {max_timesteps}")
             self._export_hdf5(max_timesteps, cu_manager)
+            exported = True
 
-        self.recorded_episodes += 1
+        if exported:
+            self.recorded_episodes += 1
         utils.logger.info(f"Saving took {time.time() - t0:.1f}s")
 
-    def _export_lerobot(self) -> None:
+    def _export_lerobot(self) -> bool:
         """Finalize the current episode. Frames were already added per-cycle."""
         if self.lerobot_dataset is None:
             utils.logger.error("LeRobot Dataset not initialized!")
-            return
+            return False
         if not self._lerobot_episode_started:
             utils.logger.error("No LeRobot episode in progress!")
-            return
+            return False
 
         utils.logger.info(
             f"Saving Episode {self.recorded_episodes} "
             f"({self.collect_step} frames already added)..."
         )
         self.lerobot_dataset.save_episode()
-        utils.logger.info("LeRobot episode saved.")
+        # LeRobot keeps parquet writers open for efficient batch recording.
+        # Closing after each episode writes the parquet footer immediately, so
+        # appended episodes remain replayable even if the recorder stops later.
+        self.lerobot_dataset.finalize()
+        self.lerobot_dataset = None
+        utils.logger.info("LeRobot episode saved and finalized.")
+        return True
 
     def _export_hdf5(self, max_timesteps: int, cu_manager) -> None:
         path = os.path.join(self.dataset_dir, f"episode_{self.recorded_episodes}.hdf5")
@@ -332,8 +380,12 @@ class DatasetRecorder:
 
             obs.create_dataset("qpos", (max_timesteps, self.feature_dim))
             root.create_dataset("action", (max_timesteps, self.feature_dim))
+            extra_grp = root.create_group("extra")
+            ts_ds = extra_grp.create_dataset(
+                "timestamps_ns", (max_timesteps, self.timestamp_dim), dtype="int64"
+            )
+            ts_ds.attrs["names"] = np.array(self.timestamp_names, dtype="S")
             if self.collect_tcp_extra:
-                extra_grp = root.create_group("extra")
                 extra_grp.create_dataset("tcp_pose", (max_timesteps, self.tcp_pose_dim))
 
             if self.force_mode:

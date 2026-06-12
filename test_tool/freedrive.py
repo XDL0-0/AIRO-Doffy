@@ -1,12 +1,12 @@
-from airo_robots.manipulators import URrtde
+from airo_robots.manipulators.hardware.ur_rtde import URrtde
 import logging
-
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-robot = URrtde("10.42.0.162", URrtde.UR5E_CONFIG)
+robot = URrtde("10.42.0.162", URrtde.UR3E_CONFIG)
 # robot = URrtde("localhost", URrtde.UR5E_CONFIG)
+robot.rtde_control.servoStop()
 robot.rtde_control.teachMode()  # start freedrive
 input("press enter to continue")
 robot.rtde_control.endTeachMode()  # stop

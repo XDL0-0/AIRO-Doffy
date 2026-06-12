@@ -8,12 +8,13 @@ class Config:
     # ── Robot ──────────────────────────────────────────────────────────────
     ROBOT_TYPE: str = "ur3e"
     UR_IP: str = "10.42.0.162"
-    PC_IP: str = "10.10.131.72"
+
+    PC_IP: str = "10.10.129.200"
     VR_IP: str = "10.10.131.166"
 
     # ── Task / Dataset ────────────────────────────────────────────────────
     TASK_NAME: str = "pick_and_place"
-    DATASET_DIR: str = "./datasets/sorting_cubes"
+    DATASET_DIR: str = "./datasets/pnp_long"
     DATASET_TYPE: str = "l"          # 'a' = ACT (hdf5), 'l' = lerobot
     PUSH_TO_HUB: bool = False
     SAVE_EEF: bool = False
@@ -22,9 +23,13 @@ class Config:
 
     # ── Tracking mode ─────────────────────────────────────────────────────
     TRACKING_MODE: str = "controller"   # "controller" or "hand"
+    CONTROLLER_RESET_TRIGGER_THRESHOLD: float = 0.8  # trigger + joystick press → reset
     HAND_PALM_JUMP_THRESHOLD: float = 0.15   # m, discard frame if palm jumps more
     HAND_GRIPPER_OPEN_DIST: float = 0.06     # m, thumb–index > this → open
     HAND_GRIPPER_CLOSE_DIST: float = 0.03    # m, thumb–index < this → close
+
+    HAND_MODE_TOGGLE_DIST: float = 0.02      # m, thumb–pinky touch → toggle mode
+    HAND_RESET_DIST: float = 0.02            # m, thumb–ring touch → reset robot
 
     # ── Realsense camera ──────────────────────────────────────────────────
     REALSENSE_RESOLUTION: tuple = (640, 480)  # (width, height)
@@ -47,9 +52,10 @@ class Config:
     HD_CHUNK_SIZE: int = 60000          # max payload bytes per UDP chunk
 
     # ── Control rates (Hz) ────────────────────────────────────────────────
-    UR_CTRL_RATE: int = 100
+    UR_CTRL_RATE: int = 60
     KELO_CTRL_RATE: int = 10
     COLLECT_RATE: int = 10
+    INFERENCE_FPS: int = 10
 
     # ── Gripper ───────────────────────────────────────────────────────────
     GRIPPER_SPEED: float = 0.1       # m/s, full range (~0.085m) in ~0.57s
@@ -57,25 +63,34 @@ class Config:
 
     # ── Joint configuration ───────────────────────────────────────────────
     # INITIAL_JOINT: np.ndarray = field(
-    #     default_factory=lambda: np.array([-1.57, -1.57, -1.57, 0, 1.57, 3.14])
+    #     default_factory=lambda: np.array([1.57, -1.57, 1.57, -1.57, -1.57, 0])
     # )
     INITIAL_JOINT: np.ndarray = field(
-        default_factory=lambda: np.array([1.57, -2.2, 1.57, -1.57, -1.57, 0])
+        default_factory=lambda: np.array([1.57, -2.07, 1.25, -1.2, -1.62, 0])
     )
     TCP_POSE: np.ndarray = field(
         default_factory=lambda: np.array([0, 0, 0, 0, 0, 0])
     )
     TCP_TRANSFORM: np.ndarray = field(default_factory=lambda: np.identity(4))
     MOVE_THRESHOLD: np.ndarray = field(
-        default_factory=lambda: np.array([0.6, 0.6, 0.6, 0.9, 0.9, 0.9])
+        default_factory=lambda: np.array([0.9, 0.9, 0.9, 0.9, 1.4, 1.4])
     )
 
 
     # ── Ruckig OTG ────────────────────────────────────────────────────────
-    RUCKIG_ENABLE: bool = False
-    RUCKIG_MAX_VEL: float = 2.5      # rad/s per joint
-    RUCKIG_MAX_ACC: float = 15.0      # rad/s² per joint
-    RUCKIG_MAX_JERK: float = 150.0    # rad/s³ per joint
+    RUCKIG_ENABLE: bool = True
+    RUCKIG_MAX_VEL: np.ndarray = field(
+        default_factory=lambda: np.array([2.5, 2.5, 2.5, 3.0, 4.0, 4.0])
+    )  # rad/s per joint; larger for wrist joints near the gripper
+    RUCKIG_MAX_ACC: np.ndarray = field(
+        default_factory=lambda: np.array([15.0, 15.0, 15.0, 18.0, 25.0, 25.0])
+    )  # rad/s² per joint
+    RUCKIG_MAX_JERK: np.ndarray = field(
+        default_factory=lambda: np.array([150.0, 150.0, 150.0, 180.0, 250.0, 250.0])
+    )  # rad/s³ per joint
+    CARTESIAN_POS_FILTER_CUTOFF_HZ: float = 8.0
+    CARTESIAN_ROT_FILTER_CUTOFF_HZ: float = 6.0
+    HAND_JOINT_FILTER_CUTOFF_HZ: float = 10.0
 
     # ── Force / Torque ────────────────────────────────────────────────────
     TORQUE_MODE: bool = False

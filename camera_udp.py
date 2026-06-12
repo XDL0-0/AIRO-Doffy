@@ -54,11 +54,16 @@ class CameraUDPManager:
         self.data_collecting_state = False
         self.data_export_state = False
         self.camera_images: Dict[str, np.ndarray] = {}
+        self.camera_image_timestamps_ns: Dict[str, int] = {}
         self.camera_data: Dict[str, np.ndarray] = {}
+        self.camera_data_timestamps_ns: Dict[str, int] = {}
         self.depth_mode = cfg.DEPTH_INFO_ENABLE
         self.depth_images: Dict[str, np.ndarray] = {}
+        self.depth_timestamps_ns: Dict[str, int] = {}
         self.tactile_byte: bytes | None = None
         self.tactile_data: np.ndarray | None = None
+        self.tactile_timestamp_ns: int = 0
+        self.vr_input_timestamp_ns: int = 0
 
         self._frame_counters: Dict[int, int] = {}
 
@@ -301,9 +306,12 @@ class CameraUDPManager:
                     except (RuntimeError, AttributeError):
                         pass
                 with self._lock:
+                    capture_ts_ns = time.monotonic_ns()
                     self.camera_data[f"camera_{idx}"] = img
+                    self.camera_data_timestamps_ns[f"camera_{idx}"] = capture_ts_ns
                     if depth is not None:
                         self.depth_images[f"camera_{idx}"] = depth
+                        self.depth_timestamps_ns[f"camera_{idx}"] = capture_ts_ns
                 consecutive_errors = 0  # reset on success
                 time.sleep(1 / STREAM_FPS)
             except RuntimeError as e:
@@ -331,12 +339,16 @@ class CameraUDPManager:
             try:
                 with self._lock:
                     raw = self.camera_data.get(f"camera_{idx}")
+                    frame_ts_ns = self.camera_data_timestamps_ns.get(
+                        f"camera_{idx}", 0
+                    )
                 if raw is None:
                     time.sleep(1 / STREAM_FPS)
                     continue
                 frame_bgr, frame_rgb = self.data_process(raw, idx)
                 with self._lock:
                     self.camera_images[f"camera_{idx}"] = frame_rgb
+                    self.camera_image_timestamps_ns[f"camera_{idx}"] = frame_ts_ns
                 n_chunks = self.send_hd_frame(socket, frame_bgr, cam_idx=idx)
                 stats_frames += 1
                 stats_chunks += n_chunks
@@ -385,16 +397,20 @@ class CameraUDPManager:
                     if ptype == "controller":
                         parsed = parse_data(raw_data)
                         if parsed:
+                            receive_ts_ns = time.monotonic_ns()
                             with self._lock:
                                 self.data = parsed
                                 self.hand_data.clear()
+                                self.vr_input_timestamp_ns = receive_ts_ns
 
                     elif ptype in ("hand_text", "hand_binary"):
                         hand = parse_hand_data(raw_data)
                         if hand:
+                            receive_ts_ns = time.monotonic_ns()
                             with self._lock:
                                 self.hand_data[hand["side"]] = hand
                                 self.data = None
+                                self.vr_input_timestamp_ns = receive_ts_ns
 
                 record_control = socket_list["socket_1"].read() if "socket_1" in socket_list else None
                 resolution_control = socket_list["socket_2"].read() if "socket_2" in socket_list else None
@@ -437,13 +453,19 @@ class CameraUDPManager:
             if ptype == "controller":
                 parsed = parse_data(raw)
                 if parsed:
+                    receive_ts_ns = time.monotonic_ns()
                     with self._lock:
                         self.data = parsed
+                        self.hand_data.clear()
+                        self.vr_input_timestamp_ns = receive_ts_ns
             elif ptype in ("hand_text", "hand_binary"):
                 hand = parse_hand_data(raw)
                 if hand:
+                    receive_ts_ns = time.monotonic_ns()
                     with self._lock:
                         self.hand_data[hand["side"]] = hand
+                        self.data = None
+                        self.vr_input_timestamp_ns = receive_ts_ns
 
     def test_connection(self) -> list[dict]:
         """Block until VR sends initial data. Raises TimeoutError after deadline."""

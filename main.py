@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 import time
 
+import numpy as np
+
 import utils
 from config import Config
 from ur_teleop import URTeleop
@@ -17,7 +19,7 @@ CameraManager = CameraUDPManager | WebRTCUDPManager
 
 cfg = Config()
 
-TELEOP_HZ = 100
+TELEOP_HZ = cfg.UR_CTRL_RATE
 MIN_DT = 1.0 / TELEOP_HZ
 
 
@@ -33,37 +35,62 @@ def collect_loop(
 ) -> None:
     """Sample state/action at *collect_rate* Hz and buffer into *dataset*."""
     dt = 1.0 / collect_rate
+    next_tick = time.monotonic()
     while not stop_event.is_set():
-        t0 = time.time()
+        t0 = time.monotonic()
+        collect_ts_ns = time.monotonic_ns()
 
         # Skip collection while export is in progress
         if pause_event is not None and pause_event.is_set():
-            time.sleep(dt)
+            next_tick += dt
+            sleep_time = next_tick - time.monotonic()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            else:
+                next_tick = time.monotonic()
             continue
 
         collecting = cu_manager.data_collecting_state
-        has_motion = cu_manager.is_movement_exist() or teleop.reset_sign
+        has_hand_motion = bool(cu_manager.hand_data) and teleop.tracking_mode == "hand"
+        has_motion = cu_manager.is_movement_exist() or has_hand_motion or teleop.reset_sign
 
         if collecting and has_motion:
             # ── Atomic snapshot: one lock covers ALL cu_manager modalities ──
             with cu_manager._lock:
                 images = dict(cu_manager.camera_images)
+                image_timestamps = dict(
+                    getattr(cu_manager, "camera_image_timestamps_ns", {})
+                )
                 depth_imgs = dict(cu_manager.depth_images) if cu_manager.depth_mode else None
                 # .copy() to break shared reference; None is fine (dataset handles it)
                 tactile = cu_manager.tactile_data.copy() if cu_manager.tactile_data is not None else None
+                tactile_timestamp = getattr(cu_manager, "tactile_timestamp_ns", 0)
+                vr_input_timestamp = getattr(cu_manager, "vr_input_timestamp_ns", 0)
 
             # Robot state uses its own _state_lock inside get_state_snapshot()
             state, action, force, extra = teleop.get_state_snapshot()
+            if extra is None:
+                extra = {}
+            extra["collect_timestamp_ns"] = np.array(collect_ts_ns, dtype=np.int64)
+            extra["camera_timestamps_ns"] = image_timestamps
+            extra["tactile_timestamp_ns"] = np.array(
+                tactile_timestamp, dtype=np.int64
+            )
+            extra["vr_input_timestamp_ns"] = np.array(
+                vr_input_timestamp, dtype=np.int64
+            )
 
             force_val = force if (cfg.FORCE_COLLECT and cfg.TORQUE_MODE) else None
             dataset.data_collection(
                 state, action, images, tactile, force_val, depth_imgs, extra
             )
 
-        elapsed = time.time() - t0
-        remaining = dt - elapsed
+        next_tick += dt
+        remaining = next_tick - time.monotonic()
         if remaining > 0:
             time.sleep(remaining)
+        elif time.monotonic() - t0 > dt:
+            next_tick = time.monotonic()
 
 
 def export_loop(
@@ -152,9 +179,10 @@ def main() -> None:
     t_export.start()
 
     try:
-        prev_time = time.time()
+        prev_time = time.monotonic()
+        next_tick = prev_time
         while True:
-            now = time.time()
+            now = time.monotonic()
             dt = min(now - prev_time, 0.05)
             prev_time = now
 
@@ -165,9 +193,12 @@ def main() -> None:
             if data is not None or hand is not None:
                 teleop.step(data, fine, dt, hand_data=hand)
 
-            loop_time = time.time() - prev_time
-            if loop_time < MIN_DT:
-                time.sleep(MIN_DT - loop_time)
+            next_tick += MIN_DT
+            remaining = next_tick - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
+            else:
+                next_tick = time.monotonic()
 
     except KeyboardInterrupt:
         utils.logger.info("Stopping...")
@@ -175,13 +206,14 @@ def main() -> None:
     finally:
         utils.logger.info("Cleaning up...")
 
+        stop_event.set()
+        t_collect.join(timeout=3.0)
+        t_export.join(timeout=5.0)
+
         try:
             cu_manager.close()
         except Exception as e:
             utils.logger.error(f"Error closing cu_manager: {e}")
-
-        stop_event.set()
-        t_export.join(timeout=5.0)
 
         try:
             if cfg.TORQUE_MODE:
@@ -190,6 +222,11 @@ def main() -> None:
             pass
         except Exception as e:
             utils.logger.error(f"Error disabling robot: {e}")
+
+        try:
+            teleop.close()
+        except Exception as e:
+            utils.logger.error(f"Error closing teleop: {e}")
 
         utils.logger.info("Shutdown complete.")
 

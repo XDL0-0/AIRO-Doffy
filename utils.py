@@ -94,14 +94,18 @@ def get_interpolated_points(a: np.ndarray, b: np.ndarray, num_points: int) -> li
         return [b]
     return [a + (b - a) * t for t in np.linspace(0, 1, num_points)]
 
-def is_self_collision(joints: np.ndarray, robot_type: str = "ur3e") -> bool:
+def is_self_collision(
+    joints: np.ndarray,
+    robot_type: str = "ur3e",
+    return_details: bool = False,
+):
     """Check if the arm folds in onto itself using interpolated segment distances.
 
     Both proximal and distal link chains are densely interpolated, and all
     pair-wise distances are computed via scipy.spatial.distance.cdist for
     vectorised performance.
     """
-    margin = 0.14 if robot_type == "ur3e" else 0.16
+    margin = 0.1 if robot_type == "ur3e" else 0.16
     pos = get_ur_fk_frames(joints, robot_type)
 
     # Generate points along the proximal structure (base → shoulder → elbow)
@@ -124,7 +128,17 @@ def is_self_collision(joints: np.ndarray, robot_type: str = "ur3e") -> bool:
 
     # 1. Check distal chain against base + upper arm (vectorised)
     dists = cdist(distal_arr, proximal_arr)
-    if np.any(dists < margin):
+    min_prox_idx = np.unravel_index(np.argmin(dists), dists.shape)
+    min_prox = float(dists[min_prox_idx])
+    if min_prox < margin:
+        if return_details:
+            return True, {
+                "pair": "distal-proximal",
+                "distance": min_prox,
+                "threshold": margin,
+                "distal_point": distal_arr[min_prox_idx[0]],
+                "proximal_point": proximal_arr[min_prox_idx[1]],
+            }
         return True
 
     # 2. Check distal chain against forearm (skip last 2 forearm pts to avoid
@@ -132,9 +146,25 @@ def is_self_collision(joints: np.ndarray, robot_type: str = "ur3e") -> bool:
     if len(forearm) > 2:
         forearm_arr = np.array(forearm[:-2])
         dists_forearm = cdist(distal_arr, forearm_arr)
-        if np.any(dists_forearm < margin * 0.5):
+        forearm_margin = margin * 0.5
+        min_forearm_idx = np.unravel_index(np.argmin(dists_forearm), dists_forearm.shape)
+        min_forearm = float(dists_forearm[min_forearm_idx])
+        if min_forearm < forearm_margin:
+            if return_details:
+                return True, {
+                    "pair": "distal-forearm",
+                    "distance": min_forearm,
+                    "threshold": forearm_margin,
+                    "distal_point": distal_arr[min_forearm_idx[0]],
+                    "forearm_point": forearm_arr[min_forearm_idx[1]],
+                }
             return True
 
+    if return_details:
+        return False, {
+            "closest_distal_proximal": min_prox,
+            "distal_proximal_threshold": margin,
+        }
     return False
 
 def is_pose_safe(
@@ -178,8 +208,16 @@ def is_pose_safe(
         return False
 
     # Prevent base self-collision via forward kinematics distance checking
-    if is_self_collision(joints, robot_type):
-        logger.warning("Pose rejected: Analytic self-collision detected!")
+    collision, collision_details = is_self_collision(
+        joints, robot_type, return_details=True
+    )
+    if collision:
+        logger.warning(
+            "Pose rejected: Analytic self-collision detected "
+            f"({collision_details['pair']}, "
+            f"distance={collision_details['distance']:.3f}m < "
+            f"{collision_details['threshold']:.3f}m)"
+        )
         return False
 
     # Simple preventative check for TCP entering a low radius area near origin
@@ -208,6 +246,33 @@ class ExponentialFilter:
             self.initialized = True
         else:
             self.value = self.alpha * measurement + (1 - self.alpha) * self.value
+        return self.value.copy()
+
+    def reset(self) -> None:
+        self.value = np.zeros(self.dim)
+        self.initialized = False
+
+
+class TimeAwareLowPassFilter:
+    """First-order low-pass filter whose smoothing follows the measured dt."""
+
+    def __init__(self, cutoff_hz: float, dim: int):
+        self.cutoff_hz = float(cutoff_hz)
+        self.dim = dim
+        self.value = np.zeros(dim)
+        self.initialized = False
+
+    def update(self, measurement: np.ndarray, dt: float) -> np.ndarray:
+        measurement = np.asarray(measurement, dtype=float)
+        if not self.initialized:
+            self.value = measurement.copy()
+            self.initialized = True
+            return self.value.copy()
+
+        dt = max(float(dt), 1e-6)
+        alpha = 1.0 - np.exp(-2.0 * np.pi * self.cutoff_hz * dt)
+        alpha = float(np.clip(alpha, 0.0, 1.0))
+        self.value = alpha * measurement + (1.0 - alpha) * self.value
         return self.value.copy()
 
     def reset(self) -> None:

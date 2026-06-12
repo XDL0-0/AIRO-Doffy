@@ -11,6 +11,7 @@ from __future__ import annotations
 import socket
 import time
 import threading
+import gc
 import cv2
 import numpy as np
 
@@ -23,12 +24,12 @@ from airo_spatial_algebra.se3 import SE3Container
 # ── Robot factory ─────────────────────────────────────────────────────────
 
 def make_robot(ur_ip: str, robot_type: str, torque_mode: bool, initial_joint=None, ruckig_params=None):
+    kwargs = {}
     if not torque_mode:
         from airo_robots.manipulators.hardware.ur_rtde import URrtde
     else:
         from airo_robots.manipulators.hardware.ur_rtde_torque import URrtdeTorque as URrtde
-
-    kwargs = dict(initial_joint_configuration=initial_joint)
+        kwargs = dict(initial_joint_configuration=initial_joint)
     if torque_mode and ruckig_params is not None:
         kwargs["ruckig_params"] = ruckig_params
 
@@ -118,10 +119,10 @@ class URTeleop:
     def __init__(self, initial_data: list[dict]):
         cfg = Config()
         self.initial_joint = cfg.INITIAL_JOINT
+        self.robot_type = cfg.ROBOT_TYPE
         ruckig_params = None
-        # Ruckig is not ideal for high-frequency continuous teleop tracking in torque mode 
-        # because it plans trajectories with target_velocity=0, causing stuttering. 
-        # We rely on the smoother PT2 spring-damper filter inside ur_rtde_torque.py.
+        # Torque mode uses the URrtdeTorque servo-compatible target path; its
+        # worker smooths the 60 Hz teleop stream into a 500 Hz torque reference.
         self.ur, self.ik = make_robot(
             cfg.UR_IP, cfg.ROBOT_TYPE, cfg.TORQUE_MODE, self.initial_joint, ruckig_params
         )
@@ -148,12 +149,15 @@ class URTeleop:
 
         # ── Hand-tracking mode state ──────────────────────────────────────
         self.tracking_mode = cfg.TRACKING_MODE          # "controller" or "hand"
+        self._controller_reset_trigger_threshold = cfg.CONTROLLER_RESET_TRIGGER_THRESHOLD
         self._hand_ref_se3: SE3Container | None = None  # reference wrist SE3
         self._hand_last_palm: np.ndarray | None = None  # previous frame wrist pos (jump det)
         self._hand_initialized = False
         self._hand_palm_jump = cfg.HAND_PALM_JUMP_THRESHOLD
         self._hand_gripper_open = cfg.HAND_GRIPPER_OPEN_DIST
         self._hand_gripper_close = cfg.HAND_GRIPPER_CLOSE_DIST
+        self._hand_mode_toggle_dist = cfg.HAND_MODE_TOGGLE_DIST
+        self._hand_reset_dist = cfg.HAND_RESET_DIST
         self._last_toggle_time = 0.0
         self._last_reset_time = 0.0
 
@@ -171,8 +175,18 @@ class URTeleop:
         self.previous_solution = np.append(self.initial_joint, 0)
         self.filtered_joint_target = np.array(self.initial_joint)
         self.last_sent_target = np.array(self.initial_joint)
-        self.pos_filter = utils.ExponentialFilter(alpha=0.95, dim=3)
-        self.rot_filter = utils.ExponentialFilter(alpha=0.95, dim=3)
+        self.pos_filter = utils.TimeAwareLowPassFilter(
+            cutoff_hz=cfg.CARTESIAN_POS_FILTER_CUTOFF_HZ, dim=3
+        )
+        self.rot_filter = utils.TimeAwareLowPassFilter(
+            cutoff_hz=cfg.CARTESIAN_ROT_FILTER_CUTOFF_HZ, dim=3
+        )
+        self.hand_joint_filter = utils.TimeAwareLowPassFilter(
+            cutoff_hz=cfg.HAND_JOINT_FILTER_CUTOFF_HZ, dim=6
+        )
+        now_ns = time.monotonic_ns()
+        self.state_timestamp_ns = now_ns
+        self.action_timestamp_ns = now_ns
         self.ruckig_enable = cfg.RUCKIG_ENABLE and not self.torque_mode
         if self.ruckig_enable:
             self._init_ruckig(cfg)
@@ -233,6 +247,19 @@ class URTeleop:
             return np.array(self.ur.get_cached_tcp_force())
         return np.array(self.ur.get_tcp_force())
 
+    def close(self) -> None:
+        """Release resources owned by the teleop wrapper before interpreter exit."""
+        if hasattr(self, "gripper"):
+            try:
+                self.gripper._persistent_sock.close()
+            except Exception as e:
+                utils.logger.warning(f"Error closing gripper socket: {e}")
+
+        for attr in ("_otg_out", "_otg_inp", "_otg"):
+            if hasattr(self, attr):
+                setattr(self, attr, None)
+        gc.collect()
+
     def _get_tool_rotation(self) -> np.ndarray:
         return self._read_tcp_pose()[:3, :3]
 
@@ -245,7 +272,7 @@ class URTeleop:
 
     def get_state_snapshot(
         self,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray] | None]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, object]]:
         """Thread-safe snapshot of (state, action, force, optional extras)."""
         with self._state_lock:
             if self.save_eef:
@@ -260,9 +287,14 @@ class URTeleop:
                     self.previous_solution.copy(),
                     self.tcp_force.copy(),
                 )
-        extra = None
+            state_timestamp_ns = self.state_timestamp_ns
+            action_timestamp_ns = self.action_timestamp_ns
+        extra = {
+            "robot_state_timestamp_ns": np.array(state_timestamp_ns, dtype=np.int64),
+            "robot_action_timestamp_ns": np.array(action_timestamp_ns, dtype=np.int64),
+        }
         if self.collect_tcp_extra:
-            extra = {"tcp_pose": self.capture_tcp_pose()}
+            extra["tcp_pose"] = self.capture_tcp_pose()
         return (*state, extra)
 
     # ── Ruckig OTG ────────────────────────────────────────────────────────
@@ -272,26 +304,65 @@ class URTeleop:
         self._otg = Ruckig(6, 1.0 / self.control_rate)
         self._otg_inp = InputParameter(6)
         self._otg_out = OutputParameter(6)
-        self._otg_inp.max_velocity = [cfg.RUCKIG_MAX_VEL] * 6
-        self._otg_inp.max_acceleration = [cfg.RUCKIG_MAX_ACC] * 6
-        self._otg_inp.max_jerk = [cfg.RUCKIG_MAX_JERK] * 6
+        self._otg_inp.max_velocity = self._ruckig_limits(
+            cfg.RUCKIG_MAX_VEL, "velocity"
+        )
+        self._otg_inp.max_acceleration = self._ruckig_limits(
+            cfg.RUCKIG_MAX_ACC, "acceleration"
+        )
+        self._otg_inp.max_jerk = self._ruckig_limits(cfg.RUCKIG_MAX_JERK, "jerk")
         self._reset_ruckig_state(self.initial_joint)
         utils.logger.info("Ruckig OTG enabled for servo mode")
+
+    @staticmethod
+    def _ruckig_limits(value: float | np.ndarray, name: str) -> list[float]:
+        limits = np.asarray(value, dtype=float)
+        if limits.ndim == 0:
+            return [float(limits)] * 6
+        if limits.shape != (6,):
+            raise ValueError(
+                f"Ruckig {name} limits must be scalar or shape (6,), got {limits.shape}"
+            )
+        return limits.tolist()
 
     def _reset_ruckig_state(self, position: np.ndarray) -> None:
         self._otg_inp.current_position = list(position)
         self._otg_inp.current_velocity = [0.0] * 6
         self._otg_inp.current_acceleration = [0.0] * 6
 
-    def _ruckig_step(self, target: np.ndarray) -> np.ndarray:
-        from ruckig import Result
+    def _set_ruckig_target(self, target: np.ndarray) -> None:
         self._otg_inp.target_position = target.tolist()
         self._otg_inp.target_velocity = [0.0] * 6
         self._otg_inp.target_acceleration = [0.0] * 6
-        result = self._otg.update(self._otg_inp, self._otg_out)
+
+    def _apply_ruckig_result(self) -> np.ndarray:
+        self._otg_out.pass_to_input(self._otg_inp)
+        return np.array(self._otg_out.new_position)
+
+    def _ruckig_step(self, target: np.ndarray) -> np.ndarray:
+        from ruckig import Result
+
+        target = np.asarray(target, dtype=float)
+        self._set_ruckig_target(target)
+        try:
+            result = self._otg.update(self._otg_inp, self._otg_out)
+        except Exception as exc:
+            utils.logger.warning(
+                f"Ruckig OTG exception ({type(exc).__name__}), resetting state and retrying once"
+            )
+            measured_joints = self._read_joints()
+            self._reset_ruckig_state(measured_joints)
+            self._set_ruckig_target(target)
+            try:
+                result = self._otg.update(self._otg_inp, self._otg_out)
+            except Exception as retry_exc:
+                utils.logger.warning(
+                    f"Ruckig OTG retry failed ({type(retry_exc).__name__}), holding measured pose"
+                )
+                return measured_joints
+
         if result == Result.Working or result == Result.Finished:
-            self._otg_out.pass_to_input(self._otg_inp)
-            return np.array(self._otg_out.new_position)
+            return self._apply_ruckig_result()
         utils.logger.warning(f"Ruckig OTG error ({result}), resetting state")
         self._reset_ruckig_state(self._read_joints())
         return np.array(self._otg_inp.current_position)
@@ -394,6 +465,7 @@ class URTeleop:
                 self.gripper_stop_control_sign = True
 
             with self._state_lock:
+                self.state_timestamp_ns = time.monotonic_ns()
                 gripper_target_norm = self._normalize_gripper_width(
                     self.gripper_solution_width
                 )
@@ -422,6 +494,7 @@ class URTeleop:
             self.gripper._set_target_width(self.gripper_solution_width)
 
             with self._state_lock:
+                self.state_timestamp_ns = time.monotonic_ns()
                 gripper_target_norm = self._normalize_gripper_width(
                     self.gripper_solution_width
                 )
@@ -440,6 +513,9 @@ class URTeleop:
         if self.torque_mode:
             self.ur.tmp_move(self.initial_joint)
             with self._state_lock:
+                now_ns = time.monotonic_ns()
+                self.state_timestamp_ns = now_ns
+                self.action_timestamp_ns = now_ns
                 self.previous_solution = np.concatenate([self.initial_joint, [1.0]])
             self.gripper_solution_width = self.gripper.get_current_width()
             self.SE3_tcp_pose_in_base_frame_std = SE3Container.from_homogeneous_matrix(
@@ -463,6 +539,7 @@ class URTeleop:
                 )
             else:
                 with self._state_lock:
+                    self.state_timestamp_ns = time.monotonic_ns()
                     self.previous_solution = np.concatenate(
                         [self.capture_joint_pose(), [gripper_target_norm]]
                     )
@@ -474,6 +551,9 @@ class URTeleop:
         utils.logger.info("Gripper and robot in default pose!")
 
         with self._state_lock:
+            now_ns = time.monotonic_ns()
+            self.state_timestamp_ns = now_ns
+            self.action_timestamp_ns = now_ns
             self.previous_solution = np.concatenate([self.initial_joint, [1.0]])
         self.gripper_solution_width = self.gripper.get_current_width()
         self.SE3_tcp_pose_in_base_frame_std = SE3Container.from_homogeneous_matrix(
@@ -504,7 +584,9 @@ class URTeleop:
             return True
         return False
 
-    def _teleop_mode(self, controller_data: list[dict], gripper_state: int) -> None:
+    def _teleop_mode(
+        self, controller_data: list[dict], gripper_state: int, dt: float
+    ) -> None:
         if self.reset_sign:
             self.reset_sign = False
             self._set_reference(controller_data)
@@ -515,7 +597,7 @@ class URTeleop:
         translation_diff = se3_mat[:3, 3] - self.SE3_controller_std.translation
         rotation_diff = self.SE3_controller_std.rotation_matrix.T @ se3_mat[:3, :3]
 
-        translation_diff = self.pos_filter.update(translation_diff)
+        translation_diff = self.pos_filter.update(translation_diff, dt)
 
         if self.fine_mode:
             alpha_t, alpha_r, beta = 0.3, 0.4, 0.3
@@ -523,7 +605,7 @@ class URTeleop:
             alpha_t, alpha_r, beta = 1.0, 1.0, 0.7
 
         rvec, _ = cv2.Rodrigues(rotation_diff)
-        rvec = self.rot_filter.update(rvec.flatten()) * alpha_r
+        rvec = self.rot_filter.update(rvec.flatten(), dt) * alpha_r
         rotation_diff, _ = cv2.Rodrigues(rvec)
         translation_diff *= alpha_t
 
@@ -563,7 +645,9 @@ class URTeleop:
             
             joint_solution[0][5] = target_j5_clipped
 
-            if not utils.is_pose_safe(joint_solution[0], tcp_target.translation):
+            if not utils.is_pose_safe(
+                joint_solution[0], tcp_target.translation, robot_type=self.robot_type
+            ):
                 unsafe = True
             elif not utils.is_joint_change_safe(prev, joint_solution[0], self.joint_threshold):
                 utils.logger.warning("Joint change unsafe, keeping previous pose!")
@@ -577,7 +661,7 @@ class URTeleop:
         final_target = np.array(joint_solution[0])
 
         if self.torque_mode:
-            self.ur.target_pos = final_target.tolist()
+            self.ur.servo_to_joint_configuration(final_target, 1 / self.control_rate)
         elif self.ruckig_enable:
             final_target = self._ruckig_step(final_target)
             self.ur.servo_to_joint_configuration(final_target, 1 / self.control_rate)
@@ -598,6 +682,7 @@ class URTeleop:
         self.last_sent_target = final_target.copy()
 
         with self._state_lock:
+            self.action_timestamp_ns = time.monotonic_ns()
             gripper_target_norm = self._normalize_gripper_width(
                 self.gripper_solution_width
             )
@@ -649,8 +734,28 @@ class URTeleop:
         self.SE3_tcp_pose_in_base_frame_std = SE3Container.from_homogeneous_matrix(tcp)
         self.pos_filter.reset()
         self.rot_filter.reset()
+        self._seed_hand_joint_filter(self._read_joints())
         self._hand_initialized = True
         utils.logger.info("Hand reference set")
+
+    def _reset_hand_reference_state(self) -> None:
+        self._hand_initialized = False
+        self._hand_last_palm = None
+        self._hand_ref_se3 = None
+        self.hand_joint_filter.reset()
+
+    def _filter_hand_joint_target(self, target: np.ndarray, dt: float) -> np.ndarray:
+        target = np.asarray(target, dtype=float)
+        if self.hand_joint_filter.initialized:
+            base = self.hand_joint_filter.value
+            target = base + np.arctan2(np.sin(target - base), np.cos(target - base))
+        filtered = self.hand_joint_filter.update(target, dt)
+        low, high = utils.UR3E_JOINT_LIMITS
+        return np.clip(filtered, low, high)
+
+    def _seed_hand_joint_filter(self, joints: np.ndarray) -> None:
+        self.hand_joint_filter.value = np.asarray(joints, dtype=float).copy()
+        self.hand_joint_filter.initialized = True
 
     def _hand_teleop_step(self, hand_data: dict | None, dt: float) -> None:
         """One teleop step using right-hand wrist_pose for TCP control.
@@ -688,6 +793,7 @@ class URTeleop:
         # ── Initialise reference on first valid frame ─────────────────────
         if not self._hand_initialized:
             self._hand_set_reference(hand_se3)
+            self.reset_sign = False
             return
 
         # ── SE3 delta (same approach as _teleop_mode) ─────────────────────
@@ -695,10 +801,10 @@ class URTeleop:
         translation_diff = se3_mat[:3, 3] - self._hand_ref_se3.translation
         rotation_diff = self._hand_ref_se3.rotation_matrix.T @ se3_mat[:3, :3]
 
-        translation_diff = self.pos_filter.update(translation_diff)
+        translation_diff = self.pos_filter.update(translation_diff, dt)
 
         rvec, _ = cv2.Rodrigues(rotation_diff)
-        rvec = self.rot_filter.update(rvec.flatten())
+        rvec = self.rot_filter.update(rvec.flatten(), dt)
         rotation_diff, _ = cv2.Rodrigues(rvec)
 
         target_translation = (
@@ -718,22 +824,30 @@ class URTeleop:
             prev = self.previous_solution[:6]
 
         unsafe = False
+        final_target = None
         if not joint_solution or not utils.is_joint_within_limits(joint_solution[0]):
             utils.logger.warning("Hand IK: no valid solution, keeping pose")
             unsafe = True
-        elif not utils.is_pose_safe(joint_solution[0], tcp_target.translation):
-            unsafe = True
-        elif not utils.is_joint_change_safe(prev, joint_solution[0], self.joint_threshold):
-            utils.logger.warning("Hand IK: joint change unsafe, keeping pose")
-            unsafe = True
+        else:
+            final_target = np.array(joint_solution[0])
+            if self.ruckig_enable:
+                final_target = self._filter_hand_joint_target(final_target, dt)
+
+            if not utils.is_pose_safe(
+                final_target, tcp_target.translation, robot_type=self.robot_type
+            ):
+                unsafe = True
+            elif not utils.is_joint_change_safe(prev, final_target, self.joint_threshold):
+                utils.logger.warning("Hand IK: joint change unsafe, keeping pose")
+                unsafe = True
 
         if unsafe:
-            joint_solution = [prev]
-
-        final_target = np.array(joint_solution[0])
+            final_target = prev
+            if self.ruckig_enable:
+                self._seed_hand_joint_filter(prev)
 
         if self.torque_mode:
-            self.ur.target_pos = final_target.tolist()
+            self.ur.servo_to_joint_configuration(final_target, 1 / self.control_rate)
         elif self.ruckig_enable:
             final_target = self._ruckig_step(final_target)
             self.ur.servo_to_joint_configuration(final_target, 1 / self.control_rate)
@@ -755,6 +869,7 @@ class URTeleop:
         self.last_sent_target = final_target.copy()
 
         with self._state_lock:
+            self.action_timestamp_ns = time.monotonic_ns()
             gripper_target_norm = self._normalize_gripper_width(
                 self.gripper_solution_width
             )
@@ -780,6 +895,7 @@ class URTeleop:
         self._update_gripper(gripper_state, dt, gripper_width_m, ur_pose)
 
         with self._state_lock:
+            self.state_timestamp_ns = time.monotonic_ns()
             self.state = np.concatenate([ur_pose, gripper_capture])
 
         utils.logger.debug(
@@ -814,26 +930,25 @@ class URTeleop:
                     pinky_tip = np.array(bones[self._PINKY_TIP_IDX])
                     ring_tip = np.array(bones[self._RING_TIP_IDX])
                     
-                    if np.linalg.norm(thumb_tip - pinky_tip) < 0.03:
-                        import time
+                    if np.linalg.norm(thumb_tip - pinky_tip) < self._hand_mode_toggle_dist:
                         current_time = time.time()
                         if (current_time - self._last_toggle_time) > 1.0:
                             if self.tracking_mode == "hand":
                                 utils.logger.warning("Gesture: Switched to CONTROLLER mode")
                                 self.tracking_mode = "controller"
-                                self._hand_initialized = False
-                                self._hand_last_palm = None
+                                self._reset_hand_reference_state()
                             else:
                                 utils.logger.warning("Gesture: Switched to HAND mode")
                                 self.tracking_mode = "hand"
+                                self._reset_hand_reference_state()
                             self._last_toggle_time = current_time
-                    elif np.linalg.norm(thumb_tip - ring_tip) < 0.03:
-                        import time
+                    elif np.linalg.norm(thumb_tip - ring_tip) < self._hand_reset_dist:
                         current_time = time.time()
                         if (current_time - self._last_reset_time) > 2.0:
                             utils.logger.warning("Gesture: Resetting Robot and Gripper to Initial Position")
                             self.reset_sign = True
                             self.reset_robot_and_gripper()
+                            self._reset_hand_reference_state()
                             self._last_reset_time = current_time
                             return
 
@@ -879,12 +994,17 @@ class URTeleop:
 
         self._update_gripper(gripper_state, dt, gripper_width_m, ur_pose)
 
-        if controller_data[1]["Joystick_Press"] and controller_data[1]["IndexTrigger"] == 1:
+        reset_requested = (
+            bool(controller_data[1]["Joystick_Press"])
+            and controller_data[1]["IndexTrigger"] >= self._controller_reset_trigger_threshold
+        )
+        if reset_requested:
             self.reset_sign = True
             self.reset_robot_and_gripper()
             return
 
         if not self._standby_mode(controller_data):
             with self._state_lock:
+                self.state_timestamp_ns = time.monotonic_ns()
                 self.state = np.concatenate([ur_pose, gripper_capture])
-            self._teleop_mode(controller_data, gripper_state)
+            self._teleop_mode(controller_data, gripper_state, dt)

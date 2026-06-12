@@ -39,7 +39,7 @@ MAX_CAMERAS = 5
 STREAM_FPS = 30
 TACTILE_FPS = 100
 VR_RECEIVE_HZ = 100
-CONNECTION_TIMEOUT = 30.0
+CONNECTION_TIMEOUT = 60.0
 
 
 # ── WebRTC video track ───────────────────────────────────────────────────
@@ -74,6 +74,9 @@ class RealsenseCameraTrack(VideoStreamTrack):
         while raw is None:
             with self._manager._lock:
                 raw = self._manager.camera_data.get(f"camera_{self._cam_idx}")
+                frame_ts_ns = self._manager.camera_data_timestamps_ns.get(
+                    f"camera_{self._cam_idx}", 0
+                )
             if raw is None:
                 await asyncio.sleep(0.005)
 
@@ -82,6 +85,9 @@ class RealsenseCameraTrack(VideoStreamTrack):
         # Store RGB version for dataset collection purposes.
         with self._manager._lock:
             self._manager.camera_images[f"camera_{self._cam_idx}"] = frame_rgb
+            self._manager.camera_image_timestamps_ns[
+                f"camera_{self._cam_idx}"
+            ] = frame_ts_ns
 
         video_frame = VideoFrame.from_ndarray(frame_bgr, format="bgr24")
         video_frame.pts = pts
@@ -122,11 +128,16 @@ class WebRTCUDPManager:
         self.data_collecting_state = False
         self.data_export_state = False
         self.camera_images: Dict[str, np.ndarray] = {}
+        self.camera_image_timestamps_ns: Dict[str, int] = {}
         self.camera_data: Dict[str, np.ndarray] = {}
+        self.camera_data_timestamps_ns: Dict[str, int] = {}
         self.depth_mode = cfg.DEPTH_INFO_ENABLE
         self.depth_images: Dict[str, np.ndarray] = {}
+        self.depth_timestamps_ns: Dict[str, int] = {}
         self.tactile_byte: bytes | None = None
         self.tactile_data: np.ndarray | None = None
+        self.tactile_timestamp_ns: int = 0
+        self.vr_input_timestamp_ns: int = 0
 
         self.camera_num, self.camera_series_num = self._detect_cameras()
         self.camera_zoom: List[float] = [1.0] * self.camera_num
@@ -141,6 +152,7 @@ class WebRTCUDPManager:
         self._video_tracks: List[RealsenseCameraTrack] = []
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
+        self._shutdown_event: Optional[asyncio.Event] = None
         self._signaling_runner: Optional[web.AppRunner] = None
         self._ws_connections: Dict[str, web.WebSocketResponse] = {}
         self._session_id: Optional[str] = None
@@ -482,10 +494,18 @@ class WebRTCUDPManager:
         """Start the asyncio event loop in a background thread."""
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._run_signaling_server())
+        try:
+            self._loop.run_until_complete(self._run_signaling_server())
+        except RuntimeError as e:
+            if "Event loop stopped before Future completed" not in str(e):
+                raise
+            utils.logger.warning("WebRTC event loop stopped during shutdown.")
+        finally:
+            self._loop.close()
 
     async def _run_signaling_server(self) -> None:
         """Run the WebSocket signaling server until the manager stops."""
+        self._shutdown_event = asyncio.Event()
         app = web.Application()
         app.router.add_get("/", self._ws_handler)
 
@@ -499,10 +519,13 @@ class WebRTCUDPManager:
             f"Signaling server started at ws://{self.pc_ip}:{self.signaling_port}"
         )
 
-        # Keep running until self.running is False
         try:
             while self.running:
-                await asyncio.sleep(0.5)
+                try:
+                    await asyncio.wait_for(self._shutdown_event.wait(), timeout=0.5)
+                    break
+                except asyncio.TimeoutError:
+                    pass
         finally:
             await self._close_peer()
             await runner.cleanup()
@@ -522,9 +545,12 @@ class WebRTCUDPManager:
                     except (RuntimeError, AttributeError):
                         pass
                 with self._lock:
+                    capture_ts_ns = time.monotonic_ns()
                     self.camera_data[f"camera_{idx}"] = img
+                    self.camera_data_timestamps_ns[f"camera_{idx}"] = capture_ts_ns
                     if depth is not None:
                         self.depth_images[f"camera_{idx}"] = depth
+                        self.depth_timestamps_ns[f"camera_{idx}"] = capture_ts_ns
                 time.sleep(1 / STREAM_FPS)
             except RuntimeError:
                 break
@@ -555,14 +581,20 @@ class WebRTCUDPManager:
                     if ptype == "controller":
                         parsed = parse_data(raw_data)
                         if parsed:
+                            receive_ts_ns = time.monotonic_ns()
                             with self._lock:
                                 self.data = parsed
+                                self.hand_data.clear()
+                                self.vr_input_timestamp_ns = receive_ts_ns
 
                     elif ptype in ("hand_text", "hand_binary"):
                         hand = parse_hand_data(raw_data)
                         if hand:
+                            receive_ts_ns = time.monotonic_ns()
                             with self._lock:
                                 self.hand_data[hand["side"]] = hand
+                                self.data = None
+                                self.vr_input_timestamp_ns = receive_ts_ns
 
                 record_control = socket_list["socket_1"].read() if "socket_1" in socket_list else None
 
@@ -604,15 +636,19 @@ class WebRTCUDPManager:
             if ptype == "controller":
                 parsed = parse_data(raw)
                 if parsed:
+                    receive_ts_ns = time.monotonic_ns()
                     with self._lock:
                         self.data = parsed
                         self.hand_data.clear()
+                        self.vr_input_timestamp_ns = receive_ts_ns
             elif ptype in ("hand_text", "hand_binary"):
                 hand = parse_hand_data(raw)
                 if hand:
+                    receive_ts_ns = time.monotonic_ns()
                     with self._lock:
                         self.hand_data[hand["side"]] = hand
                         self.data = None
+                        self.vr_input_timestamp_ns = receive_ts_ns
 
     def test_connection(self) -> list[dict]:
         """Block until VR sends initial data.  Raises TimeoutError after deadline."""
@@ -700,11 +736,23 @@ class WebRTCUDPManager:
         utils.logger.info("Stopping WebRTCUDPManager...")
         self.running = False
 
-        # Shut down the async loop
         if self._loop is not None and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
+            if self._shutdown_event is not None:
+                self._loop.call_soon_threadsafe(self._shutdown_event.set)
+            else:
+                self._loop.call_soon_threadsafe(lambda: None)
         if self._loop_thread is not None:
-            self._loop_thread.join(timeout=3.0)
+            self._loop_thread.join(timeout=10.0)
+            if (
+                self._loop_thread.is_alive()
+                and self._loop is not None
+                and self._loop.is_running()
+            ):
+                utils.logger.warning(
+                    "WebRTC async loop did not stop cleanly; forcing stop."
+                )
+                self._loop.call_soon_threadsafe(self._loop.stop)
+                self._loop_thread.join(timeout=2.0)
 
         for t in self.threads:
             if t.is_alive():

@@ -252,6 +252,7 @@ class MagtouchIliasSerialReader:
             with cu._lock:
                 cu.tactile_data = snapshot
                 cu.tactile_byte = snapshot.astype(np.int32).tobytes()
+                cu.tactile_timestamp_ns = time.monotonic_ns()
 
             ctr += 1
             if ctr == 300:
