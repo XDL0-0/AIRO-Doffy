@@ -1,9 +1,9 @@
-# VR Teleoperation for UR Robots
+# VR Teleoperation for Robot Manipulators
 
-A high-performance codebase for controlling UR robots (UR3e, UR5e) using VR controllers or hand tracking via UDP. It features camera streaming to the VR headset via **HD chunked UDP** or **WebRTC** (aiortc), low-latency robot control, tactile sensing integration, dataset recording (HDF5 & LeRobot formats), and policy inference evaluation.
+A high-performance codebase for controlling robot manipulators (UR3e, UR5e, RealMan, or compatible backends) using VR controllers or hand tracking via UDP. It features camera streaming to the VR headset via **HD chunked UDP** or **WebRTC** (aiortc), low-latency robot control, tactile sensing integration, dataset recording (HDF5 & LeRobot formats), and policy inference evaluation.
 
 ## Key Features
-- **Low-Latency Teleoperation**: Real-time VR controller tracking to robot end-effector mapping with analytical IK and safety limits.
+- **Low-Latency Teleoperation**: Real-time VR controller tracking to robot end-effector mapping with backend-specific IK/control and safety limits.
 - **Hand Tracking Support**: Receive and visualize 24-bone hand skeleton data from Meta Quest hand tracking (text and binary protocols).
 - **HD Video Streaming**: Two transport options:
   - **UDP** (`camera_udp.py`): Chunked JPEG transfer, compatible with `UdpSocketMultiHD.cs`.
@@ -18,7 +18,7 @@ A high-performance codebase for controlling UR robots (UR3e, UR5e) using VR cont
 
 ### 1. Prerequisites
 - **Python 3.10+** (Recommended: Conda environment `airo-mono`)
-- **Robot**: Compatible UR Robot (e.g., UR3e, UR5e) with RTDE enabled.
+- **Robot**: Compatible robot backend, such as UR3e/UR5e with RTDE enabled or RealMan over its network API.
 - **Cameras**: Intel RealSense Cameras.
 - **VR Setup**: VR headset running the compatible Unity app with `DualControllerSender` / `HandTrackingSender` + `UdpSocketMultiHD` receiver.
 
@@ -50,10 +50,13 @@ The system uses `config.py` as its central configuration. Key settings:
 ### Network & Robot
 | Parameter | Description | Default |
 |---|---|---|
-| `UR_IP` | UR robot IP address | `10.42.0.162` |
+| `ROBOT_TYPE` | Robot backend (`ur3e` / `ur5e` / `realman`) | `ur3e` |
+| `ROBOT_IP` | Selected robot IP address, defaults to `UR_IP` when unset | `None` |
+| `UR_IP` | UR robot IP address fallback | `10.42.0.162` |
+| `REALMAN_PORT` | RealMan API port | `8080` |
 | `PC_IP` | Host PC IP address | `10.10.131.72` |
 | `VR_IP` | VR headset IP address | `10.10.131.166` |
-| `ROBOT_TYPE` | Robot model (`ur3e` / `ur5e`) | `ur3e` |
+| `TELEOP_COMMAND_MODE` | Teleoperation command path (`joint` / `tcp`) | `joint` |
 
 ### Tracking & Streaming
 | Parameter | Description | Default |
@@ -70,8 +73,10 @@ The system uses `config.py` as its central configuration. Key settings:
 |---|---|---|
 | `DATASET_DIR` | Dataset save path | `./datasets/...` |
 | `DATASET_TYPE` | `"a"` = ACT/HDF5, `"l"` = LeRobot | `l` |
+| `DATA_TYPE` | State/action representation (`qpos`, `both`, `tcp`, `delta_tcp`) | `both` |
 | `TACTILE_TRANSFER` | Enable tactile sensor data | `False` |
-| `FORCE_COLLECT` | Enable F/T sensor recording | `True` |
+| `FORCE_COLLECT` | Record TCP force `[Fx, Fy, Fz]` when available | `False` |
+| `TORQUE_COLLECT` | Record TCP torque `[Tx, Ty, Tz]` when available | `False` |
 
 ## How to Run
 
@@ -149,9 +154,11 @@ airo-doffy/
 ├── camera_udp.py       # Camera streaming (UDP chunks) + VR data reception
 ├── WebRTC_udp.py       # Camera streaming (WebRTC) + VR data reception
 ├── parse_vr.py         # VR data parsing (controller + hand tracking)
-├── ur_teleop.py        # Robot teleoperation (IK + servo)
+├── robot_backend.py    # Robot backend adapters for UR, RealMan, and generic manipulators
+├── robot_teleop.py     # Robot-agnostic teleoperation backend client
 ├── vr_data.py          # Standalone VR receiver + hand visualizer
-├── dataset_new.py      # Dataset recording (HDF5 / LeRobot)
+├── data_schema.py      # Dataset and policy state/action schema helpers
+├── dataset.py          # Dataset recording (HDF5 / LeRobot)
 ├── inference.py        # Policy inference
 ├── tactile.py          # Tactile sensor interface
 ├── udp_comms.py        # Two-way UDP communication

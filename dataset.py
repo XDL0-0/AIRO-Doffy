@@ -12,20 +12,31 @@ import numpy as np
 
 import utils
 from config import Config
-from airo_camera_toolkit.cameras.realsense.realsense import Realsense
+from data_schema import build_data_schema, should_store_extra_tcp_pose
 
 
 class DatasetRecorder:
-    def __init__(self, camera_num: int):
+    def __init__(
+        self,
+        camera_num: int,
+        robot_dof: int | None = None,
+        robot_type: str | None = None,
+        force_collect: bool | None = None,
+        torque_collect: bool | None = None,
+    ):
         cfg = Config()
         self.save_eef = cfg.SAVE_EEF
         self.task_description = cfg.TASK_NAME
         self.camera_num = camera_num
         self.dataset_type = cfg.DATASET_TYPE
         self.data_type = cfg.DATA_TYPE
+        self.robot_dof = int(robot_dof if robot_dof is not None else len(cfg.INITIAL_JOINT))
+        self.robot_type = robot_type or cfg.ROBOT_TYPE
+        self.schema = build_data_schema(self.data_type, self.robot_dof)
         self.push_to_hub = cfg.PUSH_TO_HUB if self.dataset_type == "l" else False
         self.tactile_mode = cfg.TACTILE_TRANSFER
-        self.force_mode = cfg.FORCE_COLLECT and cfg.TORQUE_MODE
+        self.force_collect = bool(force_collect) if force_collect is not None else cfg.FORCE_COLLECT
+        self.torque_collect = bool(torque_collect) if torque_collect is not None else cfg.TORQUE_COLLECT
         self.depth_mode = cfg.DEPTH_INFO_ENABLE
         self.fps = cfg.COLLECT_RATE
         self.resolution = cfg.REALSENSE_RESOLUTION  # (width, height)
@@ -33,8 +44,9 @@ class DatasetRecorder:
         suffix = "_lero" if self.dataset_type == "l" else "_hdf5"
         self.dataset_dir = Path(cfg.DATASET_DIR + suffix)
 
-        self.collect_tcp_extra = self.data_type == "both"
-        self.feature_dim = 7 if self.collect_tcp_extra else (8 if self.save_eef else 7)
+        self.collect_tcp_extra = should_store_extra_tcp_pose(self.data_type)
+        self.state_dim = self.schema.state_dim
+        self.action_dim = self.schema.action_dim
         self.tcp_pose_dim = 7
         self.timestamp_names = (
             ["collect", "robot_state", "robot_action", "vr_input", "tactile"]
@@ -51,7 +63,9 @@ class DatasetRecorder:
         utils.logger.info(f"Dataset Dir: {self.dataset_dir}")
         utils.logger.info(f"Dataset Type: {self.dataset_type}")
         utils.logger.info(f"Data Type: {self.data_type}")
-        utils.logger.info(f"Feature dim: {self.feature_dim}")
+        utils.logger.info(f"Robot DoF: {self.robot_dof}")
+        utils.logger.info(f"State dim: {self.state_dim}")
+        utils.logger.info(f"Action dim: {self.action_dim}")
 
         self._reset_data_dict()
         self._init_dataset()
@@ -66,8 +80,10 @@ class DatasetRecorder:
         }
         if self.collect_tcp_extra:
             self.data_dict["/extra/tcp_pose"] = []
-        if self.force_mode:
+        if self.force_collect:
             self.data_dict["/observations/force"] = []
+        if self.torque_collect:
+            self.data_dict["/observations/torque"] = []
         if self.tactile_mode:
             self.data_dict["/observations/tactile"] = []
         for i in range(self.camera_num):
@@ -112,13 +128,13 @@ class DatasetRecorder:
         features = {
             "action": {
                 "dtype": "float32",
-                "shape": (self.feature_dim,),
-                "names": [f"motor_{i}" for i in range(self.feature_dim)],
+                "shape": (self.action_dim,),
+                "names": self.schema.action_names,
             },
             "observation.state": {
                 "dtype": "float32",
-                "shape": (self.feature_dim,),
-                "names": [f"joint_{i}" for i in range(self.feature_dim)],
+                "shape": (self.state_dim,),
+                "names": self.schema.state_names,
             },
             "extra.timestamps_ns": {
                 "dtype": "int64",
@@ -126,11 +142,17 @@ class DatasetRecorder:
                 "names": self.timestamp_names,
             },
         }
-        if self.force_mode:
+        if self.force_collect:
             features["observation.force"] = {
                 "dtype": "float32",
-                "shape": (6,),
-                "names": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+                "shape": (3,),
+                "names": ["Fx", "Fy", "Fz"],
+            }
+        if self.torque_collect:
+            features["observation.torque"] = {
+                "dtype": "float32",
+                "shape": (3,),
+                "names": ["Tx", "Ty", "Tz"],
             }
         if self.collect_tcp_extra:
             features["extra.tcp_pose"] = {
@@ -192,7 +214,7 @@ class DatasetRecorder:
                 repo_id=repo_id,
                 root=root,
                 fps=self.fps,
-                robot_type="ur_custom",
+                robot_type=self.robot_type,
                 features=features,
                 use_videos=True,
                 image_writer_processes=0,
@@ -207,10 +229,12 @@ class DatasetRecorder:
         action: np.ndarray,
         camera_images: dict[str, np.ndarray],
         tactile_data: np.ndarray | None = None,
-        force_data: np.ndarray | None = None,
+        wrench_data: np.ndarray | None = None,
         depth_images: dict[str, np.ndarray] | None = None,
         extra_data: dict[str, object] | None = None,
     ) -> None:
+        state = self._coerce_vector(state, self.state_dim, "state")
+        action = self._coerce_vector(action, self.action_dim, "action")
         # ── LeRobot: per-cycle add_frame (skip data_dict buffer) ──────────
         if self.dataset_type == "l":
             self._lerobot_add_frame(
@@ -218,7 +242,7 @@ class DatasetRecorder:
                 action,
                 camera_images,
                 tactile_data,
-                force_data,
+                wrench_data,
                 depth_images,
                 extra_data,
             )
@@ -235,8 +259,11 @@ class DatasetRecorder:
             self._get_timestamps_extra(extra_data)
         )
 
-        if self.force_mode and force_data is not None:
-            self.data_dict["/observations/force"].append(force_data)
+        force, torque = self._split_wrench(wrench_data)
+        if self.force_collect and force is not None:
+            self.data_dict["/observations/force"].append(force)
+        if self.torque_collect and torque is not None:
+            self.data_dict["/observations/torque"].append(torque)
         if self.tactile_mode and tactile_data is not None:
             self.data_dict["/observations/tactile"].append(tactile_data)
         for name, img in camera_images.items():
@@ -251,7 +278,7 @@ class DatasetRecorder:
         action: np.ndarray,
         camera_images: dict[str, np.ndarray],
         tactile_data: np.ndarray | None,
-        force_data: np.ndarray | None,
+        wrench_data: np.ndarray | None,
         depth_images: dict[str, np.ndarray] | None,
         extra_data: dict[str, object] | None,
     ) -> None:
@@ -267,13 +294,16 @@ class DatasetRecorder:
             self._lerobot_episode_started = True
 
         frame_data: dict = {
-            "observation.state": np.array(state, dtype=np.float32),
-            "action": np.array(action, dtype=np.float32),
+            "observation.state": self._coerce_vector(state, self.state_dim, "state").astype(np.float32),
+            "action": self._coerce_vector(action, self.action_dim, "action").astype(np.float32),
             "task": self.task_description,
         }
 
-        if self.force_mode and force_data is not None:
-            frame_data["observation.force"] = np.array(force_data, dtype=np.float32)
+        force, torque = self._split_wrench(wrench_data)
+        if self.force_collect and force is not None:
+            frame_data["observation.force"] = np.array(force, dtype=np.float32)
+        if self.torque_collect and torque is not None:
+            frame_data["observation.torque"] = np.array(torque, dtype=np.float32)
         if self.collect_tcp_extra:
             frame_data["extra.tcp_pose"] = self._get_tcp_pose_extra(extra_data)
         frame_data["extra.timestamps_ns"] = self._get_timestamps_extra(extra_data)
@@ -328,6 +358,22 @@ class DatasetRecorder:
                 values[5 + cam_idx] = int(camera_timestamps.get(f"camera_{cam_idx}", 0))
         return values
 
+    @staticmethod
+    def _split_wrench(wrench_data: np.ndarray | None) -> tuple[np.ndarray | None, np.ndarray | None]:
+        if wrench_data is None:
+            return None, None
+        wrench = np.asarray(wrench_data, dtype=np.float32).reshape(-1)
+        if wrench.size < 6:
+            raise ValueError(f"Wrench data has shape {wrench.shape}; expected at least 6 values.")
+        return wrench[:3], wrench[3:6]
+
+    @staticmethod
+    def _coerce_vector(values: np.ndarray, expected_dim: int, name: str) -> np.ndarray:
+        arr = np.asarray(values, dtype=np.float32).reshape(-1)
+        if arr.shape == (expected_dim,):
+            return arr
+        raise ValueError(f"Dataset {name} vector has shape {arr.shape}; expected ({expected_dim},).")
+
     # ── Data export ───────────────────────────────────────────────────────
 
     def data_export(self, cu_manager) -> None:
@@ -378,8 +424,8 @@ class DatasetRecorder:
             obs = root.create_group("observations")
             image_grp = obs.create_group("images")
 
-            obs.create_dataset("qpos", (max_timesteps, self.feature_dim))
-            root.create_dataset("action", (max_timesteps, self.feature_dim))
+            obs.create_dataset("qpos", (max_timesteps, self.state_dim))
+            root.create_dataset("action", (max_timesteps, self.action_dim))
             extra_grp = root.create_group("extra")
             ts_ds = extra_grp.create_dataset(
                 "timestamps_ns", (max_timesteps, self.timestamp_dim), dtype="int64"
@@ -388,8 +434,10 @@ class DatasetRecorder:
             if self.collect_tcp_extra:
                 extra_grp.create_dataset("tcp_pose", (max_timesteps, self.tcp_pose_dim))
 
-            if self.force_mode:
-                obs.create_dataset("force", (max_timesteps, 6))
+            if self.force_collect:
+                obs.create_dataset("force", (max_timesteps, 3))
+            if self.torque_collect:
+                obs.create_dataset("torque", (max_timesteps, 3))
             if self.tactile_mode:
                 obs.create_dataset("tactile", (max_timesteps, 41, 3))
 

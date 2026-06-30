@@ -39,7 +39,8 @@ import pyrealsense2 as rs
 
 import utils
 from config import Config
-from ur_teleop import make_robot, FastRobotiq2F85
+from data_schema import action_representation, build_data_schema, state_representation
+from robot_backend import make_robot_backend
 from airo_camera_toolkit.cameras.realsense.realsense import Realsense
 
 cfg = Config()
@@ -257,33 +258,28 @@ def apply_policy_timing_overrides(
 # ── Hardware wrappers ─────────────────────────────────────────────────────
 
 class InferenceRobotController:
-    """UR arm + gripper controller for policy inference."""
+    """Robot + gripper controller for policy inference."""
 
     def __init__(self):
         self.torque_mode = cfg.TORQUE_MODE
-        self.initial_joint = cfg.INITIAL_JOINT
-        self.tcp_transform = cfg.TCP_TRANSFORM
+        self.backend = make_robot_backend(cfg)
+        self.ur = self.backend.robot
+        self.gripper = self.backend.gripper
+        self.dof = self.backend.dof
+        self.initial_joint = self.backend.initial_joint_configuration(cfg.INITIAL_JOINT)
+        self.schema = build_data_schema(cfg.DATA_TYPE, self.dof)
+        self.state_representation = state_representation(cfg.DATA_TYPE)
+        self.action_representation = action_representation(cfg.DATA_TYPE)
         self.last_tcp_quat: np.ndarray | None = None
         self.delta_tcp_target_pose: np.ndarray | None = None
-
-        ruckig_params = None
-        if cfg.RUCKIG_ENABLE and self.torque_mode:
-            ruckig_params = {
-                "max_vel": cfg.RUCKIG_MAX_VEL,
-                "max_acc": cfg.RUCKIG_MAX_ACC,
-                "max_jerk": cfg.RUCKIG_MAX_JERK,
-            }
-        self.ur, self.ik = make_robot(
-            cfg.UR_IP, cfg.ROBOT_TYPE, self.torque_mode, self.initial_joint, ruckig_params
-        )
-        self.gripper = FastRobotiq2F85(cfg.UR_IP)
-        self.gripper.open()
         time.sleep(1.0)
 
         self._move_to_initial()
 
-        self.force_mode = cfg.FORCE_COLLECT and self.torque_mode
-        self.gravity_comp = cfg.GRAVITY_COMP and self.force_mode
+        self.wrench_mode = (cfg.FORCE_COLLECT or cfg.TORQUE_COLLECT) and self.backend.supports_force
+        self.force_mode = cfg.FORCE_COLLECT and self.backend.supports_force
+        self.torque_collect = cfg.TORQUE_COLLECT and self.backend.supports_force
+        self.gravity_comp = cfg.GRAVITY_COMP and self.wrench_mode
         if self.gravity_comp:
             self._gravity_compensator = utils.GravityCompensator(
                 mass=cfg.TOOL_MASS,
@@ -294,15 +290,14 @@ class InferenceRobotController:
             self._calibrate_force()
 
         control_str = "torque" if self.torque_mode else "position"
-        utils.logger.info(f"Robot ready | control={control_str}")
+        utils.logger.info(
+            f"Robot ready | robot={self.backend.dataset_robot_type} | control={control_str} | dof={self.dof}"
+        )
 
     def _move_to_initial(self) -> None:
         utils.logger.info("Moving to initial joint configuration...")
         self.delta_tcp_target_pose = None
-        if self.torque_mode:
-            self.ur.target_pos = self.initial_joint.tolist()
-        else:
-            self.ur.move_to_joint_configuration(self.initial_joint, 0.5).wait()
+        self.backend.reset(self.initial_joint)
         time.sleep(1.0)
 
     def _calibrate_force(self) -> None:
@@ -316,14 +311,11 @@ class InferenceRobotController:
         self._gravity_compensator.finish_calibration()
 
     def _raw_force(self) -> np.ndarray:
-        if self.torque_mode:
-            return np.array(self.ur.get_cached_tcp_force())
-        return np.array(self.ur.get_tcp_force())
+        force = self.backend.get_tcp_force()
+        return np.zeros(6) if force is None else np.asarray(force, dtype=float)
 
     def _tool_rotation(self) -> np.ndarray:
-        if self.torque_mode:
-            return self.ur.get_cached_tcp_pose()[:3, :3]
-        return self.ur.get_tcp_pose()[:3, :3]
+        return self.backend.get_tcp_pose()[:3, :3]
 
     @staticmethod
     def _normalize_gripper_width(gripper_width_m: float) -> float:
@@ -334,26 +326,32 @@ class InferenceRobotController:
         return float(np.clip(gripper_width_norm, 0.0, 1.0) * cfg.GRIPPER_MAX)
 
     def get_state(self) -> np.ndarray:
-        """[joint_0 ... joint_5, normalized_gripper] shape (7,) float32."""
-        if self.torque_mode:
-            joints = np.array(self.ur.get_cached_joint_configuration())
-        else:
-            joints = np.array(self.ur.get_joint_configuration())
-        gripper = np.array([self._normalize_gripper_width(self.gripper.get_current_width())])
-        return np.concatenate([joints, gripper]).astype(np.float32)
+        """Return observation.state according to Config.DATA_TYPE and robot DoF."""
+        gripper = self._normalize_gripper_width(self.gripper.get_current_width())
+        if self.state_representation == "tcp":
+            return np.concatenate([self.get_tcp_pose_extra(), [gripper]]).astype(np.float32)
+        joints = np.asarray(self.backend.get_joint_configuration(), dtype=float)
+        return np.concatenate([joints, [gripper]]).astype(np.float32)
 
     def get_tcp_pose_extra(self) -> np.ndarray:
         """TCP pose as [qx, qy, qz, qw, x, y, z], matching DATA_TYPE='both'."""
-        joints = self.get_state()[:6]
-        tcp = self.ik.forward_kinematics(*joints) @ self.tcp_transform
         from airo_spatial_algebra.se3 import SE3Container
 
+        tcp = self.backend.get_tcp_pose()
         se3 = SE3Container.from_homogeneous_matrix(tcp)
         self.last_tcp_quat = utils.quat_cal(se3.rotation_matrix, self.last_tcp_quat)
         return np.concatenate([self.last_tcp_quat, se3.translation]).astype(np.float32)
 
     def get_force(self) -> np.ndarray:
-        """Compensated TCP force/torque  shape (6,) float32."""
+        """TCP force [Fx, Fy, Fz] shape (3,) float32."""
+        return self.get_wrench()[:3]
+
+    def get_torque(self) -> np.ndarray:
+        """TCP torque [Tx, Ty, Tz] shape (3,) float32."""
+        return self.get_wrench()[3:6]
+
+    def get_wrench(self) -> np.ndarray:
+        """Compensated TCP wrench [Fx, Fy, Fz, Tx, Ty, Tz] shape (6,) float32."""
         raw = self._raw_force()
         if self.gravity_comp:
             R = self._tool_rotation()
@@ -361,23 +359,11 @@ class InferenceRobotController:
         return raw.astype(np.float32)
 
     def _current_tcp_pose(self) -> np.ndarray:
-        if self.torque_mode:
-            return np.asarray(self.ur.get_cached_tcp_pose(), dtype=float)
-        return np.asarray(self.ur.get_tcp_pose(), dtype=float)
+        return np.asarray(self.backend.get_tcp_pose(), dtype=float)
 
     def _servo_tcp_pose(self, tcp_pose: np.ndarray, dt: float) -> bool:
-        if self.torque_mode:
-            q_seed = np.asarray(self.ur.get_cached_joint_configuration(), dtype=float)
-            sol = self.ik.inverse_kinematics_closest_with_tcp(
-                tcp_pose, self.tcp_transform, *q_seed
-            )
-            if not sol:
-                utils.logger.warning("TCP IK failed - skipping action.")
-                return False
-            self.ur.target_pos = np.asarray(sol[0], dtype=float).tolist()
-        else:
-            self.ur.servo_to_tcp_pose(tcp_pose, dt)
-        return True
+        result = self.backend.command_tcp_pose(tcp_pose, dt)
+        return result.accepted
 
     def _tcp_pose_from_action(self, action: np.ndarray) -> tuple[np.ndarray, float | None]:
         from airo_spatial_algebra.se3 import SE3Container
@@ -468,62 +454,50 @@ class InferenceRobotController:
                 self._set_gripper_from_normalized(gripper)
             return ok
 
-        # Joint action = [joint_targets(6), gripper_target(1)].
-        joint_target = np.asarray(action[:6], dtype=np.float64)
+        # Joint action = [joint_targets(dof), gripper_target].
+        if action.shape[0] < self.dof:
+            raise ValueError(f"Joint action has {action.shape[0]} values, expected at least {self.dof}.")
+        joint_target = np.asarray(action[: self.dof], dtype=np.float64)
 
-        if not utils.is_joint_within_limits(joint_target):
+        if self.backend.is_ur and not utils.is_joint_within_limits(joint_target):
             utils.logger.warning("Joint limits exceeded — skipping.")
             return False
 
-        current_joints = self.get_state()[:6]
-        if not utils.is_joint_change_safe(current_joints, joint_target, cfg.MOVE_THRESHOLD):
+        current_joints = np.asarray(self.backend.get_joint_configuration(), dtype=float)
+        threshold = np.asarray(cfg.MOVE_THRESHOLD, dtype=float)
+        if threshold.shape != (self.dof,):
+            threshold = np.resize(threshold, self.dof)
+        if not utils.is_joint_change_safe(current_joints, joint_target, threshold):
             return False
 
-        if self.torque_mode:
-            self.ur.target_pos = joint_target.tolist()
-        else:
-            self.ur.servo_to_joint_configuration(joint_target, dt)
+        self.backend.command_joint_configuration(joint_target, dt)
 
-        if len(action) > 6:
-            self._set_gripper_from_normalized(float(action[6]))
+        if len(action) > self.dof:
+            self._set_gripper_from_normalized(float(action[self.dof]))
 
         return True
 
     def start_freedrive(self) -> None:
-        """Suspend robot control and enter UR teach/freedrive mode."""
-        if self.torque_mode:
-            utils.logger.warning(
-                "Freedrive was requested in torque mode. Trying teachMode without "
-                "disabling torque control; switch TORQUE_MODE=False if this fails."
-            )
-        else:
-            self.ur.rtde_control.servoStop()
-            time.sleep(0.1)
-        self.ur.rtde_control.teachMode()
+        """Suspend robot control and enter freedrive/teach mode when supported."""
+        self.backend.start_freedrive()
         utils.logger.info("Freedrive enabled. Move the robot, then press Enter to resume.")
 
     def stop_freedrive(self) -> None:
-        """Exit UR teach/freedrive mode and make the current pose the next target."""
-        self.ur.rtde_control.endTeachMode()
-        if self.torque_mode:
-            self.ur.target_pos = self.get_state()[:6].tolist()
+        """Exit freedrive/teach mode and make the current pose the next target."""
+        self.backend.stop_freedrive()
         self.delta_tcp_target_pose = None
         utils.logger.info("Freedrive disabled. Inference will resume from current state.")
 
     def reset(self) -> None:
         self.delta_tcp_target_pose = None
         self.gripper.move(cfg.GRIPPER_MAX)
-        if self.torque_mode:
-            self.ur.tmp_move(self.initial_joint)
-        else:
-            self.ur.move_to_joint_configuration(self.initial_joint, 1.0).wait()
+        self.backend.reset(self.initial_joint)
         time.sleep(1.0)
         utils.logger.info("Robot reset to initial pose.")
 
     def cleanup(self) -> None:
         try:
-            if self.torque_mode:
-                self.ur.disable_torque_control()
+            self.backend.cleanup()
         except Exception as e:
             utils.logger.error(f"Cleanup error: {e}")
 
@@ -696,6 +670,7 @@ def build_observation(
     device: str,
     policy_config=None,
     force: np.ndarray | None = None,
+    torque: np.ndarray | None = None,
     tactile: np.ndarray | None = None,
     tcp_pose: np.ndarray | None = None,
     add_batch: bool = True,
@@ -706,6 +681,8 @@ def build_observation(
     }
     if force is not None:
         values["observation.force"] = np.asarray(force, dtype=np.float32)
+    if torque is not None:
+        values["observation.torque"] = np.asarray(torque, dtype=np.float32)
     if tactile is not None:
         values["observation.tactile"] = np.asarray(tactile, dtype=np.float32)
     if tcp_pose is not None:
@@ -800,7 +777,6 @@ def main() -> None:
     action_type = normalize_action_type(args.action_type)
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    force_mode = cfg.FORCE_COLLECT and cfg.TORQUE_MODE
     tactile_mode = cfg.TACTILE_TRANSFER
 
     utils.logger.info("=== Inference Configuration ===")
@@ -809,7 +785,6 @@ def main() -> None:
     utils.logger.info(f"Device:  {device}")
     utils.logger.info(f"Control: {'torque' if cfg.TORQUE_MODE else 'position'}")
     utils.logger.info(f"Action:  {action_type}")
-    utils.logger.info(f"Force:   {force_mode}")
     utils.logger.info(f"Tactile: {tactile_mode}")
     utils.logger.info(
         f"FPS: {args.fps}  |  Episodes: {args.episodes}  |  Max steps: {args.max_steps}"
@@ -817,6 +792,11 @@ def main() -> None:
 
     cameras = InferenceCameraManager()
     robot = InferenceRobotController()
+    wrench_mode = robot.wrench_mode
+    force_mode = robot.force_mode
+    torque_mode = robot.torque_collect
+    utils.logger.info(f"Force:   {force_mode}")
+    utils.logger.info(f"Torque:  {torque_mode}")
     pause_controller = EnterPauseController()
     pause_controller.start()
     freedrive_active = False
@@ -845,6 +825,8 @@ def main() -> None:
     postprocessor = load_policy_processor(args.policy, "policy_postprocessor.json")
     policy_input_keys = set(policy.config.input_features)
     needs_tcp_pose = "extra.tcp_pose" in policy_input_keys
+    needs_force = "observation.force" in policy_input_keys
+    needs_torque = "observation.torque" in policy_input_keys
     utils.logger.info(
         "Inference path: "
         f"{'policy_preprocessor -> ' if preprocessor is not None else ''}"
@@ -903,7 +885,9 @@ def main() -> None:
 
                 state = robot.get_state()
                 images = cameras.get_images()
-                force = robot.get_force() if force_mode else None
+                wrench = robot.get_wrench() if wrench_mode else None
+                force = wrench[:3] if (needs_force and force_mode and wrench is not None) else None
+                torque = wrench[3:6] if (needs_torque and torque_mode and wrench is not None) else None
                 tcp_pose = robot.get_tcp_pose_extra() if needs_tcp_pose else None
                 tactile = (
                     tactile_holder.tactile_data
@@ -916,10 +900,11 @@ def main() -> None:
                     state,
                     images,
                     device,
-                    policy.config,
-                    force,
-                    tactile,
-                    tcp_pose,
+                    policy_config=policy.config,
+                    force=force,
+                    torque=torque,
+                    tactile=tactile,
+                    tcp_pose=tcp_pose,
                     add_batch=preprocessor is None,
                 )
                 if preprocessor is not None:

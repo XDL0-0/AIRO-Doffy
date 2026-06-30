@@ -324,7 +324,7 @@ tcp_transform  = None  # flange→TCP, used with IK when torque_mode + eef/tcp_q
 delta_tcp_target_pose = None  # commanded TCP target used to integrate delta_tcp actions
 
 if not args.no_robot:
-    from ur_teleop import make_robot, FastRobotiq2F85
+    from robot_teleop import make_robot, FastRobotiq2F85
     from airo_robots.grippers import Robotiq2F85
     from airo_spatial_algebra.se3 import SE3Container
 

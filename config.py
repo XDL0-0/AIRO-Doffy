@@ -6,8 +6,14 @@ import utils
 @dataclass
 class Config:
     # ── Robot ──────────────────────────────────────────────────────────────
+    # Supported: "ur3e", "ur5e", "realman".
     ROBOT_TYPE: str = "ur3e"
+    ROBOT_IP: str | None = None
     UR_IP: str = "10.42.0.162"
+    REALMAN_PORT: int = 8080
+    # "joint" preserves the original VR -> IK -> joint-servo path.
+    # "tcp" sends TCP targets through the selected backend when possible.
+    TELEOP_COMMAND_MODE: str = "joint"
 
     PC_IP: str = "10.10.129.200"
     VR_IP: str = "10.10.131.166"
@@ -18,7 +24,9 @@ class Config:
     DATASET_TYPE: str = "l"          # 'a' = ACT (hdf5), 'l' = lerobot
     PUSH_TO_HUB: bool = False
     SAVE_EEF: bool = False
-    DATA_TYPE: str = "both"          # "qpos" or "both" (qpos + extra.tcp_pose)
+    # Supported: "qpos"/"joint_configuration", "both", "tcp"/"tcp_quat"/"eef", "delta_tcp".
+    # "both" keeps joint state/action and stores extra.tcp_pose for conversion or policies.
+    DATA_TYPE: str = "both"
     DEPTH_INFO_ENABLE: bool = False
 
     # ── Tracking mode ─────────────────────────────────────────────────────
@@ -94,7 +102,10 @@ class Config:
 
     # ── Force / Torque ────────────────────────────────────────────────────
     TORQUE_MODE: bool = False
+    # Record TCP force [Fx, Fy, Fz] when the selected backend exposes a wrench.
     FORCE_COLLECT: bool = False
+    # Record TCP torque [Tx, Ty, Tz] when the selected backend exposes a wrench.
+    TORQUE_COLLECT: bool = False
     GRAVITY_COMP: bool = False
     TOOL_MASS: float = 0.925         # kg — Robotiq 2F85 gripper
     TOOL_COM: np.ndarray = field(
@@ -114,7 +125,21 @@ class Config:
 
     def __post_init__(self):
         from airo_spatial_algebra.se3 import SE3Container
-        if self.DATA_TYPE not in {"qpos", "both", "eef", "tcp_quat"}:
+        from data_schema import normalize_data_type
+
+        self.ROBOT_TYPE = self.ROBOT_TYPE.lower()
+        self.DATA_TYPE = normalize_data_type(self.DATA_TYPE)
+        if self.TELEOP_COMMAND_MODE not in {"joint", "tcp"}:
+            raise ValueError(f"Unsupported TELEOP_COMMAND_MODE: {self.TELEOP_COMMAND_MODE}")
+        if self.ROBOT_IP is None:
+            self.ROBOT_IP = self.UR_IP
+        if self.TORQUE_MODE and self.ROBOT_TYPE not in {"ur3e", "ur5e"}:
+            raise ValueError("TORQUE_MODE is currently only supported for UR robots.")
+        if self.DATA_TYPE == "delta_tcp" and self.SAVE_EEF:
+            utils.logger.warning("SAVE_EEF is ignored when DATA_TYPE='delta_tcp'.")
+        if self.DATA_TYPE == "tcp" and self.SAVE_EEF:
+            utils.logger.warning("SAVE_EEF is redundant when DATA_TYPE='tcp'.")
+        if self.DATA_TYPE not in {"qpos", "both", "tcp", "delta_tcp"}:
             raise ValueError(f"Unsupported DATA_TYPE: {self.DATA_TYPE}")
         if np.any(self.TCP_POSE):
             self.TCP_TRANSFORM = SE3Container.from_rotation_vector_and_translation(

@@ -9,8 +9,8 @@ import numpy as np
 
 import utils
 from config import Config
-from ur_teleop import URTeleop
-from dataset_new import DatasetRecorder
+from robot_teleop import RobotTeleop
+from dataset import DatasetRecorder
 from camera_udp import CameraUDPManager
 from WebRTC_udp import WebRTCUDPManager
 from tactile import MagtouchIliasSerialReader, MagtouchIliasSerialReaderConfig
@@ -26,7 +26,7 @@ MIN_DT = 1.0 / TELEOP_HZ
 # ── Background loops ─────────────────────────────────────────────────────
 
 def collect_loop(
-    teleop: URTeleop,
+    teleop: RobotTeleop,
     cu_manager: CameraManager,
     dataset: DatasetRecorder,
     collect_rate: int,
@@ -68,7 +68,7 @@ def collect_loop(
                 vr_input_timestamp = getattr(cu_manager, "vr_input_timestamp_ns", 0)
 
             # Robot state uses its own _state_lock inside get_state_snapshot()
-            state, action, force, extra = teleop.get_state_snapshot()
+            state, action, wrench, extra = teleop.get_state_snapshot()
             if extra is None:
                 extra = {}
             extra["collect_timestamp_ns"] = np.array(collect_ts_ns, dtype=np.int64)
@@ -80,9 +80,9 @@ def collect_loop(
                 vr_input_timestamp, dtype=np.int64
             )
 
-            force_val = force if (cfg.FORCE_COLLECT and cfg.TORQUE_MODE) else None
+            wrench_val = wrench if teleop.wrench_mode else None
             dataset.data_collection(
-                state, action, images, tactile, force_val, depth_imgs, extra
+                state, action, images, tactile, wrench_val, depth_imgs, extra
             )
 
         next_tick += dt
@@ -143,7 +143,7 @@ def main() -> None:
         cu_manager = WebRTCUDPManager()
     else:
         cu_manager = CameraUDPManager()
-    teleop = URTeleop(cu_manager.test_connection())
+    teleop = RobotTeleop(cu_manager.test_connection())
 
     if cfg.TACTILE_TRANSFER:
         tactile_manager = MagtouchIliasSerialReader(
@@ -159,7 +159,13 @@ def main() -> None:
         ).start()
 
     time.sleep(5)
-    dataset = DatasetRecorder(cu_manager.camera_num)
+    dataset = DatasetRecorder(
+        cu_manager.camera_num,
+        robot_dof=teleop.dof,
+        robot_type=teleop.backend.dataset_robot_type,
+        force_collect=cfg.FORCE_COLLECT and teleop.backend.supports_force,
+        torque_collect=cfg.TORQUE_COLLECT and teleop.backend.supports_force,
+    )
     cu_manager.start_comms_threads()
 
     # Synchronization: pause collection during episode export
@@ -214,14 +220,6 @@ def main() -> None:
             cu_manager.close()
         except Exception as e:
             utils.logger.error(f"Error closing cu_manager: {e}")
-
-        try:
-            if cfg.TORQUE_MODE:
-                teleop.ur.disable_torque_control()
-        except AttributeError:
-            pass
-        except Exception as e:
-            utils.logger.error(f"Error disabling robot: {e}")
 
         try:
             teleop.close()
