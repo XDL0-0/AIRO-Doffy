@@ -62,6 +62,7 @@ POLICY_CLASS_MAP = {
     "ddpm_dit": "lerobot_policy_actiongen.ddpm_dit.modeling_ddpm_dit.DDPMDiTPolicy",
     "fm_unet": "lerobot_policy_actiongen.fm_unet.modeling_fm_unet.FMUnetPolicy",
     "fm_dit": "lerobot_policy_actiongen.fm_dit.modeling_fm_dit.FMDiTPolicy",
+    "forceflowpp": "policies.forceflowpp.modeling_forceflowpp.ForceFlowPPPolicy",
 }
 
 
