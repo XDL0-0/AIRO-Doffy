@@ -3,6 +3,10 @@
 Run with a real robot:
     python test_tool/ForceVisualize.py --ip 10.42.0.162 --robot-type ur3e
 
+Move the TCP xyz with airo-mono servo_to_tcp_pose while keeping rotation fixed:
+    python test_tool/ForceVisualize.py --ip 10.42.0.162 --robot-type ur3e \
+        --payload-cog 0 0 0.058 --tcp-xyz-experiment
+
 Preview the UI without hardware:
     python test_tool/ForceVisualize.py --mock
 """
@@ -12,25 +16,24 @@ from __future__ import annotations
 import argparse
 import logging
 import math
-import signal
+import sys
+import threading
 import time
-from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
-import matplotlib.animation as animation
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.gridspec import GridSpec
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from force_filter import WrenchFilter
 
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
-
-
-CHANNELS = ("Fx", "Fy", "Fz", "Tx", "Ty", "Tz")
-UNITS = ("N", "N", "N", "Nm", "Nm", "Nm")
-COLORS = ("#24d9ff", "#47f091", "#ff9b66", "#ff4db8", "#b063ff", "#ffd94d")
 
 
 @dataclass
@@ -41,6 +44,170 @@ class WrenchSample:
     tcp_translation: np.ndarray | None = None
     connected: bool = True
     error: str = ""
+
+
+@dataclass
+class TactileSample:
+    data: np.ndarray | None
+    timestamp_ns: int = 0
+    connected: bool = False
+    mode: str = "off"
+    error: str = ""
+
+
+class TactileDataHolder:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.tactile_data: np.ndarray | None = None
+        self.tactile_byte: bytes | None = None
+        self.tactile_timestamp_ns: int = 0
+        self.data = (None, {"Joystick_Press": False})
+        self.tactile_recalibrate_requested = False
+
+
+class TactileSource:
+    def __init__(
+        self,
+        enabled: bool,
+        mock: bool,
+        shape: tuple[int, int],
+    ) -> None:
+        self.enabled = enabled
+        self.mock = mock
+        self.shape = shape
+        self.holder = TactileDataHolder()
+        self._start = time.monotonic()
+        self._error = ""
+        self._thread: threading.Thread | None = None
+        self._reader = None
+        self._close_requested = threading.Event()
+
+        if enabled and not mock:
+            self._thread = threading.Thread(target=self._run_reader, daemon=True)
+            self._thread.start()
+
+    @property
+    def mode(self) -> str:
+        if self.mock:
+            return "mock"
+        if self.enabled:
+            return "sensor"
+        return "off"
+
+    def _run_reader(self) -> None:
+        try:
+            reader = self._create_reader()
+            self._reader = reader
+            if self._close_requested.is_set():
+                stop = getattr(reader, "stop", None)
+                if callable(stop):
+                    stop()
+                return
+            if self._reader_name() == "ble4":
+                reader.run(
+                    self.holder,
+                    start_visualizer=False,
+                    visualizer_topic="MagTouchRaw0",
+                )
+            else:
+                reader.run(self.holder)
+        except Exception as exc:
+            self._error = str(exc)
+            logger.exception("Tactile reader stopped: %s", exc)
+
+    @staticmethod
+    def _reader_name() -> str:
+        from config import Config
+
+        return Config().TACTILE_READER
+
+    @staticmethod
+    def _create_reader():
+        from config import Config
+
+        cfg = Config()
+        if cfg.TACTILE_READER == "ble4":
+            from sensor_comm_dds.communication.config.ble_config import DeviceMAC, SensorUuid
+            from sensor_comm_dds.communication.readers.magtouch_ble_reader import (
+                MagTouchBleReaderConfig,
+            )
+            from tactile_4point import FourPointTactileBleReader
+
+            return FourPointTactileBleReader(
+                config=MagTouchBleReaderConfig(
+                    ENABLE_WS=False,
+                    NUM_SENSORS=1,
+                    NUM_TAXELS=4,
+                    MODEL_NAMES=np.array([None]),
+                    WINDOW_SIZE=cfg.TACTILE_BLE_WINDOW_SIZE,
+                    uuid=SensorUuid.DATA_CHAR_MAGTOUCH,
+                    device_mac=DeviceMAC[cfg.TACTILE_BLE_DEVICE_MAC],
+                    hci=cfg.TACTILE_BLE_HCI,
+                ),
+                filter_alpha=cfg.TACTILE_FILTER_ALPHA,
+                use_kalman=cfg.TACTILE_USE_KALMAN,
+                kalman_q=cfg.TACTILE_KALMAN_Q,
+                kalman_r=cfg.TACTILE_KALMAN_R,
+                max_delta=cfg.TACTILE_MAX_DELTA,
+                baseline_drift_alpha=cfg.TACTILE_BASELINE_DRIFT_ALPHA,
+                baseline_drift_threshold=cfg.TACTILE_BASELINE_DRIFT_THRESHOLD,
+                reset_trigger_threshold=cfg.CONTROLLER_RESET_TRIGGER_THRESHOLD,
+            )
+
+        from tactile import MagtouchIliasSerialReader, MagtouchIliasSerialReaderConfig
+
+        return MagtouchIliasSerialReader(
+            config=MagtouchIliasSerialReaderConfig(
+                ENABLE_WS=False,
+                COM=cfg.TACTILE_SERIAL_COM,
+                START_BYTE=0xAA,
+                END_BYTE=0xCC,
+            )
+        )
+
+    def read(self) -> TactileSample:
+        if self.mock:
+            return TactileSample(
+                data=self._mock_tactile(),
+                timestamp_ns=time.monotonic_ns(),
+                connected=True,
+                mode="mock",
+            )
+        if not self.enabled:
+            return TactileSample(data=None, mode="off")
+
+        with self.holder._lock:
+            data = None if self.holder.tactile_data is None else self.holder.tactile_data.copy()
+            timestamp_ns = self.holder.tactile_timestamp_ns
+
+        return TactileSample(
+            data=data,
+            timestamp_ns=timestamp_ns,
+            connected=data is not None,
+            mode="sensor",
+            error=self._error,
+        )
+
+    def _mock_tactile(self) -> np.ndarray:
+        t = time.monotonic() - self._start
+        n, axes = self.shape
+        data = np.zeros((n, axes), dtype=np.float32)
+        idx = np.arange(n, dtype=np.float32)
+        phase = t * 2.0 + idx * 0.7
+        data[:, 0] = 0.7 * np.sin(phase)
+        data[:, 1] = 0.7 * np.cos(phase * 0.8)
+        data[:, 2] = 2.5 * np.maximum(0.0, np.sin(t * 1.4 + idx * 0.35))
+        return data
+
+    def close(self) -> None:
+        self._close_requested.set()
+        stop = getattr(self._reader, "stop", None)
+        if callable(stop):
+            stop()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=5.0)
+            if self._thread.is_alive():
+                logger.warning("Tactile reader thread did not stop within 5 seconds.")
 
 
 class ReceiveOnlyRobot:
@@ -83,6 +250,10 @@ class URForceSource:
         self.robot = None
         self._freedrive_control = None
         self._freedrive_active = False
+        self._tcp_experiment_thread: threading.Thread | None = None
+        self._tcp_experiment_stop = threading.Event()
+        self._tcp_experiment_original_pose: np.ndarray | None = None
+        self.tcp_experiment_label = ""
         self._start = time.monotonic()
 
         if not mock:
@@ -209,6 +380,108 @@ class URForceSource:
             except RuntimeError as exc:
                 logger.warning("Could not disable freedrive cleanly: %s", exc)
         self._freedrive_active = False
+
+    def start_tcp_pose_experiment(
+        self,
+        xyz_deltas: list[tuple[float, float, float]],
+        dwell_s: float,
+        cycles: int,
+        servo_dt: float,
+    ) -> bool:
+        if self.mock:
+            logger.warning("TCP pose experiment is disabled in mock mode.")
+            return False
+        if self.receive_only:
+            logger.warning("TCP pose experiment needs airo-mono robot control; --receive-only cannot move TCP.")
+            return False
+        if self._tcp_experiment_thread is not None and self._tcp_experiment_thread.is_alive():
+            logger.warning("TCP pose experiment is already running.")
+            return False
+        if not xyz_deltas:
+            logger.warning("TCP pose experiment has no xyz deltas.")
+            return False
+        if self._freedrive_active:
+            logger.info("Stopping freedrive before TCP pose experiment.")
+            self.stop_freedrive()
+
+        try:
+            original_pose = self._pose_matrix_from_value(self._read_tcp_pose(optional=False))
+        except Exception as exc:
+            logger.warning("Could not read current TCP pose; experiment not started: %s", exc)
+            return False
+
+        self._tcp_experiment_original_pose = original_pose.copy()
+        self._tcp_experiment_stop.clear()
+        self._tcp_experiment_thread = threading.Thread(
+            target=self._run_tcp_pose_experiment,
+            args=(
+                original_pose,
+                xyz_deltas,
+                max(0.2, float(dwell_s)),
+                max(0, int(cycles)),
+                max(0.02, float(servo_dt)),
+            ),
+            daemon=True,
+        )
+        self._tcp_experiment_thread.start()
+        logger.info(
+            "TCP pose experiment started from xyz %s. Only xyz will move; rotation stays fixed.",
+            np.array2string(original_pose[:3, 3], precision=4),
+        )
+        return True
+
+    def _run_tcp_pose_experiment(
+        self,
+        original_pose: np.ndarray,
+        xyz_deltas: list[tuple[float, float, float]],
+        dwell_s: float,
+        cycles: int,
+        servo_dt: float,
+    ) -> None:
+        loop_idx = 0
+        try:
+            while not self._tcp_experiment_stop.is_set() and (cycles == 0 or loop_idx < cycles):
+                for point_idx, delta in enumerate(xyz_deltas, start=1):
+                    if self._tcp_experiment_stop.is_set():
+                        break
+                    target_pose = original_pose.copy()
+                    target_pose[:3, 3] = original_pose[:3, 3] + np.asarray(delta, dtype=float)
+                    self.tcp_experiment_label = (
+                        f"tcp exp {point_idx}/{len(xyz_deltas)} "
+                        f"dxyz {delta[0]:+.3f} {delta[1]:+.3f} {delta[2]:+.3f}"
+                    )
+                    logger.info(
+                        "servo_to_tcp_pose experiment xyz target: %s",
+                        np.array2string(target_pose[:3, 3], precision=4),
+                    )
+                    self._servo_to_tcp_pose(target_pose, servo_dt)
+                    self._tcp_experiment_stop.wait(dwell_s)
+                loop_idx += 1
+        except Exception as exc:
+            logger.warning("TCP pose experiment stopped after error: %s", exc)
+        finally:
+            self.tcp_experiment_label = "tcp exp restoring"
+            try:
+                self._servo_to_tcp_pose(original_pose, servo_dt)
+                logger.info("Restored original TCP pose xyz: %s", np.array2string(original_pose[:3, 3], precision=4))
+            except Exception as exc:
+                logger.warning("Could not restore original TCP pose: %s", exc)
+            self.tcp_experiment_label = ""
+
+    def _servo_to_tcp_pose(self, tcp_pose: np.ndarray, dt: float) -> None:
+        servo = getattr(self.robot, "servo_to_tcp_pose", None)
+        if servo is None:
+            raise AttributeError("Robot object has no servo_to_tcp_pose method")
+        servo(np.asarray(tcp_pose, dtype=float), dt)
+
+    @staticmethod
+    def _pose_matrix_from_value(tcp_pose: np.ndarray | None) -> np.ndarray:
+        if tcp_pose is None:
+            raise RuntimeError("TCP pose is unavailable")
+        pose = np.asarray(tcp_pose, dtype=float)
+        if pose.shape == (4, 4):
+            return pose.copy()
+        raise RuntimeError(f"Expected a 4x4 TCP pose for servo_to_tcp_pose, got shape {pose.shape}")
 
     def read(self) -> WrenchSample:
         now = time.monotonic()
@@ -337,6 +610,10 @@ class URForceSource:
     def close(self) -> None:
         if self.robot is None:
             return
+        self._tcp_experiment_stop.set()
+        if self._tcp_experiment_thread is not None:
+            self._tcp_experiment_thread.join(timeout=2.0)
+            self._tcp_experiment_thread = None
         self.stop_freedrive()
         if self.torque_mode and hasattr(self.robot, "disable_torque_control"):
             try:
@@ -380,17 +657,19 @@ class WrenchProcessor:
     def __init__(
         self,
         bias_samples: int,
+        moving_average_window: int,
         low_pass_alpha: float,
         force_deadband: float,
         torque_deadband: float,
     ) -> None:
         self.bias_samples = max(0, int(bias_samples))
-        self.low_pass_alpha = float(np.clip(low_pass_alpha, 0.0, 1.0))
-        self.force_deadband = max(0.0, float(force_deadband))
-        self.torque_deadband = max(0.0, float(torque_deadband))
         self.bias = np.zeros(6, dtype=float)
-        self.filtered = np.zeros(6, dtype=float)
-        self.initialized = False
+        self.filter = WrenchFilter(
+            moving_average_window=moving_average_window,
+            low_pass_alpha=low_pass_alpha,
+            force_deadband=force_deadband,
+            torque_deadband=torque_deadband,
+        )
         self.just_calibrated = False
         self._bias_buffer: list[np.ndarray] = []
 
@@ -414,337 +693,128 @@ class WrenchProcessor:
             return np.zeros(6, dtype=float)
 
         compensated = wrench - self.bias
-        compensated[:3] = self._apply_deadband(compensated[:3], self.force_deadband)
-        compensated[3:] = self._apply_deadband(compensated[3:], self.torque_deadband)
-
-        if self.low_pass_alpha <= 0.0:
-            return compensated
-        if not self.initialized:
-            self.filtered = compensated.copy()
-            self.initialized = True
-        else:
-            alpha = self.low_pass_alpha
-            self.filtered = alpha * compensated + (1.0 - alpha) * self.filtered
-        return self.filtered.copy()
+        return self.filter.process(compensated)
 
     def reset_bias(self) -> None:
         self.bias = np.zeros(6, dtype=float)
-        self.filtered = np.zeros(6, dtype=float)
-        self.initialized = False
+        self.filter.reset()
         self.just_calibrated = False
         self._bias_buffer.clear()
 
-    @staticmethod
-    def _apply_deadband(values: np.ndarray, threshold: float) -> np.ndarray:
-        if threshold <= 0.0:
-            return values
-        result = values.copy()
-        mask = np.abs(result) < threshold
-        result[mask] = 0.0
-        result[~mask] -= np.sign(result[~mask]) * threshold
-        return result
+
+def _visualizer_image(image: np.ndarray | None) -> np.ndarray | None:
+    if image is None:
+        return None
+    image = np.asarray(image)
+    if image.ndim != 3 or image.shape[2] < 3:
+        return None
+    step_y = max(1, image.shape[0] // 240)
+    step_x = max(1, image.shape[1] // 320)
+    return image[::step_y, ::step_x, :3].copy()
 
 
-class ForceDashboard:
-    def __init__(
-        self,
-        source: URForceSource,
-        camera: CameraSource,
-        processor: WrenchProcessor,
-        window_s: float,
-        hz: float,
-        freedrive_after_zero: bool,
-    ) -> None:
-        self.source = source
-        self.camera = camera
-        self.processor = processor
-        self.window_s = window_s
-        self.freedrive_after_zero = freedrive_after_zero
-        self._freedrive_requested = False
-        self.interval_ms = max(10, int(1000 / hz))
-        self.times: deque[float] = deque(maxlen=max(10, int(window_s * hz * 2)))
-        self.values: deque[np.ndarray] = deque(maxlen=max(10, int(window_s * hz * 2)))
-        self.last_sample: WrenchSample | None = None
+def _force_status_extra(
+    source: URForceSource,
+    tactile: TactileSource,
+    processor: WrenchProcessor,
+) -> str:
+    parts = []
+    if processor.bias_samples > 0 and processor.calibrating:
+        parts.append(f"zeroing {processor.calibration_count}/{processor.bias_samples}")
+    elif processor.bias_samples > 0:
+        parts.append("software zero")
+    if source._freedrive_active:
+        parts.append("freedrive")
+    if source.tcp_experiment_label:
+        parts.append(source.tcp_experiment_label)
+    if processor.filter.moving_average_window > 1:
+        parts.append(f"MA {processor.filter.moving_average_window}")
+    if processor.filter.low_pass_alpha > 0.0:
+        parts.append(f"LPF {processor.filter.low_pass_alpha:.2f}")
+    if tactile.mode != "off":
+        parts.append(f"tactile {tactile.mode}")
+    return "  |  ".join(parts)
 
-        plt.style.use("dark_background")
-        self.fig = plt.figure(figsize=(15.5, 8.6), facecolor="#080b10")
-        self.fig.canvas.manager.set_window_title("UR Force/Torque Visualization")
-        outer = GridSpec(
-            1,
-            2,
-            figure=self.fig,
-            width_ratios=[2.15, 1.0],
-            wspace=0.08,
-            left=0.035,
-            right=0.985,
-            top=0.9,
-            bottom=0.07,
-        )
-        plot_grid = outer[0, 0].subgridspec(3, 2, hspace=0.28, wspace=0.18)
-        side_grid = outer[0, 1].subgridspec(4, 1, height_ratios=[0.65, 1.0, 1.0, 0.75], hspace=0.16)
 
-        self.axes = []
-        self.lines = []
-        self.value_texts = []
-        for idx, name in enumerate(CHANNELS):
-            ax = self.fig.add_subplot(plot_grid[idx // 2, idx % 2])
-            self._style_plot_axis(ax, name, idx)
-            (line,) = ax.plot([], [], color=COLORS[idx], linewidth=1.8)
-            value_text = ax.text(
-                0.02,
-                0.88,
-                "--",
-                transform=ax.transAxes,
-                color=COLORS[idx],
-                fontsize=12,
-                fontweight="bold",
+def run_shared_force_visualizer(
+    source: URForceSource,
+    camera: CameraSource,
+    tactile: TactileSource,
+    processor: WrenchProcessor,
+    window_s: float,
+    hz: float,
+    freedrive_after_zero: bool,
+    force_panel_range: float,
+) -> None:
+    from visualizer import start_visualizer
+
+    visualizer_handle = start_visualizer(
+        moving_average_window=1,
+        low_pass_alpha=0.0,
+        hz=hz,
+        window_s=window_s,
+        title="UR Force/Torque Visualization",
+        force_panel_range=force_panel_range,
+        camera_num=1 if camera.capture is not None else 0,
+        show_rollback_button=False,
+    )
+    dt = 1.0 / max(1e-6, hz)
+    freedrive_requested = False
+
+    try:
+        while visualizer_handle.process.is_alive():
+            sample = source.read()
+            wrench = sample.wrench
+            connected = sample.connected
+            error = sample.error
+            if np.all(np.isfinite(wrench)):
+                wrench = processor.process(wrench)
+                if (
+                    processor.just_calibrated
+                    and freedrive_after_zero
+                    and not freedrive_requested
+                ):
+                    freedrive_requested = True
+                    if not source.start_freedrive():
+                        logger.warning(
+                            "Freedrive was requested after zeroing, but could not be enabled."
+                        )
+            else:
+                wrench = np.zeros(6, dtype=float)
+                connected = False
+
+            tactile_sample = tactile.read()
+            frame = _visualizer_image(camera.read_rgb())
+            images = {"camera_0": frame} if frame is not None else {}
+            source_label = f"{source.connection_mode} force"
+            visualizer_handle.publish(
+                {
+                    "timestamp": sample.timestamp,
+                    "wrench": np.asarray(wrench, dtype=float).copy(),
+                    "joints": None
+                    if sample.joints is None
+                    else np.asarray(sample.joints, dtype=float).copy(),
+                    "tcp_translation": None
+                    if sample.tcp_translation is None
+                    else np.asarray(sample.tcp_translation, dtype=float).copy(),
+                    "images": images,
+                    "camera_count": 1 if camera.capture is not None else 0,
+                    "tactile": tactile_sample.data,
+                    "tactile_timestamp_ns": tactile_sample.timestamp_ns,
+                    "source_label": source_label,
+                    "status_extra": _force_status_extra(source, tactile, processor),
+                    "connected": connected,
+                    "error": error,
+                }
             )
-            self.axes.append(ax)
-            self.lines.append(line)
-            self.value_texts.append(value_text)
-
-        self.status_ax = self.fig.add_subplot(side_grid[0])
-        self.vector_ax = self.fig.add_subplot(side_grid[1])
-        self.camera_ax = self.fig.add_subplot(side_grid[2])
-        self.pose_ax = self.fig.add_subplot(side_grid[3])
-        self._style_panel_axis(self.status_ax, "Status")
-        self._style_panel_axis(self.vector_ax, "TCP Force Vector")
-        self._style_panel_axis(self.camera_ax, "Camera")
-        self._style_panel_axis(self.pose_ax, "Robot State")
-
-        self.status_text = self.status_ax.text(0.04, 0.72, "", transform=self.status_ax.transAxes, fontsize=11)
-        self.force_mag_text = self.status_ax.text(
-            0.04,
-            0.34,
-            "",
-            transform=self.status_ax.transAxes,
-            fontsize=18,
-            fontweight="bold",
-            color="#24d9ff",
-        )
-        self.torque_mag_text = self.status_ax.text(
-            0.62,
-            0.34,
-            "",
-            transform=self.status_ax.transAxes,
-            fontsize=18,
-            fontweight="bold",
-            color="#ffd94d",
-        )
-
-        self.vector_ax.set_xlim(-1.0, 1.0)
-        self.vector_ax.set_ylim(-1.0, 1.0)
-        self.vector_ax.set_aspect("equal", adjustable="box")
-        self.vector_ax.axhline(0, color="#263446", linewidth=1)
-        self.vector_ax.axvline(0, color="#263446", linewidth=1)
-        self.vector_arrow = self.vector_ax.arrow(0, 0, 0, 0, color="#24d9ff", width=0.015)
-        self.vector_label = self.vector_ax.text(0.04, 0.9, "", transform=self.vector_ax.transAxes, fontsize=10)
-
-        self.camera_ax.set_xticks([])
-        self.camera_ax.set_yticks([])
-        self.camera_image = None
-        self.camera_placeholder = self.camera_ax.text(
-            0.5,
-            0.5,
-            "No camera",
-            transform=self.camera_ax.transAxes,
-            ha="center",
-            va="center",
-            color="#7e8ca0",
-            fontsize=12,
-        )
-
-        self.pose_text = self.pose_ax.text(
-            0.04,
-            0.8,
-            "",
-            transform=self.pose_ax.transAxes,
-            va="top",
-            family="monospace",
-            fontsize=10,
-        )
-
-        mode = source.connection_mode.upper()
-        self.fig.suptitle(
-            f"6D Force/Torque Visualization    {source.robot_type.upper()} {source.ip}    {mode}",
-            x=0.035,
-            ha="left",
-            color="#e8f1ff",
-            fontsize=16,
-            fontweight="bold",
-        )
-
-    @staticmethod
-    def _style_plot_axis(ax, name: str, idx: int) -> None:
-        ax.set_facecolor("#101722")
-        for spine in ax.spines.values():
-            spine.set_color("#425066")
-        ax.grid(True, color="#263446", alpha=0.7, linewidth=0.8)
-        ax.tick_params(colors="#9fb0c5", labelsize=8)
-        ax.set_title(f"{name} ({UNITS[idx]})", loc="left", color="#e8f1ff", fontsize=10, pad=7)
-        ax.set_xlabel("seconds", color="#9fb0c5", fontsize=8)
-        ax.set_ylabel(UNITS[idx], color="#9fb0c5", fontsize=8)
-
-    @staticmethod
-    def _style_panel_axis(ax, title: str) -> None:
-        ax.set_facecolor("#101722")
-        for spine in ax.spines.values():
-            spine.set_color("#425066")
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.set_title(title, loc="left", color="#e8f1ff", fontsize=10, pad=7)
-
-    def start(self) -> None:
-        previous_sigint = signal.getsignal(signal.SIGINT)
-
-        def close_on_sigint(_signum, _frame):
-            logger.info("Ctrl-C received, closing force visualization UI.")
-            plt.close(self.fig)
-
-        signal.signal(signal.SIGINT, close_on_sigint)
-        ani = animation.FuncAnimation(
-            self.fig,
-            self._update,
-            interval=self.interval_ms,
-            blit=False,
-            cache_frame_data=False,
-        )
-        self._animation = ani
-        try:
-            plt.show()
-        except KeyboardInterrupt:
-            logger.info("Keyboard interrupt received, closing force visualization UI.")
-            plt.close(self.fig)
-        finally:
-            signal.signal(signal.SIGINT, previous_sigint)
-            self.source.close()
-            self.camera.close()
-
-    def _update(self, _frame):
-        sample = self.source.read()
-        if np.all(np.isfinite(sample.wrench)):
-            sample.wrench = self.processor.process(sample.wrench)
-            if self.processor.just_calibrated:
-                self._start_freedrive_after_zero()
-        self.last_sample = sample
-        if np.all(np.isfinite(sample.wrench)):
-            if not self.times:
-                self.t0 = sample.timestamp
-            self.times.append(sample.timestamp - self.t0)
-            self.values.append(sample.wrench.copy())
-
-        self._update_plots(sample)
-        self._update_status(sample)
-        self._update_vector(sample)
-        self._update_camera()
-        self._update_pose(sample)
-        return []
-
-    def _start_freedrive_after_zero(self) -> None:
-        if not self.freedrive_after_zero or self._freedrive_requested:
-            return
-        self._freedrive_requested = True
-        if not self.source.start_freedrive():
-            logger.warning("Freedrive was requested after zeroing, but could not be enabled.")
-
-    def _update_plots(self, sample: WrenchSample) -> None:
-        if not self.times:
-            return
-        xs = np.asarray(self.times)
-        ys = np.vstack(self.values)
-        xmin = max(0.0, xs[-1] - self.window_s)
-        xmax = max(self.window_s, xs[-1])
-
-        for idx, ax in enumerate(self.axes):
-            self.lines[idx].set_data(xs, ys[:, idx])
-            ax.set_xlim(xmin, xmax)
-            recent = ys[xs >= xmin, idx]
-            center = 0.0
-            spread = 1.0
-            if recent.size:
-                lo = float(np.nanmin(recent))
-                hi = float(np.nanmax(recent))
-                center = 0.5 * (lo + hi)
-                spread = max(1e-3, hi - lo)
-            margin = max(0.4 if idx < 3 else 0.04, spread * 0.65)
-            ax.set_ylim(center - margin, center + margin)
-            value = sample.wrench[idx]
-            self.value_texts[idx].set_text(f"{value:+.3f} {UNITS[idx]}")
-
-    def _update_status(self, sample: WrenchSample) -> None:
-        age = 0.0 if sample is None else time.monotonic() - sample.timestamp
-        state = "CONNECTED" if sample.connected else "ERROR"
-        color = "#47f091" if sample.connected else "#ff6b6b"
-        self.status_text.set_color(color)
-        mode = self.source.connection_mode
-        extra = ""
-        if self.processor.bias_samples > 0 and self.processor.calibrating:
-            extra = (
-                f"  |  zeroing {self.processor.calibration_count}/"
-                f"{self.processor.bias_samples}"
-            )
-        elif self.processor.bias_samples > 0:
-            extra = "  |  software zero"
-        if self.source._freedrive_active:
-            extra += "  |  freedrive"
-        if self.processor.low_pass_alpha > 0.0:
-            extra += f"  |  LPF {self.processor.low_pass_alpha:.2f}"
-        self.status_text.set_text(f"{state}  |  {mode}  |  latency {age * 1000:.0f} ms{extra}")
-
-        wrench = sample.wrench if np.all(np.isfinite(sample.wrench)) else np.zeros(6)
-        force_mag = float(np.linalg.norm(wrench[:3]))
-        torque_mag = float(np.linalg.norm(wrench[3:]))
-        self.force_mag_text.set_text(f"|F| {force_mag:5.2f} N")
-        self.torque_mag_text.set_text(f"|T| {torque_mag:5.3f} Nm")
-
-        if sample.error:
-            self.status_text.set_text(f"{state}  |  {sample.error[:58]}")
-
-    def _update_vector(self, sample: WrenchSample) -> None:
-        self.vector_arrow.remove()
-        wrench = sample.wrench if np.all(np.isfinite(sample.wrench)) else np.zeros(6)
-        fxy = wrench[:2]
-        fz = float(wrench[2])
-        norm = max(1.0, float(np.linalg.norm(fxy)))
-        dx, dy = np.clip(fxy / norm, -0.9, 0.9)
-        self.vector_arrow = self.vector_ax.arrow(
-            0,
-            0,
-            dx * 0.82,
-            dy * 0.82,
-            color="#24d9ff",
-            width=0.018,
-            length_includes_head=True,
-            head_width=0.09,
-        )
-        self.vector_label.set_text(f"Fx/Fy direction   Fz {fz:+.2f} N")
-
-    def _update_camera(self) -> None:
-        frame = self.camera.read_rgb()
-        if frame is None:
-            return
-        self.camera_placeholder.set_visible(False)
-        if self.camera_image is None:
-            self.camera_image = self.camera_ax.imshow(frame)
-        else:
-            self.camera_image.set_data(frame)
-
-    def _update_pose(self, sample: WrenchSample) -> None:
-        lines = []
-        if sample.tcp_translation is not None:
-            x, y, z = sample.tcp_translation
-            lines.append(f"tcp xyz  {x:+.3f} {y:+.3f} {z:+.3f} m")
-        else:
-            lines.append("tcp xyz  unavailable")
-
-        if sample.joints is not None and sample.joints.size >= 6:
-            deg = np.degrees(sample.joints[:6])
-            lines.append("joint deg")
-            lines.append(" ".join(f"{v:+5.1f}" for v in deg[:3]))
-            lines.append(" ".join(f"{v:+5.1f}" for v in deg[3:6]))
-        else:
-            lines.append("joint deg unavailable")
-        self.pose_text.set_text("\n".join(lines))
+            time.sleep(dt)
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received, closing force visualization UI.")
+    finally:
+        visualizer_handle.close()
+        source.close()
+        camera.close()
+        tactile.close()
 
 
 def parse_args() -> argparse.Namespace:
@@ -765,23 +835,102 @@ def parse_args() -> argparse.Namespace:
         metavar=("X", "Y", "Z"),
         help="Set UR payload center of gravity in meters, e.g. --payload-cog 0 0 0.058.",
     )
+    parser.add_argument(
+        "--tcp-xyz-experiment",
+        action="store_true",
+        help="Move TCP pose xyz with servo_to_tcp_pose during visualization; TCP rotation is kept from the starting pose.",
+    )
+    parser.add_argument(
+        "--tcp-xyz-deltas",
+        type=float,
+        nargs="*",
+        default=None,
+        metavar="D",
+        help=(
+            "Relative TCP pose xyz deltas in meters, grouped as DX DY DZ. "
+            "Default: 0, +/-1 cm on X/Y/Z, then 0."
+        ),
+    )
+    parser.add_argument(
+        "--tcp-experiment-dwell",
+        type=float,
+        default=3.0,
+        help="Seconds to hold each TCP xyz experiment point after servo_to_tcp_pose is sent.",
+    )
+    parser.add_argument(
+        "--tcp-servo-dt",
+        type=float,
+        default=0.5,
+        help="Duration passed to airo-mono servo_to_tcp_pose for each TCP xyz target.",
+    )
+    parser.add_argument(
+        "--tcp-experiment-cycles",
+        type=int,
+        default=1,
+        help="Number of TCP xyz experiment cycles. Use 0 to repeat until the UI closes.",
+    )
     parser.add_argument("--bias-samples", type=int, default=0, help="Average this many startup samples and subtract them.")
-    parser.add_argument("--low-pass-alpha", type=float, default=0.0, help="Exponential low-pass alpha, e.g. 0.15. 0 disables.")
+    parser.add_argument(
+        "--low-pass-alpha",
+        type=float,
+        default=None,
+        help="Exponential low-pass alpha. Defaults to Config.FORCE_LOW_PASS_ALPHA.",
+    )
     parser.add_argument("--force-deadband", type=float, default=0.0, help="Subtract force deadband in N after zeroing.")
     parser.add_argument("--torque-deadband", type=float, default=0.0, help="Subtract torque deadband in Nm after zeroing.")
     parser.add_argument("--mock", action="store_true", help="Run the UI with synthetic force data.")
+    parser.add_argument("--tactile", action="store_true", help="Start the configured tactile reader and show it in the UI.")
+    parser.add_argument("--mock-tactile", action="store_true", help="Show synthetic tactile data without starting sensor hardware.")
+    parser.add_argument("--no-tactile", action="store_true", help="Hide tactile panel data, including the default --mock preview.")
     parser.add_argument("--camera-index", type=int, default=None, help="Optional OpenCV camera index.")
-    parser.add_argument("--window", type=float, default=8.0, help="Plot history window in seconds.")
-    parser.add_argument("--hz", type=float, default=30.0, help="UI refresh rate.")
-    return parser.parse_args()
+    parser.add_argument("--window", type=float, default=None, help="Plot history window in seconds.")
+    parser.add_argument("--hz", type=float, default=None, help="UI refresh rate.")
+    parser.add_argument(
+        "--force-panel-range",
+        type=float,
+        default=None,
+        help="Fx/Fy vector panel +/- range in N. Defaults to VisualizerConfig.FORCE_PANEL_RANGE.",
+    )
+    args = parser.parse_args()
+    if args.tcp_xyz_deltas is not None and len(args.tcp_xyz_deltas) % 3 != 0:
+        parser.error("--tcp-xyz-deltas must contain groups of three numbers: DX DY DZ")
+    if args.force_panel_range is not None and args.force_panel_range <= 0:
+        parser.error("--force-panel-range must be positive")
+    if args.window is not None and args.window <= 0:
+        parser.error("--window must be positive")
+    if args.hz is not None and args.hz <= 0:
+        parser.error("--hz must be positive")
+    if args.low_pass_alpha is not None and not 0.0 <= args.low_pass_alpha <= 1.0:
+        parser.error("--low-pass-alpha must be between 0 and 1")
+    return args
+
+
+def tcp_xyz_experiment_deltas(values: list[float] | None) -> list[tuple[float, float, float]]:
+    if values is None:
+        return [
+            (0.0, 0.0, 0.0),
+            (0.01, 0.0, 0.0),
+            (-0.01, 0.0, 0.0),
+            (0.0, 0.01, 0.0),
+            (0.0, -0.01, 0.0),
+            (0.0, 0.0, 0.01),
+            (0.0, 0.0, -0.01),
+            (0.0, 0.0, 0.0),
+        ]
+    return [
+        (float(values[idx]), float(values[idx + 1]), float(values[idx + 2]))
+        for idx in range(0, len(values), 3)
+    ]
 
 
 def main() -> None:
     args = parse_args()
-    if args.ip is None or args.robot_type is None:
-        from config import Config
+    from config import Config
+    from visualizer_config import VisualizerConfig
 
-        cfg = Config()
+    cfg = Config()
+    viz_cfg = VisualizerConfig()
+    if args.ip is None or args.robot_type is None:
         args.ip = args.ip or cfg.UR_IP
         args.robot_type = args.robot_type or cfg.ROBOT_TYPE
 
@@ -797,6 +946,7 @@ def main() -> None:
     )
     freedrive_after_zero = (
         not args.no_freedrive_after_zero
+        and not args.tcp_xyz_experiment
         and not args.mock
         and (args.ur_zero_ft or args.bias_samples > 0)
     )
@@ -804,23 +954,49 @@ def main() -> None:
         source.start_freedrive()
     if args.freedrive and not args.mock:
         source.start_freedrive()
+    if args.tcp_xyz_experiment:
+        source.start_tcp_pose_experiment(
+            tcp_xyz_experiment_deltas(args.tcp_xyz_deltas),
+            dwell_s=args.tcp_experiment_dwell,
+            cycles=args.tcp_experiment_cycles,
+            servo_dt=args.tcp_servo_dt,
+        )
 
+    force_panel_range = (
+        viz_cfg.FORCE_PANEL_RANGE
+        if args.force_panel_range is None
+        else args.force_panel_range
+    )
+    window_s = viz_cfg.WINDOW_S if args.window is None else args.window
+    hz = viz_cfg.HZ if args.hz is None else args.hz
+    low_pass_alpha = (
+        cfg.FORCE_LOW_PASS_ALPHA if args.low_pass_alpha is None else args.low_pass_alpha
+    )
     camera = CameraSource(args.camera_index)
+    tactile_mock = args.mock_tactile or (args.mock and not args.tactile and not args.no_tactile)
+    tactile_enabled = (args.tactile or tactile_mock) and not args.no_tactile
+    tactile = TactileSource(
+        enabled=tactile_enabled,
+        mock=tactile_mock,
+        shape=tuple(cfg.TACTILE_SHAPE),
+    )
     processor = WrenchProcessor(
         bias_samples=args.bias_samples,
-        low_pass_alpha=args.low_pass_alpha,
+        moving_average_window=cfg.FORCE_MOVING_AVERAGE_WINDOW,
+        low_pass_alpha=low_pass_alpha,
         force_deadband=args.force_deadband,
         torque_deadband=args.torque_deadband,
     )
-    dashboard = ForceDashboard(
+    run_shared_force_visualizer(
         source,
         camera,
+        tactile,
         processor,
-        window_s=args.window,
-        hz=args.hz,
+        window_s=window_s,
+        hz=hz,
         freedrive_after_zero=freedrive_after_zero,
+        force_panel_range=force_panel_range,
     )
-    dashboard.start()
 
 
 if __name__ == "__main__":

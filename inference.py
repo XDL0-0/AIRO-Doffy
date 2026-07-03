@@ -284,7 +284,7 @@ class InferenceRobotController:
             self._gravity_compensator = utils.GravityCompensator(
                 mass=cfg.TOOL_MASS,
                 com=cfg.TOOL_COM,
-                filter_alpha=cfg.FORCE_FILTER_ALPHA,
+                filter_alpha=cfg.GRAVITY_COMP_FILTER_ALPHA,
             )
             time.sleep(1.0)
             self._calibrate_force()

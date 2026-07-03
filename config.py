@@ -14,9 +14,10 @@ class Config:
     # "joint" preserves the original VR -> IK -> joint-servo path.
     # "tcp" sends TCP targets through the selected backend when possible.
     TELEOP_COMMAND_MODE: str = "joint"
+    FREEZE_ROTATION: bool = True       # Keep TCP orientation fixed during teleoperation.
 
-    PC_IP: str = "10.10.129.200"
-    VR_IP: str = "10.10.131.166"
+    PC_IP: str = "10.10.131.162"
+    VR_IP: str = "10.10.130.155"
 
     # ── Task / Dataset ────────────────────────────────────────────────────
     TASK_NAME: str = "pick_and_place"
@@ -28,7 +29,6 @@ class Config:
     # "both" keeps joint state/action and stores extra.tcp_pose for conversion or policies.
     DATA_TYPE: str = "both"
     DEPTH_INFO_ENABLE: bool = False
-
     # ── Tracking mode ─────────────────────────────────────────────────────
     TRACKING_MODE: str = "controller"   # "controller" or "hand"
     CONTROLLER_RESET_TRIGGER_THRESHOLD: float = 0.8  # trigger + joystick press → reset
@@ -70,12 +70,12 @@ class Config:
     GRIPPER_MAX: float = 0.085       # max opening width [m]
 
     # ── Joint configuration ───────────────────────────────────────────────
-    # INITIAL_JOINT: np.ndarray = field(
-    #     default_factory=lambda: np.array([1.57, -1.57, 1.57, -1.57, -1.57, 0])
-    # )
     INITIAL_JOINT: np.ndarray = field(
-        default_factory=lambda: np.array([1.57, -2.07, 1.25, -1.2, -1.62, 0])
+        default_factory=lambda: np.array([1.57, -1.57, 1.57, -1.57, -1.57, 0])
     )
+    # INITIAL_JOINT: np.ndarray = field(
+    #     default_factory=lambda: np.array([1.57, -2.07, 1.25, -1.2, -1.62, 0])
+    # )
     TCP_POSE: np.ndarray = field(
         default_factory=lambda: np.array([0, 0, 0, 0, 0, 0])
     )
@@ -111,7 +111,10 @@ class Config:
     TOOL_COM: np.ndarray = field(
         default_factory=lambda: np.array([0.0, 0.0, 0.058])
     )
-    FORCE_FILTER_ALPHA: float = 0.15
+    # Low-pass alpha used inside gravity compensation before the final wrench filter.
+    GRAVITY_COMP_FILTER_ALPHA: float = 0.15
+    FORCE_MOVING_AVERAGE_WINDOW: int = 8
+    FORCE_LOW_PASS_ALPHA: float = 0.15
     GRAVITY_CALIB_SAMPLES: int = 200
 
     # ── Inference ─────────────────────────────────────────────────────────
@@ -120,8 +123,22 @@ class Config:
     INFERENCE_EPISODES: int = 1
 
     # ── Tactile ───────────────────────────────────────────────────────────
+    TACTILE_ENABLE: bool = True          # Start tactile hardware when VR transfer or visualizer needs it.
     TACTILE_TRANSFER: bool = False
     TACTILE_PORT: int = 8012             # PC → Quest: tactile sensor data
+    TACTILE_READER: str = "ble4"         # "ble4" or "serial"
+    TACTILE_SHAPE: tuple = (4, 3)        # one 4-taxel MagTouch, xyz per taxel
+    TACTILE_SERIAL_COM: str = "/dev/ttyACM0"
+    TACTILE_BLE_DEVICE_MAC: str = "ARDUINO7"
+    TACTILE_BLE_HCI: str = "hci0"
+    TACTILE_BLE_WINDOW_SIZE: int = 100
+    TACTILE_FILTER_ALPHA: float = 0.75
+    TACTILE_USE_KALMAN: bool = False
+    TACTILE_KALMAN_Q: float = 2e-2
+    TACTILE_KALMAN_R: float = 2e-2
+    TACTILE_MAX_DELTA: float = 10000.0
+    TACTILE_BASELINE_DRIFT_ALPHA: float = 0.0
+    TACTILE_BASELINE_DRIFT_THRESHOLD: float = 80.0
 
     def __post_init__(self):
         from airo_spatial_algebra.se3 import SE3Container
@@ -141,6 +158,14 @@ class Config:
             utils.logger.warning("SAVE_EEF is redundant when DATA_TYPE='tcp'.")
         if self.DATA_TYPE not in {"qpos", "both", "tcp", "delta_tcp"}:
             raise ValueError(f"Unsupported DATA_TYPE: {self.DATA_TYPE}")
+        if self.TACTILE_READER not in {"ble4", "serial"}:
+            raise ValueError(f"Unsupported TACTILE_READER: {self.TACTILE_READER}")
+        if self.FORCE_MOVING_AVERAGE_WINDOW < 1:
+            raise ValueError("FORCE_MOVING_AVERAGE_WINDOW must be at least 1.")
+        if not 0.0 <= self.GRAVITY_COMP_FILTER_ALPHA <= 1.0:
+            raise ValueError("GRAVITY_COMP_FILTER_ALPHA must be between 0 and 1.")
+        if not 0.0 <= self.FORCE_LOW_PASS_ALPHA <= 1.0:
+            raise ValueError("FORCE_LOW_PASS_ALPHA must be between 0 and 1.")
         if np.any(self.TCP_POSE):
             self.TCP_TRANSFORM = SE3Container.from_rotation_vector_and_translation(
                 self.TCP_POSE[3:6], self.TCP_POSE[0:3]

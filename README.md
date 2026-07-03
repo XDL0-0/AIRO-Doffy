@@ -9,8 +9,10 @@ A high-performance codebase for controlling robot manipulators (UR3e, UR5e, Real
   - **UDP** (`camera_udp.py`): Chunked JPEG transfer, compatible with `UdpSocketMultiHD.cs`.
   - **WebRTC** (`WebRTC_udp.py`): aiortc-based multi-track video (H.264/VP8) with WebSocket signaling + DataChannel for control. Lower bandwidth, NAT-friendly.
 - **Fast Gripper Control**: Custom non-blocking TCP socket implementation for the Robotiq 2F-85 gripper.
-- **Tactile & Force Integration**: Supports MagTouch tactile sensors and UR force/torque readings with calibration and gravity compensation.
+- **Tactile & Force Integration**: Supports serial MagTouch and 4-taxel BLE MagTouch readers, UR force/torque readings, gravity compensation, baseline reset, and configurable wrench filtering.
+- **Live Teleop Visualizer**: Optional multiprocessing matplotlib dashboard for force/torque, camera previews, TCP/joint status, tactile bubbles, dataset status, and last-episode rollback.
 - **Dataset Recording**: Save robotic trajectories directly in ACT (HDF5) or Hugging Face `lerobot` formats.
+- **Dataset Rollback**: Delete the latest recorded ACT/HDF5 or LeRobot episode from the VR record-control channel or the visualizer.
 - **Policy Inference & Evaluation**: Load trained AI policies (e.g., ACT, Diffusion, Pi0) and evaluate them offline or run live robotics inference.
 - **Hand Visualizer**: Real-time matplotlib 3D hand skeleton visualization with finger bone connections and dynamic axis scaling.
 
@@ -57,6 +59,7 @@ The system uses `config.py` as its central configuration. Key settings:
 | `PC_IP` | Host PC IP address | `10.10.131.72` |
 | `VR_IP` | VR headset IP address | `10.10.131.166` |
 | `TELEOP_COMMAND_MODE` | Teleoperation command path (`joint` / `tcp`) | `joint` |
+| `FREEZE_ROTATION` | Keep the TCP orientation fixed while mapping controller translation | `True` |
 
 ### Tracking & Streaming
 | Parameter | Description | Default |
@@ -78,6 +81,27 @@ The system uses `config.py` as its central configuration. Key settings:
 | `FORCE_COLLECT` | Record TCP force `[Fx, Fy, Fz]` when available | `False` |
 | `TORQUE_COLLECT` | Record TCP torque `[Tx, Ty, Tz]` when available | `False` |
 
+### Force, Tactile & Visualizer
+| Parameter | Description | Default |
+|---|---|---|
+| `GRAVITY_COMP` | Enable tool gravity compensation for TCP wrench readings | `True` |
+| `GRAVITY_COMP_FILTER_ALPHA` | Low-pass alpha used inside gravity compensation | `0.15` |
+| `FORCE_MOVING_AVERAGE_WINDOW` | Moving-average window applied to 6D wrench readings | `8` |
+| `FORCE_LOW_PASS_ALPHA` | Final wrench low-pass alpha after moving average/deadband | `0.15` |
+| `TACTILE_ENABLE` | Start tactile hardware when VR transfer or visualizer needs it | `True` |
+| `TACTILE_READER` | Tactile reader backend (`ble4` / `serial`) | `ble4` |
+| `TACTILE_SHAPE` | Stored tactile sample shape | `(4, 3)` |
+| `TACTILE_FILTER_ALPHA` | BLE tactile exponential filter alpha | `0.75` |
+
+`visualizer_config.py` controls the live dashboard:
+
+| Parameter | Description | Default |
+|---|---|---|
+| `ENABLED` | Start the teleop visualizer from `main.py` | `True` |
+| `HZ` | Visualizer refresh/publish rate | `30.0` |
+| `WINDOW_S` | Plot history window in seconds | `8.0` |
+| `FORCE_PANEL_RANGE` | Force plot and Fx/Fy panel +/- range in newtons | `30.0` |
+
 ## How to Run
 
 ### 1. Data Collection & Teleoperation
@@ -88,8 +112,37 @@ python main.py
 - Real-time camera streams will appear in the VR headset automatically.
 - Controller movements dictate the robot pose / gripper aperture.
 - Squeeze trigger & buttons to start / stop dataset recording.
+- If `VisualizerConfig.ENABLED` is true, a dashboard opens with wrench plots, tactile bubbles, camera previews, robot status, dataset counters, and a rollback button.
+- A VR record-control value of `Undo`, `Rollback`, or `DeleteLast` removes the latest saved episode and reuses its index.
+- Pressing the reset trigger combination recalibrates force/tactile baselines when those sensors are enabled.
 
-### 2. Standalone VR Data Receiver
+### 2. Force/Tactile Visualizer
+Run the standalone dashboard against a UR robot:
+```bash
+python test_tool/ForceVisualize.py --ip 10.42.0.162 --robot-type ur3e
+```
+
+Preview the shared visualizer UI without robot hardware:
+```bash
+python test_tool/ForceVisualize.py --mock
+```
+
+Show tactile data in the dashboard:
+```bash
+python test_tool/ForceVisualize.py --mock --mock-tactile
+python test_tool/ForceVisualize.py --ip 10.42.0.162 --robot-type ur3e --tactile
+```
+
+Run a small TCP xyz experiment with fixed orientation using `servo_to_tcp_pose`:
+```bash
+python test_tool/ForceVisualize.py \
+    --ip 10.42.0.162 \
+    --robot-type ur3e \
+    --payload-cog 0 0 0.058 \
+    --tcp-xyz-experiment
+```
+
+### 3. Standalone VR Data Receiver
 Test VR connection without robot hardware:
 ```bash
 # Controller mode — print controller data
@@ -99,14 +152,14 @@ python vr_data.py
 python vr_data.py --visualize
 ```
 
-### 3. Live Policy Inference
+### 4. Live Policy Inference
 Execute a previously trained AI policy directly onto the robot:
 ```bash
 python inference.py --policy username/my_act_policy
 python inference.py --policy ./checkpoints/my_policy --device cuda --fps 10
 ```
 
-### 4. Offline Policy Evaluation
+### 5. Offline Policy Evaluation
 Evaluate a trained policy against recorded dataset:
 ```bash
 python eval_policy.py --policy username/my_policy
@@ -156,6 +209,10 @@ airo-doffy/
 ├── parse_vr.py         # VR data parsing (controller + hand tracking)
 ├── robot_backend.py    # Robot backend adapters for UR, RealMan, and generic manipulators
 ├── robot_teleop.py     # Robot-agnostic teleoperation backend client
+├── force_filter.py     # Shared 6D wrench filtering utilities
+├── tactile_4point.py   # 4-taxel BLE MagTouch reader and tactile panel helpers
+├── visualizer.py       # Shared live force/tactile/camera/dataset dashboard
+├── visualizer_config.py # Visualizer settings
 ├── vr_data.py          # Standalone VR receiver + hand visualizer
 ├── data_schema.py      # Dataset and policy state/action schema helpers
 ├── dataset.py          # Dataset recording (HDF5 / LeRobot)

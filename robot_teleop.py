@@ -16,6 +16,8 @@ import numpy as np
 
 import utils
 from config import Config
+from force_filter import WrenchFilter
+from visualizer_config import VisualizerConfig
 from data_schema import (
     action_representation,
     build_data_schema,
@@ -42,6 +44,7 @@ class RobotTeleop:
 
     def __init__(self, initial_data: list[dict]):
         cfg = Config()
+        viz_cfg = VisualizerConfig()
         self.cfg = cfg
         self.backend = make_robot_backend(cfg)
         self.ur = self.backend.robot
@@ -56,6 +59,7 @@ class RobotTeleop:
         self.gripper_speed = cfg.GRIPPER_SPEED
         self.gripper_max = cfg.GRIPPER_MAX
         self.data_type = cfg.DATA_TYPE
+        self.freeze_rotation = cfg.FREEZE_ROTATION
         self.schema = build_data_schema(self.data_type, self.dof)
         self.state_representation = state_representation(self.data_type)
         self.action_representation = action_representation(self.data_type)
@@ -73,6 +77,7 @@ class RobotTeleop:
 
         self.tracking_mode = cfg.TRACKING_MODE
         self._controller_reset_trigger_threshold = cfg.CONTROLLER_RESET_TRIGGER_THRESHOLD
+        self._controller_reset_held = False
         self._hand_ref_se3: SE3Container | None = None
         self._hand_last_palm: np.ndarray | None = None
         self._hand_initialized = False
@@ -90,6 +95,7 @@ class RobotTeleop:
             f"Teleop initialized - robot:{self.backend.dataset_robot_type}, "
             f"DoF:{self.dof}, mode:{self.control_mode}, data:{self.data_type}"
         )
+        utils.logger.info(f"Freeze rotation: {self.freeze_rotation}")
         utils.logger.info(f"Tracking mode: {self.tracking_mode}")
         utils.logger.info(f"Moving to initial joint: {self.initial_joint}")
 
@@ -122,16 +128,22 @@ class RobotTeleop:
         if self.ruckig_enable:
             self._init_ruckig(cfg)
 
-        self.wrench_mode = (cfg.FORCE_COLLECT or cfg.TORQUE_COLLECT) and self.backend.supports_force
+        self.wrench_mode = (
+            cfg.FORCE_COLLECT or cfg.TORQUE_COLLECT or viz_cfg.ENABLED
+        ) and self.backend.supports_force
         self.force_mode = cfg.FORCE_COLLECT and self.backend.supports_force
         self.torque_collect = cfg.TORQUE_COLLECT and self.backend.supports_force
         self.tcp_wrench = np.zeros(6)
+        self.wrench_filter = WrenchFilter(
+            moving_average_window=cfg.FORCE_MOVING_AVERAGE_WINDOW,
+            low_pass_alpha=cfg.FORCE_LOW_PASS_ALPHA,
+        )
         self.gravity_comp = cfg.GRAVITY_COMP and self.wrench_mode
         if self.gravity_comp:
             self.gravity_compensator = utils.GravityCompensator(
                 mass=cfg.TOOL_MASS,
                 com=cfg.TOOL_COM,
-                filter_alpha=cfg.FORCE_FILTER_ALPHA,
+                filter_alpha=cfg.GRAVITY_COMP_FILTER_ALPHA,
             )
             self._calib_samples_needed = cfg.GRAVITY_CALIB_SAMPLES
 
@@ -393,7 +405,15 @@ class RobotTeleop:
         return raw
 
     def capture_tcp_wrench(self) -> np.ndarray:
-        return self.capture_tcp_force()
+        return self.wrench_filter.process(self.capture_tcp_force())
+
+    def refresh_wrench_snapshot(self) -> np.ndarray:
+        if not self.wrench_mode:
+            return self.tcp_wrench.copy()
+        wrench = self.capture_tcp_wrench()
+        with self._state_lock:
+            self.tcp_wrench = wrench.copy()
+        return wrench
 
     def capture_gripper_width(self) -> float:
         return float(self.gripper.get_current_width())
@@ -412,6 +432,15 @@ class RobotTeleop:
             )
             time.sleep(0.005)
         self.gravity_compensator.finish_calibration()
+        self.wrench_filter.reset()
+
+    def _zero_force_baseline_after_reset(self) -> None:
+        if not self.gravity_comp:
+            return
+        try:
+            self.calibrate_force_sensor()
+        except Exception as exc:
+            utils.logger.warning(f"Force sensor zero calibration failed after reset: {exc}")
 
     # ── Gripper and reset ─────────────────────────────────────────────────
 
@@ -455,6 +484,7 @@ class RobotTeleop:
             self.previous_tcp_action,
             gripper_norm,
         )
+        self._zero_force_baseline_after_reset()
         utils.logger.info("---- Reset complete ----")
 
     # ── Command helpers ───────────────────────────────────────────────────
@@ -528,7 +558,10 @@ class RobotTeleop:
         translation_diff *= alpha_t
 
         target_translation = self.SE3_tcp_pose_in_base_frame_std.translation + translation_diff
-        target_rotation = rotation_diff @ self.SE3_tcp_pose_in_base_frame_std.rotation_matrix
+        if self.freeze_rotation:
+            target_rotation = self.SE3_tcp_pose_in_base_frame_std.rotation_matrix
+        else:
+            target_rotation = rotation_diff @ self.SE3_tcp_pose_in_base_frame_std.rotation_matrix
         return SE3Container.from_rotation_matrix_and_translation(
             target_rotation, target_translation
         ).homogeneous_matrix
@@ -560,7 +593,7 @@ class RobotTeleop:
             dt,
         )
 
-        if self.backend.is_ur and self.dof == 6:
+        if self.backend.is_ur and self.dof == 6 and not self.freeze_rotation:
             joint_target, safe = self._safe_joint_target(tcp_target, state_joints)
             if safe and joint_target is not None:
                 joystick_x = controller_data[1]["Joystick"][0]
@@ -768,14 +801,17 @@ class RobotTeleop:
         gripper_state = (x > 0.7) - (x < -0.7)
         self._update_gripper(gripper_state, dt, gripper_width_m)
 
-        reset_requested = (
+        reset_pressed = (
             bool(controller_data[1]["Joystick_Press"])
             and controller_data[1]["IndexTrigger"] >= self._controller_reset_trigger_threshold
         )
-        if reset_requested:
-            self.reset_sign = True
-            self.reset_robot_and_gripper()
+        if reset_pressed:
+            if not self._controller_reset_held:
+                self.reset_sign = True
+                self.reset_robot_and_gripper()
+            self._controller_reset_held = True
             return
+        self._controller_reset_held = False
 
         if self._standby_mode(controller_data):
             action_gripper_norm = self._normalize_gripper_width(self.gripper_solution_width)

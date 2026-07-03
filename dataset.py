@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 import shutil
+import json
 from pathlib import Path
 
 import h5py
@@ -35,6 +36,7 @@ class DatasetRecorder:
         self.schema = build_data_schema(self.data_type, self.robot_dof)
         self.push_to_hub = cfg.PUSH_TO_HUB if self.dataset_type == "l" else False
         self.tactile_mode = cfg.TACTILE_TRANSFER
+        self.tactile_shape = tuple(cfg.TACTILE_SHAPE)
         self.force_collect = bool(force_collect) if force_collect is not None else cfg.FORCE_COLLECT
         self.torque_collect = bool(torque_collect) if torque_collect is not None else cfg.TORQUE_COLLECT
         self.depth_mode = cfg.DEPTH_INFO_ENABLE
@@ -59,6 +61,8 @@ class DatasetRecorder:
         self.lerobot_dataset = None
         self.recorded_episodes = 0
         self._lerobot_episode_started = False
+        self._last_episode_length_cache: int | None = None
+        self._last_episode_length_cache_for: int | None = None
 
         utils.logger.info(f"Dataset Dir: {self.dataset_dir}")
         utils.logger.info(f"Dataset Type: {self.dataset_type}")
@@ -66,6 +70,8 @@ class DatasetRecorder:
         utils.logger.info(f"Robot DoF: {self.robot_dof}")
         utils.logger.info(f"State dim: {self.state_dim}")
         utils.logger.info(f"Action dim: {self.action_dim}")
+        if self.tactile_mode:
+            utils.logger.info(f"Tactile shape: {self.tactile_shape}")
 
         self._reset_data_dict()
         self._init_dataset()
@@ -176,17 +182,17 @@ class DatasetRecorder:
         if self.tactile_mode:
             features["observation.tactile"] = {
                 "dtype": "float32",
-                "shape": (41, 3),
+                "shape": self.tactile_shape,
                 "names": ["sensor_idx", "axis"],
             }
 
         expected_keys = set(features.keys())
 
         try:
-            self.lerobot_dataset = LeRobotDataset(repo_id=repo_id, root=root)
+            probe_dataset = LeRobotDataset(repo_id=repo_id, root=root)
 
             loaded_keys = {
-                k for k in self.lerobot_dataset.features
+                k for k in probe_dataset.features
                 if k.startswith(("action", "observation.", "extra."))
             }
             if loaded_keys != expected_keys:
@@ -201,7 +207,12 @@ class DatasetRecorder:
                 shutil.rmtree(root)
                 raise ValueError("Feature schema mismatch")
 
-            self.recorded_episodes = self.lerobot_dataset.num_episodes
+            self.recorded_episodes = probe_dataset.num_episodes
+            probe_dataset = None
+            if hasattr(LeRobotDataset, "resume"):
+                self.lerobot_dataset = LeRobotDataset.resume(repo_id=repo_id, root=root)
+            else:
+                self.lerobot_dataset = LeRobotDataset(repo_id=repo_id, root=root)
             utils.logger.warning(
                 f"LeRobot Dataset found. Continuing from episode {self.recorded_episodes}"
             )
@@ -264,8 +275,10 @@ class DatasetRecorder:
             self.data_dict["/observations/force"].append(force)
         if self.torque_collect and torque is not None:
             self.data_dict["/observations/torque"].append(torque)
-        if self.tactile_mode and tactile_data is not None:
-            self.data_dict["/observations/tactile"].append(tactile_data)
+        if self.tactile_mode:
+            self.data_dict["/observations/tactile"].append(
+                self._format_tactile(tactile_data)
+            )
         for name, img in camera_images.items():
             self.data_dict[f"/observations/images/{name}"].append(img)
         if self.depth_mode and depth_images is not None:
@@ -286,11 +299,11 @@ class DatasetRecorder:
         if self.lerobot_dataset is None:
             self._init_lerobot()
 
-        # Create episode buffer on first frame of this episode
         if not self._lerobot_episode_started:
-            self.lerobot_dataset.episode_buffer = self.lerobot_dataset.create_episode_buffer(
-                episode_index=self.recorded_episodes
-            )
+            if hasattr(self.lerobot_dataset, "create_episode_buffer"):
+                self.lerobot_dataset.episode_buffer = self.lerobot_dataset.create_episode_buffer(
+                    episode_index=self.recorded_episodes
+                )
             self._lerobot_episode_started = True
 
         frame_data: dict = {
@@ -308,11 +321,9 @@ class DatasetRecorder:
             frame_data["extra.tcp_pose"] = self._get_tcp_pose_extra(extra_data)
         frame_data["extra.timestamps_ns"] = self._get_timestamps_extra(extra_data)
         if self.tactile_mode:
-            # Always write tactile — zeros fallback if sensor isn't ready yet
-            if tactile_data is not None:
-                frame_data["observation.tactile"] = np.array(tactile_data, dtype=np.float32)
-            else:
-                frame_data["observation.tactile"] = np.zeros((41, 3), dtype=np.float32)
+            # Always write tactile: zeros fallback keeps episode schemas complete
+            # while the sensor connects or calibrates.
+            frame_data["observation.tactile"] = self._format_tactile(tactile_data)
 
         for name, img in camera_images.items():
             frame_data[f"observation.images.{name}"] = np.array(img, dtype=np.uint8)
@@ -332,6 +343,19 @@ class DatasetRecorder:
         if extra_data is not None and "tcp_pose" in extra_data:
             return np.array(extra_data["tcp_pose"], dtype=np.float32)
         return np.zeros((self.tcp_pose_dim,), dtype=np.float32)
+
+    def _format_tactile(self, tactile_data: np.ndarray | None) -> np.ndarray:
+        if tactile_data is None:
+            return np.zeros(self.tactile_shape, dtype=np.float32)
+
+        tactile = np.asarray(tactile_data, dtype=np.float32)
+        if tactile.shape == self.tactile_shape:
+            return tactile
+        if tactile.size == int(np.prod(self.tactile_shape)):
+            return tactile.reshape(self.tactile_shape)
+        raise ValueError(
+            f"Expected tactile shape {self.tactile_shape}, got {tactile.shape}"
+        )
 
     def _get_timestamps_extra(
         self, extra_data: dict[str, object] | None
@@ -394,6 +418,49 @@ class DatasetRecorder:
             self.recorded_episodes += 1
         utils.logger.info(f"Saving took {time.time() - t0:.1f}s")
 
+    def recording_status(self, collecting: bool = False) -> dict[str, object]:
+        """Small status snapshot for the live visualizer."""
+        return {
+            "dataset_type": self.dataset_type,
+            "dataset_dir": str(self.dataset_dir),
+            "recorded_episodes": int(self.recorded_episodes),
+            "current_episode_frames": int(self.collect_step),
+            "last_episode_length": self._cached_last_episode_length(),
+            "collecting": bool(collecting),
+        }
+
+    def _cached_last_episode_length(self) -> int | None:
+        episode_index = self.recorded_episodes - 1
+        if self._last_episode_length_cache_for == episode_index:
+            return self._last_episode_length_cache
+        self._last_episode_length_cache_for = episode_index
+        self._last_episode_length_cache = self._last_episode_length(episode_index)
+        return self._last_episode_length_cache
+
+    def _last_episode_length(self, episode_index: int) -> int | None:
+        if episode_index < 0:
+            return None
+        if self.dataset_type == "a":
+            path = self.dataset_dir / f"episode_{episode_index}.hdf5"
+            if not path.exists():
+                return None
+            try:
+                with h5py.File(path, "r") as root:
+                    return int(root["/action"].shape[0])
+            except Exception:
+                return None
+        if self.dataset_type == "l":
+            try:
+                for _path, df in self._load_lerobot_episode_metadata():
+                    if "episode_index" not in df or "length" not in df:
+                        continue
+                    hit = df[df["episode_index"] == episode_index]
+                    if not hit.empty:
+                        return int(hit.iloc[-1]["length"])
+            except Exception:
+                return None
+        return None
+
     def _export_lerobot(self) -> bool:
         """Finalize the current episode. Frames were already added per-cycle."""
         if self.lerobot_dataset is None:
@@ -439,7 +506,7 @@ class DatasetRecorder:
             if self.torque_collect:
                 obs.create_dataset("torque", (max_timesteps, 3))
             if self.tactile_mode:
-                obs.create_dataset("tactile", (max_timesteps, 41, 3))
+                obs.create_dataset("tactile", (max_timesteps, *self.tactile_shape))
 
             w, h = self.resolution
             img_shape = (h, w)  # (height, width) for numpy
@@ -469,6 +536,281 @@ class DatasetRecorder:
             f.write(
                 f"Episode {self.recorded_episodes}: max_timesteps = {max_timesteps}\n"
             )
+
+    # ── Rollback ─────────────────────────────────────────────────────────
+
+    def rollback_last_episode(self) -> bool:
+        """Delete the most recently recorded episode and reuse its index."""
+        if self.dataset_type == "l":
+            return self._rollback_lerobot()
+        if self.dataset_type == "a":
+            return self._rollback_hdf5()
+        utils.logger.error(f"Unsupported dataset type for rollback: {self.dataset_type}")
+        return False
+
+    def _rollback_hdf5(self) -> bool:
+        if self.collect_step:
+            self._reset_data_dict()
+            utils.logger.info("Discarded unsaved HDF5 episode buffer.")
+            return True
+
+        if self.recorded_episodes <= 0:
+            utils.logger.warning("No HDF5 episode to rollback.")
+            return False
+
+        episode_index = self.recorded_episodes - 1
+        path = self.dataset_dir / f"episode_{episode_index}.hdf5"
+        if not path.exists():
+            utils.logger.error(f"Cannot rollback: missing {path}")
+            return False
+
+        path.unlink()
+        self._trim_hdf5_description(episode_index)
+        self.recorded_episodes = episode_index
+        self._last_episode_length_cache_for = None
+        utils.logger.info(f"Rolled back HDF5 episode {episode_index}.")
+        return True
+
+    def _trim_hdf5_description(self, episode_index: int) -> None:
+        desc_path = self.dataset_dir / "episode_descriptions.txt"
+        if not desc_path.exists():
+            return
+        lines = desc_path.read_text().splitlines()
+        prefix = f"Episode {episode_index}:"
+        kept = [line for line in lines if not line.startswith(prefix)]
+        desc_path.write_text("\n".join(kept) + ("\n" if kept else ""))
+
+    def _rollback_lerobot(self) -> bool:
+        if self._has_lerobot_pending_frames():
+            if self.lerobot_dataset is not None and hasattr(
+                self.lerobot_dataset, "clear_episode_buffer"
+            ):
+                self.lerobot_dataset.clear_episode_buffer()
+            self._reset_data_dict()
+            utils.logger.info("Discarded unsaved LeRobot episode buffer.")
+            return True
+
+        if self.lerobot_dataset is not None:
+            self.lerobot_dataset.finalize()
+            self.lerobot_dataset = None
+
+        info_path = self.dataset_dir / "meta" / "info.json"
+        if not info_path.exists():
+            utils.logger.warning("No LeRobot metadata found for rollback.")
+            return False
+
+        info = json.loads(info_path.read_text())
+        total_episodes = int(info.get("total_episodes", self.recorded_episodes))
+        if total_episodes <= 0:
+            utils.logger.warning("No LeRobot episode to rollback.")
+            self.recorded_episodes = 0
+            return False
+
+        episode_index = total_episodes - 1
+        episodes_by_file = self._load_lerobot_episode_metadata()
+        episode_row = None
+        remaining_episodes = []
+
+        for _meta_path, df in episodes_by_file:
+            if "episode_index" not in df:
+                continue
+            hit = df[df["episode_index"] == episode_index]
+            if not hit.empty and episode_row is None:
+                episode_row = hit.iloc[-1]
+            remaining_episodes.append(df[df["episode_index"] != episode_index])
+
+        if episode_row is None:
+            utils.logger.warning(
+                f"Episode metadata for {episode_index} not found; deleting files by convention."
+            )
+            episode_length = self._rollback_lerobot_files_by_index(info, episode_index)
+        else:
+            episode_length = int(episode_row.get("length", 0))
+            self._rollback_lerobot_data_file(info, episode_index, episode_row)
+            self._rollback_lerobot_video_files(info, episode_index, episode_row, remaining_episodes)
+
+        self._remove_lerobot_episode_metadata(episodes_by_file, episode_index)
+
+        info["total_episodes"] = episode_index
+        info["total_frames"] = max(0, int(info.get("total_frames", 0)) - episode_length)
+        info["splits"] = {"train": f"0:{episode_index}"}
+        if episode_index == 0:
+            info["total_tasks"] = 0
+            tasks_path = self.dataset_dir / "meta" / "tasks.parquet"
+            if tasks_path.exists():
+                tasks_path.unlink()
+        info_path.write_text(json.dumps(info, indent=4) + "\n")
+
+        stats_path = self.dataset_dir / "meta" / "stats.json"
+        if stats_path.exists():
+            stats_path.unlink()
+            utils.logger.warning("Removed stale LeRobot stats.json; regenerate stats before training.")
+
+        self.recorded_episodes = episode_index
+        self._lerobot_episode_started = False
+        self.collect_step = 0
+        self._last_episode_length_cache_for = None
+        utils.logger.info(f"Rolled back LeRobot episode {episode_index}.")
+        return True
+
+    def _has_lerobot_pending_frames(self) -> bool:
+        if self.lerobot_dataset is not None and hasattr(
+            self.lerobot_dataset, "has_pending_frames"
+        ):
+            return bool(self.lerobot_dataset.has_pending_frames())
+        return bool(self.collect_step and self._lerobot_episode_started)
+
+    def _load_lerobot_episode_metadata(self) -> list[tuple[Path, object]]:
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise RuntimeError("pandas is required to rollback LeRobot metadata") from exc
+
+        episodes_root = self.dataset_dir / "meta" / "episodes"
+        if not episodes_root.exists():
+            return []
+
+        result = []
+        for path in sorted(episodes_root.rglob("*.parquet")):
+            df = pd.read_parquet(path)
+            result.append((path, df))
+        return result
+
+    def _remove_lerobot_episode_metadata(
+        self, episodes_by_file: list[tuple[Path, object]], episode_index: int
+    ) -> None:
+        for path, df in episodes_by_file:
+            if "episode_index" not in df:
+                continue
+            kept = df[df["episode_index"] != episode_index]
+            if kept.empty:
+                path.unlink()
+                self._remove_empty_parents(path.parent, self.dataset_dir / "meta" / "episodes")
+            elif len(kept) != len(df):
+                self._delete_or_rewrite_episode_parquet(
+                    path,
+                    episode_index,
+                    empty_parent_stop=self.dataset_dir / "meta" / "episodes",
+                )
+
+    def _rollback_lerobot_data_file(self, info: dict, episode_index: int, episode_row) -> None:
+        data_path = self.dataset_dir / info["data_path"].format(
+            chunk_index=int(episode_row["data/chunk_index"]),
+            file_index=int(episode_row["data/file_index"]),
+        )
+        self._delete_or_rewrite_episode_parquet(data_path, episode_index)
+
+    def _rollback_lerobot_video_files(
+        self,
+        info: dict,
+        episode_index: int,
+        episode_row,
+        remaining_episodes: list,
+    ) -> None:
+        for key, feature in info.get("features", {}).items():
+            if feature.get("dtype") != "video":
+                continue
+            chunk_key = f"videos/{key}/chunk_index"
+            file_key = f"videos/{key}/file_index"
+            if chunk_key not in episode_row or file_key not in episode_row:
+                continue
+            chunk_index = int(episode_row[chunk_key])
+            file_index = int(episode_row[file_key])
+            still_referenced = any(
+                chunk_key in df
+                and file_key in df
+                and not df[(df[chunk_key] == chunk_index) & (df[file_key] == file_index)].empty
+                for df in remaining_episodes
+            )
+            video_path = self.dataset_dir / info["video_path"].format(
+                video_key=key,
+                chunk_index=chunk_index,
+                file_index=file_index,
+            )
+            if still_referenced:
+                utils.logger.warning(
+                    f"Keeping shared video file during rollback: {video_path}"
+                )
+                continue
+            if video_path.exists():
+                video_path.unlink()
+                self._remove_empty_parents(video_path.parent, self.dataset_dir / "videos" / key)
+
+    def _rollback_lerobot_files_by_index(self, info: dict, episode_index: int) -> int:
+        chunks_size = int(info.get("chunks_size", 1000))
+        chunk_index = episode_index // chunks_size
+        file_index = episode_index % chunks_size
+        data_path = self.dataset_dir / info["data_path"].format(
+            chunk_index=chunk_index,
+            file_index=file_index,
+        )
+        episode_length = 0
+        if data_path.exists():
+            episode_length = self._delete_or_rewrite_episode_parquet(data_path, episode_index)
+        for key, feature in info.get("features", {}).items():
+            if feature.get("dtype") != "video":
+                continue
+            video_path = self.dataset_dir / info["video_path"].format(
+                video_key=key,
+                chunk_index=chunk_index,
+                file_index=file_index,
+            )
+            if video_path.exists():
+                video_path.unlink()
+        return episode_length
+
+    def _delete_or_rewrite_episode_parquet(
+        self,
+        path: Path,
+        episode_index: int,
+        empty_parent_stop: Path | None = None,
+    ) -> int:
+        try:
+            import pyarrow as pa
+            import pyarrow.compute as pc
+            import pyarrow.parquet as pq
+        except ImportError as exc:
+            raise RuntimeError("pyarrow is required to rollback LeRobot data") from exc
+
+        if not path.exists():
+            utils.logger.warning(f"LeRobot data file already missing: {path}")
+            return 0
+
+        parent_stop = empty_parent_stop or (self.dataset_dir / "data")
+        table = pq.read_table(path)
+        if "episode_index" not in table.column_names:
+            path.unlink()
+            self._remove_empty_parents(path.parent, parent_stop)
+            return 0
+
+        episode_column = table["episode_index"]
+        remove_mask = pc.equal(
+            episode_column,
+            pa.scalar(episode_index, type=episode_column.type),
+        )
+        removed = int(pc.sum(pc.cast(remove_mask, pa.int64())).as_py() or 0)
+        if removed == 0:
+            utils.logger.warning(f"No rows for episode {episode_index} in {path}")
+            return 0
+
+        kept = table.filter(pc.invert(remove_mask))
+        if kept.num_rows == 0:
+            path.unlink()
+            self._remove_empty_parents(path.parent, parent_stop)
+        else:
+            pq.write_table(kept, path)
+        return removed
+
+    @staticmethod
+    def _remove_empty_parents(path: Path, stop: Path) -> None:
+        stop = stop.resolve()
+        path = path.resolve()
+        while path != stop and stop in path.parents:
+            try:
+                path.rmdir()
+            except OSError:
+                break
+            path = path.parent
 
     # ── Finalize ──────────────────────────────────────────────────────────
 

@@ -53,6 +53,7 @@ class CameraUDPManager:
         self.fine_mode: str | None = None
         self.data_collecting_state = False
         self.data_export_state = False
+        self.data_rollback_state = False
         self.camera_images: Dict[str, np.ndarray] = {}
         self.camera_image_timestamps_ns: Dict[str, int] = {}
         self.camera_data: Dict[str, np.ndarray] = {}
@@ -424,9 +425,14 @@ class CameraUDPManager:
                         if record_control == "Start":
                             self.data_collecting_state = True
                             self.data_export_state = False
+                            self.data_rollback_state = False
                         elif record_control == "Stop":
                             self.data_collecting_state = False
                             self.data_export_state = True
+                        elif record_control in ("Undo", "Rollback", "DeleteLast"):
+                            self.data_collecting_state = False
+                            self.data_export_state = False
+                            self.data_rollback_state = True
 
             except Exception as e:
                 utils.logger.error(f"Error in VR receive thread: {e}")
