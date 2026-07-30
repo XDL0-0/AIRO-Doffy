@@ -1,0 +1,7 @@
+{
+  "robot": {
+    "robot_type": "ur3e",
+    "ip": null,
+    "initial_joints_rad": [1.57, -1.57, 1.57, -1.57, -1.57, 0.0]
+  }
+}

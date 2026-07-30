@@ -1,0 +1,9 @@
+{
+  "recording": {
+    "task_name": "pick_and_place_ur3e",
+    "data_type": "both"
+  },
+  "robot": {
+    "gripper_enabled": true
+  }
+}

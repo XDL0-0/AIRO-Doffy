@@ -11,6 +11,9 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
+config = [
+  "PyYAML>=6.0",
+]
 math = [
   "loguru>=0.7",
   "numpy>=1.24",
@@ -94,4 +97,3 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-

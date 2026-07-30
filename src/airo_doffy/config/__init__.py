@@ -1,5 +1,15 @@
 """Typed configuration models, loaders, and composition factories."""
 
+from .loader import (
+    ENV_PREFIX,
+    cli_override_mapping,
+    config_from_mapping,
+    config_to_mapping,
+    deep_merge,
+    environment_overrides,
+    load_config,
+    read_yaml,
+)
 from .models import (
     AiroDoffyConfig,
     CameraConfig,
@@ -21,6 +31,7 @@ __all__ = [
     "AiroDoffyConfig",
     "CameraConfig",
     "CommandTransportConfig",
+    "ENV_PREFIX",
     "NetworkConfig",
     "RecordingConfig",
     "RobotConfig",
@@ -32,4 +43,11 @@ __all__ = [
     "VideoStreamingConfig",
     "VisualizationConfig",
     "WrenchConfig",
+    "cli_override_mapping",
+    "config_from_mapping",
+    "config_to_mapping",
+    "deep_merge",
+    "environment_overrides",
+    "load_config",
+    "read_yaml",
 ]

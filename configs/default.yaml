@@ -1,0 +1,83 @@
+{
+  "network": {
+    "pc_ip": null,
+    "vr_ip": null,
+    "legacy_base_port": 8000,
+    "pose_port": 8001,
+    "control_port": 8005,
+    "signaling_port": 8765
+  },
+  "robot": {
+    "robot_type": "ur3e",
+    "ip": null,
+    "torque_mode": false,
+    "gripper_enabled": false
+  },
+  "camera": {
+    "resolution": [640, 480],
+    "fps": 60,
+    "depth_enabled": false
+  },
+  "vr": {
+    "tracking_mode": "controller"
+  },
+  "teleop": {
+    "command_mode": "joint",
+    "freeze_rotation": true,
+    "ur_control_rate_hz": 60,
+    "vr_to_robot_axes": [
+      [-1.0, 0.0, 0.0],
+      [0.0, 0.0, -1.0],
+      [0.0, 1.0, 0.0]
+    ]
+  },
+  "tactile": {
+    "enabled": true,
+    "transfer_enabled": false,
+    "backend": "ble4",
+    "shape": [4, 3]
+  },
+  "recording": {
+    "task_name": "pick_and_place",
+    "dataset_dir": "./datasets/pnp_long",
+    "dataset_type": "l",
+    "push_to_hub": false,
+    "save_eef": false,
+    "data_type": "both"
+  },
+  "visualization": {
+    "enabled": true,
+    "hz": 30.0,
+    "window_s": 8.0,
+    "force_panel_range": 30.0
+  },
+  "video": {
+    "transport": "webrtc",
+    "jpeg_quality": 100,
+    "legacy_chunk_size": 60000
+  },
+  "state_transport": {
+    "transport": "webrtc",
+    "ordered": false,
+    "max_retransmits": 0
+  },
+  "command_transport": {
+    "transport": "webrtc",
+    "ordered": true,
+    "reliable": true
+  },
+  "wrench": {
+    "force_collect": false,
+    "torque_collect": false,
+    "gravity_compensation": false,
+    "moving_average_window": 8,
+    "low_pass_alpha": 0.15
+  },
+  "runtime": {
+    "kelo_control_rate_hz": 10,
+    "collect_rate_hz": 10,
+    "inference_fps": 10,
+    "inference_max_steps": 1000,
+    "inference_episodes": 1
+  }
+}

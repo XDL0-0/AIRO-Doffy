@@ -1,0 +1,9 @@
+{
+  "recording": {
+    "task_name": "pick_and_place_rm75",
+    "data_type": "both"
+  },
+  "runtime": {
+    "collect_rate_hz": 10
+  }
+}
