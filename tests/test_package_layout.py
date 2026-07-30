@@ -31,6 +31,23 @@ print(airo_doffy.__version__)
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_state_package_does_not_import_optional_network_or_hardware_sdks(self) -> None:
+        code = """
+import sys
+import airo_doffy.streaming.state
+blocked = ("aiortc", "aiohttp", "av", "cv2", "pyrealsense2", "airo_robots")
+loaded = [name for name in sys.modules if name.startswith(blocked)]
+assert not loaded, loaded
+"""
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", code],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_supported_sources_do_not_import_deprecated_code(self) -> None:
         roots = [REPO_ROOT / "src", REPO_ROOT / "main.py", REPO_ROOT / "inference.py"]
         violations: list[str] = []

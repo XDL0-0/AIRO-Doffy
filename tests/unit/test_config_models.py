@@ -150,6 +150,10 @@ class TypedConfigModelTest(unittest.TestCase):
         self.assertEqual(config.tactile.deadband_sigma, 3.0)
         self.assertEqual(config.tactile.max_abs, 20000.0)
         self.assertEqual(config.video.transport, "webrtc")
+        self.assertEqual(config.network.state_diagnostic_port, 5005)
+        self.assertEqual(config.state_transport.channel_label, "realtime_state")
+        self.assertFalse(config.state_transport.ordered)
+        self.assertEqual(config.state_transport.max_retransmits, 0)
         self.assertEqual(config.visualization, VisualizationConfig())
 
     def test_realman_defaults_and_timing_validation(self) -> None:
@@ -198,6 +202,12 @@ class TypedConfigModelTest(unittest.TestCase):
             VideoStreamingConfig(rtp_mtu=255)
         with self.assertRaises(ModelValidationError):
             StateTransportConfig(transport="tcp")
+        with self.assertRaises(ModelValidationError):
+            StateTransportConfig(ordered=True)
+        with self.assertRaises(ModelValidationError):
+            StateTransportConfig(max_retransmits=1)
+        with self.assertRaises(ModelValidationError):
+            StateTransportConfig(channel_label="")
         with self.assertRaises(ModelValidationError):
             CommandTransportConfig(reliable=False)
 

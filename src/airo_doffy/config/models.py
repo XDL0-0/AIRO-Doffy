@@ -117,6 +117,7 @@ class NetworkConfig:
     control_port: int = 8005
     signaling_port: int = 8765
     video_rtp_port: int = 5004
+    state_diagnostic_port: int = 5005
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "pc_ip", _text(self.pc_ip, "pc_ip", optional=True))
@@ -127,6 +128,7 @@ class NetworkConfig:
             "control_port",
             "signaling_port",
             "video_rtp_port",
+            "state_diagnostic_port",
         ):
             object.__setattr__(self, name, _port(getattr(self, name), name))
 
@@ -537,6 +539,7 @@ class StateTransportConfig:
     """Latest-only high-frequency state channel policy."""
 
     transport: str = "webrtc"
+    channel_label: str = "realtime_state"
     ordered: bool = False
     max_retransmits: int = 0
 
@@ -544,7 +547,16 @@ class StateTransportConfig:
         transport = self.transport.lower()
         if transport not in {"webrtc", "udp"}:
             raise ModelValidationError("state transport must be 'webrtc' or 'udp'")
+        if self.ordered or self.max_retransmits != 0:
+            raise ModelValidationError(
+                "state transport must be unordered with max_retransmits=0"
+            )
         object.__setattr__(self, "transport", transport)
+        object.__setattr__(
+            self,
+            "channel_label",
+            _text(self.channel_label, "channel_label"),
+        )
         object.__setattr__(
             self,
             "max_retransmits",
