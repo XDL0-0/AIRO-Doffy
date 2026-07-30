@@ -41,9 +41,12 @@ robot-realman = [
   "ruckig",
 ]
 tactile-ble4 = [
+  "numpy>=1.24",
   "sensor-comm-dds",
 ]
 tactile-legacy = [
+  "loguru>=0.7",
+  "numpy>=1.24",
   "pyserial>=3.5",
   "sensor-comm-dds",
 ]
