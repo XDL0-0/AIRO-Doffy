@@ -118,7 +118,7 @@ def _color_fader_rgb255(c1: str, c2: str, mix: float = 0.0) -> list[int]:
 
 
 class _FallbackMagTouchRawViewModel:
-    """Same fallback formula used by test_tool/ForceVisualize.py."""
+    """Same fallback formula used by scripts/diagnostics/force_visualizer.py."""
 
     def __init__(self, view, c1: str = "#434A52", c2: str = "#7DB5A8"):
         self.view = view

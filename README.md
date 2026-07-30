@@ -202,23 +202,23 @@ stop motion if the measured command timing is no longer valid.
 ### 3. Force/Tactile Visualizer
 Run the standalone dashboard against a UR robot:
 ```bash
-python test_tool/ForceVisualize.py --ip 10.42.0.162 --robot-type ur3e
+python -m scripts.diagnostics.force_visualizer --ip 10.42.0.162 --robot-type ur3e
 ```
 
 Preview the shared visualizer UI without robot hardware:
 ```bash
-python test_tool/ForceVisualize.py --mock
+python -m scripts.diagnostics.force_visualizer --mock
 ```
 
 Show tactile data in the dashboard:
 ```bash
-python test_tool/ForceVisualize.py --mock --mock-tactile
-python test_tool/ForceVisualize.py --ip 10.42.0.162 --robot-type ur3e --tactile
+python -m scripts.diagnostics.force_visualizer --mock --mock-tactile
+python -m scripts.diagnostics.force_visualizer --ip 10.42.0.162 --robot-type ur3e --tactile
 ```
 
 Run a small TCP xyz experiment with fixed orientation using `servo_to_tcp_pose`:
 ```bash
-python test_tool/ForceVisualize.py \
+python -m scripts.diagnostics.force_visualizer \
     --ip 10.42.0.162 \
     --robot-type ur3e \
     --payload-cog 0 0 0.058 \

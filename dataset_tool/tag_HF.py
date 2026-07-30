@@ -1,16 +1,10 @@
-from huggingface_hub import HfApi
-import logging
+"""Safety stop for the retired hard-coded Hugging Face tagging command."""
 
+import sys
+from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-logger = logging.getLogger(__name__)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts._compat import block_unsafe_legacy_command
 
-api = HfApi()
-repo_id = "IXDLI/wipeBoard_official_unfiltered"
-
-# Most LeRobot datasets use version v2.0
-try:
-    api.create_tag(repo_id, tag="v3.0", repo_type="dataset")
-    logger.info(f"Successfully added v3.0 tag to {repo_id}")
-except Exception as e:
-    logger.error(f"Error processing tag: {e}")
+if __name__ == "__main__":
+    block_unsafe_legacy_command("scripts.dataset.tag_hub", __file__)

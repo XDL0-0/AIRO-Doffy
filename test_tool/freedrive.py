@@ -1,23 +1,10 @@
-from airo_robots.manipulators.hardware.ur_rtde import URrtde
-import logging
+"""Safety stop for the retired hard-coded UR freedrive command."""
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-logger = logging.getLogger(__name__)
+import sys
+from pathlib import Path
 
-robot = URrtde("10.42.0.162", URrtde.UR3E_CONFIG)
-# robot = URrtde("localhost", URrtde.UR5E_CONFIG)
-robot.rtde_control.servoStop()
-robot.rtde_control.teachMode()  # start freedrive
-input("press enter to continue")
-robot.rtde_control.endTeachMode()  # stop
-# freedrive
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts._compat import block_unsafe_legacy_command
 
-# input("press enter to continue")
-
-logger.info(f"Joint configuration: {robot.get_joint_configuration()}")
-logger.info(f"TCP pose: {robot.get_tcp_pose()}")
-
-# robot.move_to_joint_configuration([-1.57, -1.57, -1.57, 0, 1.57, 0],0.3).wait()
-# robot.rtde_control.teachMode()  # start freedrive
-# input("press enter to continue")
-# robot.rtde_control.endTeachMode()  # stop freedrive
+if __name__ == "__main__":
+    block_unsafe_legacy_command("scripts.diagnostics.ur_freedrive", __file__)
