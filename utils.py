@@ -3,6 +3,10 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.distance import cdist
 
+from airo_doffy.devices.wrench.compensation import (
+    GravityCompensator as _PureGravityCompensator,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -281,59 +285,67 @@ class TimeAwareLowPassFilter:
 
 
 class GravityCompensator:
-    """Remove tool gravity and sensor bias from F/T readings.
-
-    The UR RTDE ``getActualTCPForce`` returns the wrench at the TCP expressed
-    in the **base** frame.  This class computes the gravitational wrench of the
-    tool payload (gripper) at the TCP and subtracts it together with any
-    constant sensor bias that was measured during an initial calibration phase.
-
-    Coordinate convention (UR base frame):
-        Z points **up**, so gravity = [0, 0, -9.81] m/s².
-    """
+    """NumPy compatibility adapter for the pure v2 gravity compensator."""
 
     GRAVITY_BASE = np.array([0.0, 0.0, -9.81])
 
     def __init__(self, mass: float, com: np.ndarray, filter_alpha: float = 0.15):
-        self.mass = mass
-        self.com = np.asarray(com, dtype=float)
-        self.force_bias = np.zeros(6)
-        self.calibrated = False
-        self._calib_buf: list[np.ndarray] = []
-        self._filter = ExponentialFilter(alpha=filter_alpha, dim=6)
+        self._impl = _PureGravityCompensator(
+            mass,
+            np.asarray(com, dtype=float).reshape(-1),
+            filter_alpha=filter_alpha,
+        )
+
+    @property
+    def mass(self) -> float:
+        return self._impl.mass_kg
+
+    @property
+    def com(self) -> np.ndarray:
+        return np.asarray(self._impl.center_of_mass_m, dtype=float)
+
+    @property
+    def force_bias(self) -> np.ndarray:
+        return np.asarray(self._impl.force_bias, dtype=float)
+
+    @property
+    def calibrated(self) -> bool:
+        return self._impl.calibrated
 
     def _gravity_wrench(self, R_tool_to_base: np.ndarray) -> np.ndarray:
-        """Gravity wrench at TCP, expressed in the base frame."""
-        f_grav = self.mass * self.GRAVITY_BASE
-        com_base = R_tool_to_base @ self.com
-        tau_grav = np.cross(com_base, f_grav)
-        return np.concatenate([f_grav, tau_grav])
+        return np.asarray(
+            self._impl.gravity_wrench(R_tool_to_base),
+            dtype=float,
+        )
 
     def compensate(
-        self, raw_wrench: np.ndarray, R_tool_to_base: np.ndarray
+        self,
+        raw_wrench: np.ndarray,
+        R_tool_to_base: np.ndarray,
     ) -> np.ndarray:
-        """Return the contact wrench with gravity and bias removed, then filtered."""
-        contact = raw_wrench - self._gravity_wrench(R_tool_to_base) - self.force_bias
-        return self._filter.update(contact)
+        return np.asarray(
+            self._impl.compensate(raw_wrench, R_tool_to_base),
+            dtype=float,
+        )
 
     def add_calibration_sample(
-        self, raw_wrench: np.ndarray, R_tool_to_base: np.ndarray
+        self,
+        raw_wrench: np.ndarray,
+        R_tool_to_base: np.ndarray,
     ) -> None:
-        residual = raw_wrench - self._gravity_wrench(R_tool_to_base)
-        self._calib_buf.append(residual)
+        self._impl.add_calibration_sample(raw_wrench, R_tool_to_base)
 
     def finish_calibration(self) -> np.ndarray:
-        if not self._calib_buf:
+        bias = np.asarray(self._impl.finish_calibration(), dtype=float)
+        if self.calibrated:
+            logger.info(
+                f"Force sensor calibrated - bias F=[{bias[0]:+.3f}, "
+                f"{bias[1]:+.3f}, {bias[2]:+.3f}] N "
+                f"T=[{bias[3]:+.4f}, {bias[4]:+.4f}, {bias[5]:+.4f}] Nm"
+            )
+        else:
             logger.warning("GravityCompensator: no calibration samples collected")
-            return self.force_bias
-        self.force_bias = np.mean(self._calib_buf, axis=0)
-        self._calib_buf.clear()
-        self.calibrated = True
-        self._filter.reset()
-        logger.info(
-            f"Force sensor calibrated — bias F=[{self.force_bias[0]:+.3f}, "
-            f"{self.force_bias[1]:+.3f}, {self.force_bias[2]:+.3f}] N  "
-            f"T=[{self.force_bias[3]:+.4f}, {self.force_bias[4]:+.4f}, "
-            f"{self.force_bias[5]:+.4f}] Nm"
-        )
-        return self.force_bias
+        return bias
+
+    def reset_baseline(self, bias: np.ndarray | None = None) -> None:
+        self._impl.reset_baseline(bias)
