@@ -18,6 +18,9 @@ from .safety import (
     JointLimitsFilter,
     JointVelocityLimitFilter,
     SafetyFilterChain,
+    TeleopWatchdog,
+    WatchdogDecision,
+    WatchdogState,
     WorkspaceBoundsFilter,
 )
 
@@ -37,5 +40,8 @@ __all__ = [
     "JointLimitsFilter",
     "JointVelocityLimitFilter",
     "SafetyFilterChain",
+    "TeleopWatchdog",
+    "WatchdogDecision",
+    "WatchdogState",
     "WorkspaceBoundsFilter",
 ]

@@ -183,6 +183,10 @@ class TypedConfigModelTest(unittest.TestCase):
             TeleopConfig(rotation_composition="middle")
         with self.assertRaises(ModelValidationError):
             TeleopConfig(fine_translation_scale=0)
+        with self.assertRaises(ModelValidationError):
+            TeleopConfig(vr_input_timeout_s=0)
+        with self.assertRaises(ModelValidationError):
+            TeleopConfig(watchdog_recovery_samples=0)
 
     def test_section_validation(self) -> None:
         with self.assertRaises(ModelValidationError):

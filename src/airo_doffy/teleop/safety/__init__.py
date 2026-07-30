@@ -11,6 +11,12 @@ from .limits import (
     JointVelocityLimitFilter,
     WorkspaceBoundsFilter,
 )
+from .watchdog import (
+    TeleopWatchdog,
+    WatchdogDecision,
+    WatchdogMetrics,
+    WatchdogState,
+)
 
 __all__ = [
     "ActionFilter",
@@ -23,5 +29,9 @@ __all__ = [
     "JointVelocityLimitFilter",
     "SafetyFilterChain",
     "SafetyFilterChainMetrics",
+    "TeleopWatchdog",
+    "WatchdogDecision",
+    "WatchdogMetrics",
+    "WatchdogState",
     "WorkspaceBoundsFilter",
 ]

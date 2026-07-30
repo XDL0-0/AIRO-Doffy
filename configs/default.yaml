@@ -34,6 +34,10 @@
     "fine_rotation_scale": 0.4,
     "controller_grip_threshold": 0.0,
     "controller_gripper_deadzone": 0.7,
+    "vr_input_timeout_s": 0.25,
+    "robot_state_timeout_s": 0.25,
+    "watchdog_future_tolerance_s": 0.01,
+    "watchdog_recovery_samples": 1,
     "ur_control_rate_hz": 60,
     "vr_to_robot_axes": [
       [-1.0, 0.0, 0.0],

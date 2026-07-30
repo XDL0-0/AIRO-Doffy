@@ -314,6 +314,10 @@ class TeleopConfig:
     fine_rotation_scale: float = 0.4
     controller_grip_threshold: float = 0.0
     controller_gripper_deadzone: float = 0.7
+    vr_input_timeout_s: float = 0.25
+    robot_state_timeout_s: float = 0.25
+    watchdog_future_tolerance_s: float = 0.01
+    watchdog_recovery_samples: int = 1
     ur_control_rate_hz: int = 60
     controller_reset_trigger_threshold: float = 0.8
     hand_palm_jump_threshold_m: float = 0.15
@@ -350,6 +354,9 @@ class TeleopConfig:
             "rotation_scale",
             "fine_translation_scale",
             "fine_rotation_scale",
+            "vr_input_timeout_s",
+            "robot_state_timeout_s",
+            "watchdog_future_tolerance_s",
         ):
             object.__setattr__(self, name, _positive(getattr(self, name), name))
         object.__setattr__(
@@ -361,6 +368,15 @@ class TeleopConfig:
             self,
             "controller_gripper_deadzone",
             _alpha(self.controller_gripper_deadzone, "controller_gripper_deadzone"),
+        )
+        object.__setattr__(
+            self,
+            "watchdog_recovery_samples",
+            _integer(
+                self.watchdog_recovery_samples,
+                "watchdog_recovery_samples",
+                1,
+            ),
         )
         object.__setattr__(
             self,
