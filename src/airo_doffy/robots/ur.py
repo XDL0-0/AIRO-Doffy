@@ -12,6 +12,7 @@ from ..core.errors import LifecycleError, ModelValidationError, OptionalDependen
 from ..core.types import ClockDomain, RobotAction, RobotCommandType, RobotState
 
 ManipulatorFactory = Callable[[RobotConfig], object]
+InverseKinematics = Callable[[object, tuple[float, ...]], Sequence[float] | None]
 
 
 def _numpy_array(values: object):
@@ -70,6 +71,35 @@ def _default_manipulator_factory(config: RobotConfig) -> object:
     return robot_class(config.ip, robot_config, **kwargs)
 
 
+def _default_torque_ik(config: RobotConfig) -> InverseKinematics:
+    try:
+        if config.robot_type == "ur3e":
+            from ur_analytic_ik import ur3e as analytic_ik
+        else:
+            from ur_analytic_ik import ur5e as analytic_ik
+    except ImportError as exc:
+        raise OptionalDependencyError(
+            "UR torque TCP commands require the 'robot-ur' optional dependency"
+        ) from exc
+
+    def solve(pose: object, seed: tuple[float, ...]) -> Sequence[float] | None:
+        solutions = analytic_ik.inverse_kinematics_closest_with_tcp(
+            _numpy_array(pose),
+            _numpy_array(
+                (
+                    (1.0, 0.0, 0.0, 0.0),
+                    (0.0, 1.0, 0.0, 0.0),
+                    (0.0, 0.0, 1.0, 0.0),
+                    (0.0, 0.0, 0.0, 1.0),
+                )
+            ),
+            *seed,
+        )
+        return None if not solutions else solutions[0]
+
+    return solve
+
+
 class URRobotBackend:
     """Backend-neutral facade over position or torque-mode UR RTDE objects."""
 
@@ -79,6 +109,7 @@ class URRobotBackend:
         *,
         manipulator: object | None = None,
         manipulator_factory: ManipulatorFactory | None = None,
+        inverse_kinematics: InverseKinematics | None = None,
         clock: Clock | None = None,
     ) -> None:
         if config.robot_type not in {"ur3e", "ur5e"}:
@@ -90,6 +121,7 @@ class URRobotBackend:
         self._config = config
         self._manipulator = manipulator
         self._factory = manipulator_factory or _default_manipulator_factory
+        self._inverse_kinematics = inverse_kinematics
         self._clock = clock or MonotonicClock()
         self._lock = threading.RLock()
         self._sequence = 0
@@ -197,7 +229,17 @@ class URRobotBackend:
 
     def _apply_tcp_pose(self, robot: object, action: RobotAction) -> None:
         if self._config.torque_mode:
-            raise LifecycleError("TCP pose requires an explicit IK executor in UR torque mode")
+            solver = self._inverse_kinematics
+            if solver is None:
+                solver = _default_torque_ik(self._config)
+                self._inverse_kinematics = solver
+            pose = self._flattened_pose(action)
+            solution = solver(pose, self._read_joints(robot))
+            if solution is None:
+                raise LifecycleError("UR torque TCP inverse kinematics failed")
+            target = _vector(solution, self.dof, "UR torque IK solution")
+            robot.target_pos = _numpy_array(target)
+            return
         duration = action.duration_s or (1.0 / 60.0)
         self._call(
             robot,

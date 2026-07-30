@@ -167,19 +167,27 @@ class URRobotBackendTest(unittest.TestCase):
 
     def test_torque_mode_uses_cached_state_and_shared_target(self) -> None:
         manipulator = _TorqueManipulator()
+        ik_calls: list[tuple] = []
+
+        def solve(pose, seed):
+            ik_calls.append((pose, seed))
+            return (0.6,) * 6
+
         backend = URRobotBackend(
             RobotConfig(robot_type="ur5e", torque_mode=True),
             manipulator=manipulator,
+            inverse_kinematics=solve,
         )
         backend.start()
         self.assertEqual(backend.name, "ur5e_torque")
         self.assertEqual(backend.read_state().wrench, (0.0,) * 6)
         backend.apply_action(action(RobotCommandType.JOINT_POSITION, (0.4,) * 6))
         self.assertEqual(tuple(manipulator.target_pos), (0.4,) * 6)
-        with self.assertRaisesRegex(LifecycleError, "explicit IK executor"):
-            backend.apply_action(
-                action(RobotCommandType.TCP_POSE, tuple(value for row in IDENTITY for value in row))
-            )
+        backend.apply_action(
+            action(RobotCommandType.TCP_POSE, tuple(value for row in IDENTITY for value in row))
+        )
+        self.assertEqual(tuple(manipulator.target_pos), (0.6,) * 6)
+        self.assertEqual(ik_calls[0][1], (0.0,) * 6)
         backend.close()
         self.assertEqual(manipulator.disabled, 1)
         self.assertEqual(manipulator.close_count, 1)
