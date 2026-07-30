@@ -26,6 +26,18 @@ from .legacy_jpeg_udp import (
     create_legacy_jpeg_udp,
     packetize_legacy_jpeg,
 )
+from .rtp_h264_udp import (
+    RTP_HEADER,
+    RTP_HEADER_SIZE,
+    RtpH264JitterBuffer,
+    RtpH264JitterMetrics,
+    RtpH264TransportMetrics,
+    RtpH264UdpTransport,
+    create_rtp_h264_udp,
+    packetize_h264_rtp,
+    parse_rtp_packet,
+    split_h264_access_unit,
+)
 
 __all__ = [
     "FrameProcessor",
@@ -39,6 +51,12 @@ __all__ = [
     "LegacyJpegUdpTransport",
     "LowLatencyH264Encoder",
     "PackedFrameProcessor",
+    "RTP_HEADER",
+    "RTP_HEADER_SIZE",
+    "RtpH264JitterBuffer",
+    "RtpH264JitterMetrics",
+    "RtpH264TransportMetrics",
+    "RtpH264UdpTransport",
     "VideoEncoder",
     "VideoEncodingPipeline",
     "VideoEncodingMetrics",
@@ -46,5 +64,9 @@ __all__ = [
     "create_h264_encoder",
     "create_legacy_jpeg_encoder",
     "create_legacy_jpeg_udp",
+    "create_rtp_h264_udp",
+    "packetize_h264_rtp",
     "packetize_legacy_jpeg",
+    "parse_rtp_packet",
+    "split_h264_access_unit",
 ]

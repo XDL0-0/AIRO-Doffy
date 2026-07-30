@@ -116,11 +116,18 @@ class NetworkConfig:
     pose_port: int = 8001
     control_port: int = 8005
     signaling_port: int = 8765
+    video_rtp_port: int = 5004
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "pc_ip", _text(self.pc_ip, "pc_ip", optional=True))
         object.__setattr__(self, "vr_ip", _text(self.vr_ip, "vr_ip", optional=True))
-        for name in ("legacy_base_port", "pose_port", "control_port", "signaling_port"):
+        for name in (
+            "legacy_base_port",
+            "pose_port",
+            "control_port",
+            "signaling_port",
+            "video_rtp_port",
+        ):
             object.__setattr__(self, name, _port(getattr(self, name), name))
 
 
