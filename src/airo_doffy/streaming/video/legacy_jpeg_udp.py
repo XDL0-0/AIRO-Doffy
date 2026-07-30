@@ -88,7 +88,7 @@ def _opencv_encode_jpeg(frame: ProcessedFrame, quality: int) -> bytes:
     except ImportError as exc:
         raise OptionalDependencyError(
             "legacy JPEG encoding requires OpenCV and NumPy: "
-            "pip install 'airo-doffy[camera-realsense]'"
+            "pip install 'airo-doffy[video-jpeg]'"
         ) from exc
     if frame.pixel_format is PixelFormat.DEPTH_U16:
         raise ModelValidationError("legacy JPEG encoder does not accept depth frames")

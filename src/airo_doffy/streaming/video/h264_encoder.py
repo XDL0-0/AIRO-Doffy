@@ -209,8 +209,8 @@ def _build_pyav_backend(
         import numpy
     except ImportError as exc:
         raise OptionalDependencyError(
-            "H.264 encoding requires the 'video-webrtc' optional dependency: "
-            "pip install 'airo-doffy[video-webrtc]'"
+            "H.264 encoding requires the 'video-h264' optional dependency: "
+            "pip install 'airo-doffy[video-h264]'"
         ) from exc
     return _PyAVCodecBackend(
         av,

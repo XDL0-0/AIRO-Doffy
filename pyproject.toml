@@ -24,11 +24,19 @@ camera-realsense = [
   "opencv-python>=4.8",
   "pyrealsense2>=2.54",
 ]
+video-h264 = [
+  "av>=12",
+  "numpy>=1.24",
+]
+video-jpeg = [
+  "numpy>=1.24",
+  "opencv-python>=4.8",
+]
 video-webrtc = [
   "aiohttp>=3.9",
   "aiortc>=1.9",
   "av>=12",
-  "opencv-python>=4.8",
+  "numpy>=1.24",
 ]
 robot-ur = [
   "airo-robots[ur]",
