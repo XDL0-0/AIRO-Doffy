@@ -6,6 +6,8 @@ import base64
 import struct
 import time
 
+from .binary_v2 import MAGIC as BINARY_V2_MAGIC
+from .binary_v2 import decode_vr_binary_v2
 from ...core.types import (
     ClockDomain,
     ControllerButton,
@@ -276,3 +278,27 @@ def decode_vr_input(
         )
     except (TypeError, ValueError):
         return None
+
+
+def decode_vr_message(
+    message: str | bytes | bytearray | memoryview,
+    *,
+    receive_timestamp_ns: int,
+) -> VRInputState | None:
+    """Decode either a migration-era legacy string or binary v2 message."""
+
+    if isinstance(message, str):
+        return decode_vr_input(
+            message,
+            receive_timestamp_ns=receive_timestamp_ns,
+        )
+    try:
+        raw = bytes(message)
+    except (TypeError, ValueError):
+        return None
+    if not raw.startswith(BINARY_V2_MAGIC):
+        return None
+    return decode_vr_binary_v2(
+        raw,
+        receive_timestamp_ns=receive_timestamp_ns,
+    )
