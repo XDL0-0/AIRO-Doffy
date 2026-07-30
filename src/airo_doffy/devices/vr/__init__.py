@@ -15,9 +15,13 @@ from .protocol import (
     parse_data,
     parse_hand_data,
 )
+from .receiver import RawVRTransport, VRReceiver, VRReceiverStats
 
 __all__ = [
     "VRInputSource",
+    "RawVRTransport",
+    "VRReceiver",
+    "VRReceiverStats",
     "BINARY_V2_HEADER",
     "BINARY_V2_MAGIC",
     "BINARY_V2_VERSION",
