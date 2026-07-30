@@ -35,7 +35,17 @@
     "enabled": true,
     "transfer_enabled": false,
     "backend": "ble4",
-    "shape": [4, 3]
+    "shape": [4, 3],
+    "filter_alpha": 0.75,
+    "use_kalman": false,
+    "kalman_q": 0.02,
+    "kalman_r": 0.02,
+    "deadband_sigma": 3.0,
+    "noise_floor": 2.0,
+    "max_delta": 10000.0,
+    "max_abs": 20000.0,
+    "baseline_drift_alpha": 0.0,
+    "baseline_drift_threshold": 80.0
   },
   "recording": {
     "task_name": "pick_and_place",

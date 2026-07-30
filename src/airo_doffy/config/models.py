@@ -360,7 +360,10 @@ class TactileConfig:
     use_kalman: bool = False
     kalman_q: float = 0.02
     kalman_r: float = 0.02
+    deadband_sigma: float = 3.0
+    noise_floor: float = 2.0
     max_delta: float = 10000.0
+    max_abs: float = 20000.0
     baseline_drift_alpha: float = 0.0
     baseline_drift_threshold: float = 80.0
 
@@ -383,7 +386,15 @@ class TactileConfig:
             "baseline_drift_alpha",
             _alpha(self.baseline_drift_alpha, "baseline_drift_alpha"),
         )
-        for name in ("kalman_q", "kalman_r", "max_delta", "baseline_drift_threshold"):
+        for name in (
+            "kalman_q",
+            "kalman_r",
+            "deadband_sigma",
+            "noise_floor",
+            "max_delta",
+            "max_abs",
+            "baseline_drift_threshold",
+        ):
             object.__setattr__(self, name, _positive(getattr(self, name), name))
 
 

@@ -146,6 +146,8 @@ class TypedConfigModelTest(unittest.TestCase):
         self.assertEqual(config.vr, VRConfig(tracking_mode="controller"))
         self.assertEqual(config.recording.data_type, "both")
         self.assertEqual(config.tactile.shape, (4, 3))
+        self.assertEqual(config.tactile.deadband_sigma, 3.0)
+        self.assertEqual(config.tactile.max_abs, 20000.0)
         self.assertEqual(config.video.transport, "webrtc")
         self.assertEqual(config.visualization, VisualizationConfig())
 
