@@ -179,6 +179,10 @@ class TypedConfigModelTest(unittest.TestCase):
         self.assertEqual((transform[0][3], transform[1][3], transform[2][3]), (1.0, 2.0, 3.0))
         with self.assertRaises(ModelValidationError):
             TeleopConfig(vr_to_robot_axes=((1, 0, 0), (0, 1, 0), (1, 0, 1)))
+        with self.assertRaises(ModelValidationError):
+            TeleopConfig(rotation_composition="middle")
+        with self.assertRaises(ModelValidationError):
+            TeleopConfig(fine_translation_scale=0)
 
     def test_section_validation(self) -> None:
         with self.assertRaises(ModelValidationError):

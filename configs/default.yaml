@@ -26,7 +26,14 @@
   },
   "teleop": {
     "command_mode": "joint",
+    "rotation_composition": "left",
     "freeze_rotation": true,
+    "translation_scale": 1.0,
+    "rotation_scale": 1.0,
+    "fine_translation_scale": 0.3,
+    "fine_rotation_scale": 0.4,
+    "controller_grip_threshold": 0.0,
+    "controller_gripper_deadzone": 0.7,
     "ur_control_rate_hz": 60,
     "vr_to_robot_axes": [
       [-1.0, 0.0, 0.0],

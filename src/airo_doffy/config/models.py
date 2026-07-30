@@ -306,7 +306,14 @@ class TeleopConfig:
     """Mapping, control-rate, filter, and trajectory settings."""
 
     command_mode: str = "joint"
+    rotation_composition: str = "left"
     freeze_rotation: bool = True
+    translation_scale: float = 1.0
+    rotation_scale: float = 1.0
+    fine_translation_scale: float = 0.3
+    fine_rotation_scale: float = 0.4
+    controller_grip_threshold: float = 0.0
+    controller_gripper_deadzone: float = 0.7
     ur_control_rate_hz: int = 60
     controller_reset_trigger_threshold: float = 0.8
     hand_palm_jump_threshold_m: float = 0.15
@@ -334,6 +341,27 @@ class TeleopConfig:
         if mode not in {"joint", "tcp"}:
             raise ModelValidationError("command_mode must be 'joint' or 'tcp'")
         object.__setattr__(self, "command_mode", mode)
+        composition = self.rotation_composition.lower()
+        if composition not in {"left", "right"}:
+            raise ModelValidationError("rotation_composition must be 'left' or 'right'")
+        object.__setattr__(self, "rotation_composition", composition)
+        for name in (
+            "translation_scale",
+            "rotation_scale",
+            "fine_translation_scale",
+            "fine_rotation_scale",
+        ):
+            object.__setattr__(self, name, _positive(getattr(self, name), name))
+        object.__setattr__(
+            self,
+            "controller_grip_threshold",
+            _alpha(self.controller_grip_threshold, "controller_grip_threshold"),
+        )
+        object.__setattr__(
+            self,
+            "controller_gripper_deadzone",
+            _alpha(self.controller_gripper_deadzone, "controller_gripper_deadzone"),
+        )
         object.__setattr__(
             self,
             "ur_control_rate_hz",

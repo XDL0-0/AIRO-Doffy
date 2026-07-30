@@ -73,6 +73,7 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(realman.robot.robot_type, "realman")
         self.assertEqual(len(realman.robot.initial_joints_rad), 7)
         self.assertEqual(realman.teleop.vr_to_robot_axes[0], (0.0, 0.0, 1.0))
+        self.assertEqual(realman.teleop.rotation_composition, "right")
         self.assertEqual(hand.vr.tracking_mode, "hand")
 
     def test_mapping_round_trip_and_non_mutating_merge(self) -> None:

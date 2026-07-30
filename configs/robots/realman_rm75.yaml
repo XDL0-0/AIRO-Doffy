@@ -13,6 +13,7 @@
     ]
   },
   "teleop": {
+    "rotation_composition": "right",
     "vr_to_robot_axes": [
       [0.0, 0.0, 1.0],
       [-1.0, 0.0, 0.0],
