@@ -1,5 +1,15 @@
 """Typed configuration models, loaders, and composition factories."""
 
+from .factories import (
+    CameraFactory,
+    EncoderFactory,
+    RecorderFactory,
+    RobotFactory,
+    TactileFactory,
+    VideoTransportFactory,
+    VisualizerFactory,
+    VRSourceFactory,
+)
 from .loader import (
     ENV_PREFIX,
     cli_override_mapping,
@@ -30,18 +40,26 @@ from .models import (
 __all__ = [
     "AiroDoffyConfig",
     "CameraConfig",
+    "CameraFactory",
     "CommandTransportConfig",
+    "EncoderFactory",
     "ENV_PREFIX",
     "NetworkConfig",
     "RecordingConfig",
+    "RecorderFactory",
     "RobotConfig",
+    "RobotFactory",
     "RuntimeConfig",
     "StateTransportConfig",
     "TactileConfig",
+    "TactileFactory",
     "TeleopConfig",
     "VRConfig",
+    "VRSourceFactory",
     "VideoStreamingConfig",
+    "VideoTransportFactory",
     "VisualizationConfig",
+    "VisualizerFactory",
     "WrenchConfig",
     "cli_override_mapping",
     "config_from_mapping",
