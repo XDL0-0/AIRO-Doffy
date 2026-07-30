@@ -148,6 +148,22 @@ class RealSenseCameraSourceTest(unittest.TestCase):
         self.assertIsInstance(source.health_error, RuntimeError)
         source.close()
 
+    def test_transient_read_failure_recovers_and_clears_health(self) -> None:
+        camera = _Camera(failures=1)
+        source = RealSenseCameraSource(
+            CameraConfig(
+                serial_number="SERIAL",
+                capture_rate_hz=10,
+                retry_delay_s=0.001,
+            ),
+            camera_factory=lambda _config, _serial: camera,
+        )
+        source.start()
+        self.assertTrue(source.wait_for_first_frame(0.5))
+        self.assertEqual(camera.read_count, 2)
+        self.assertIsNone(source.health_error)
+        source.close()
+
     def test_factory_constructs_without_importing_optional_sdk(self) -> None:
         factory = CameraFactory(
             target=(

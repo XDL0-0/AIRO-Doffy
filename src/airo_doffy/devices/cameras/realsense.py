@@ -225,6 +225,8 @@ class RealSenseCameraSource:
                     self._depth.publish(depth_frame)
                 self._sequence += 1
                 consecutive_errors = 0
+                with self._lock:
+                    self._health_error = None
                 self._first_frame_event.set()
                 self._stop_event.wait(interval_s)
             except RuntimeError as exc:
