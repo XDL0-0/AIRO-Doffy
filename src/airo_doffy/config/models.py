@@ -469,6 +469,7 @@ class VideoStreamingConfig:
     encoder_backend: str = "auto"
     bitrate_bps: int = 4_000_000
     gop_frames: int = 30
+    target_fps: int = 30
     input_queue_capacity: int = 1
     output_queue_capacity: int = 1
     rtp_mtu: int = 1200
@@ -506,6 +507,7 @@ class VideoStreamingConfig:
         for name in (
             "bitrate_bps",
             "gop_frames",
+            "target_fps",
             "input_queue_capacity",
             "output_queue_capacity",
         ):

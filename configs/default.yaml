@@ -69,6 +69,7 @@
     "encoder_backend": "auto",
     "bitrate_bps": 4000000,
     "gop_frames": 30,
+    "target_fps": 30,
     "input_queue_capacity": 1,
     "output_queue_capacity": 1,
     "rtp_mtu": 1200,

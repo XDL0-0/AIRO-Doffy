@@ -19,3 +19,7 @@ class LifecycleError(AiroDoffyError, RuntimeError):
 
 class OptionalDependencyError(AiroDoffyError, ImportError):
     """An explicitly selected adapter is missing its optional dependency."""
+
+
+class VideoEncodingError(AiroDoffyError, RuntimeError):
+    """A configured video encoder could not initialize or encode a frame."""

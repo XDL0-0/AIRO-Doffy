@@ -8,6 +8,7 @@ from .errors import (
     LifecycleError,
     ModelValidationError,
     OptionalDependencyError,
+    VideoEncodingError,
 )
 from .events import (
     RuntimeCommand,
@@ -58,6 +59,7 @@ __all__ = [
     "MonotonicClock",
     "Observation",
     "OptionalDependencyError",
+    "VideoEncodingError",
     "PixelFormat",
     "ProcessedFrame",
     "RobotAction",
