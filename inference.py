@@ -804,21 +804,11 @@ def main() -> None:
 
     tactile_holder = None
     if tactile_mode:
-        from tactile import MagtouchIliasSerialReader, MagtouchIliasSerialReaderConfig
-
-        tactile_holder = TactileDataHolder()
-        t_reader = MagtouchIliasSerialReader(
-            config=MagtouchIliasSerialReaderConfig(
-                ENABLE_WS=False,
-                COM="/dev/serial/by-id/usb-Arduino_IO_Coupling_C6E76762B4D1E02A-if00",
-                START_BYTE=0xAA,
-                END_BYTE=0xCC,
-            )
+        raise ValueError(
+            "Legacy 41-taxel tactile inference is no longer supported. "
+            "Use the 4-taxel BLE backend after its inference adapter is enabled, "
+            "or run without --tactile."
         )
-        threading.Thread(
-            target=t_reader.run, args=(tactile_holder,), daemon=True
-        ).start()
-        time.sleep(2)
 
     policy = load_pretrained_policy(args.policy, device)
     apply_policy_timing_overrides(policy, args.horizon, args.action_horizon, args.n_obs_steps)

@@ -87,15 +87,11 @@ def create_tactile_reader():
             reset_trigger_threshold=cfg.CONTROLLER_RESET_TRIGGER_THRESHOLD,
         )
 
-    from tactile import MagtouchIliasSerialReader, MagtouchIliasSerialReaderConfig
-
-    return MagtouchIliasSerialReader(
-        config=MagtouchIliasSerialReaderConfig(
-            ENABLE_WS=False,
-            COM=cfg.TACTILE_SERIAL_COM,
-            START_BYTE=0xAA,
-            END_BYTE=0xCC,
-        )
+    raise ValueError(
+        f"Unsupported tactile reader {cfg.TACTILE_READER!r}. "
+        "The v2 runtime supports only TACTILE_READER='ble4'. "
+        "The retired 41-taxel serial diagnostic remains available via "
+        "'python tactile.py'."
     )
 
 
@@ -103,14 +99,11 @@ def run_tactile_reader(tactile_holder: TactileDataHolder) -> None:
     tactile_manager = create_tactile_reader()
     with tactile_holder._lock:
         tactile_holder.tactile_reader = tactile_manager
-    if cfg.TACTILE_READER == "ble4":
-        tactile_manager.run(
-            tactile_holder,
-            start_visualizer=False,
-            visualizer_topic="MagTouchRaw0",
-        )
-    else:
-        tactile_manager.run(tactile_holder)
+    tactile_manager.run(
+        tactile_holder,
+        start_visualizer=False,
+        visualizer_topic="MagTouchRaw0",
+    )
 
 
 # ── Background loops ─────────────────────────────────────────────────────
