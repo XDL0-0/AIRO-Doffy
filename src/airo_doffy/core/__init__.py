@@ -1,5 +1,6 @@
 """Dependency-light shared types, events, clocks, buffers, and errors."""
 
+from .buffers import LatestValueBuffer, Sequenced, is_newer_sequence
 from .clocks import Clock, MonotonicClock, WallClock
 from .errors import (
     AiroDoffyError,
@@ -15,6 +16,7 @@ from .events import (
     RuntimeEventSeverity,
     RuntimeEventType,
 )
+from .interfaces import Closable, Lifecycle, Startable
 from .types import (
     CameraFrame,
     ClockDomain,
@@ -43,12 +45,15 @@ __all__ = [
     "CameraFrame",
     "Clock",
     "ClockDomain",
+    "Closable",
     "ControllerButton",
     "ControllerState",
     "EncodedFrame",
     "HandSide",
     "HandState",
     "LifecycleError",
+    "Lifecycle",
+    "LatestValueBuffer",
     "ModelValidationError",
     "MonotonicClock",
     "Observation",
@@ -63,11 +68,14 @@ __all__ = [
     "RuntimeEvent",
     "RuntimeEventSeverity",
     "RuntimeEventType",
+    "Sequenced",
     "SequencedSample",
+    "Startable",
     "TactileSample",
     "VideoCodec",
     "VRInputMode",
     "VRInputState",
     "WallClock",
     "WrenchSample",
+    "is_newer_sequence",
 ]
