@@ -22,7 +22,12 @@ from airo_doffy.devices.tactile import TactileSensor
 from airo_doffy.devices.vr import VRInputSource
 from airo_doffy.recording import EpisodeRecorder
 from airo_doffy.robots import RobotBackend
-from airo_doffy.streaming.video import FrameProcessor, VideoEncoder, VideoTransport
+from airo_doffy.streaming.video import (
+    FrameProcessor,
+    VideoEncoder,
+    VideoEncodingPipeline,
+    VideoTransport,
+)
 from airo_doffy.teleop.mappings import TeleopMapping
 from airo_doffy.teleop.safety import ActionFilter
 
@@ -54,6 +59,20 @@ class FakeVideoTransport:
 
     def send(self, frame: EncodedFrame) -> None:
         pass
+
+    def close(self) -> None:
+        pass
+
+
+class FakeEncodingPipeline:
+    def start(self) -> None:
+        pass
+
+    def submit(self, frame: ProcessedFrame) -> bool:
+        return True
+
+    def read_latest(self) -> EncodedFrame | None:
+        return None
 
     def close(self) -> None:
         pass
@@ -144,6 +163,7 @@ class DomainInterfaceTest(unittest.TestCase):
             (FakeCamera(), CameraSource),
             (FakeProcessor(), FrameProcessor),
             (FakeEncoder(), VideoEncoder),
+            (FakeEncodingPipeline(), VideoEncodingPipeline),
             (FakeVideoTransport(), VideoTransport),
             (FakeVR(), VRInputSource),
             (FakeTactile(), TactileSensor),
@@ -165,7 +185,9 @@ from airo_doffy.devices.vr import VRInputSource
 from airo_doffy.devices.wrench import WrenchSource
 from airo_doffy.recording import EpisodeRecorder
 from airo_doffy.robots import RobotBackend
-from airo_doffy.streaming.video import FrameProcessor, VideoEncoder, VideoTransport
+from airo_doffy.streaming.video import (
+    FrameProcessor, VideoEncoder, VideoEncodingPipeline, VideoTransport,
+)
 from airo_doffy.teleop.mappings import TeleopMapping
 from airo_doffy.teleop.safety import ActionFilter
 blocked = (

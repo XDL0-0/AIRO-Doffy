@@ -189,6 +189,14 @@ class TypedConfigModelTest(unittest.TestCase):
         with self.assertRaises(ModelValidationError):
             VideoStreamingConfig(jpeg_quality=101)
         with self.assertRaises(ModelValidationError):
+            VideoStreamingConfig(encoder_backend="unknown")
+        with self.assertRaises(ModelValidationError):
+            VideoStreamingConfig(input_queue_capacity=0)
+        with self.assertRaises(ModelValidationError):
+            VideoStreamingConfig(rtp_payload_type=128)
+        with self.assertRaises(ModelValidationError):
+            VideoStreamingConfig(rtp_mtu=255)
+        with self.assertRaises(ModelValidationError):
             StateTransportConfig(transport="tcp")
         with self.assertRaises(ModelValidationError):
             CommandTransportConfig(reliable=False)

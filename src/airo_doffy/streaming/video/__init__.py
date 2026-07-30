@@ -1,6 +1,11 @@
 """Video processing, encoding, and transport adapters."""
 
-from .base import FrameProcessor, VideoEncoder, VideoTransport
+from .base import (
+    FrameProcessor,
+    VideoEncoder,
+    VideoEncodingPipeline,
+    VideoTransport,
+)
 from .frame_processor import FrameTransform, PackedFrameProcessor
 
 __all__ = [
@@ -8,5 +13,6 @@ __all__ = [
     "FrameTransform",
     "PackedFrameProcessor",
     "VideoEncoder",
+    "VideoEncodingPipeline",
     "VideoTransport",
 ]

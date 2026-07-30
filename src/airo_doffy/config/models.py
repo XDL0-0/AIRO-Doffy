@@ -461,25 +461,65 @@ class VisualizationConfig:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class VideoStreamingConfig:
-    """Selected video path and legacy JPEG packet settings."""
+    """Selected video path, encoder policy, and bounded transport settings."""
 
     transport: str = "webrtc"
     jpeg_quality: int = 100
     legacy_chunk_size: int = 60000
+    encoder_backend: str = "auto"
+    bitrate_bps: int = 4_000_000
+    gop_frames: int = 30
+    input_queue_capacity: int = 1
+    output_queue_capacity: int = 1
+    rtp_mtu: int = 1200
+    rtp_payload_type: int = 96
+    max_frame_age_s: float = 0.25
 
     def __post_init__(self) -> None:
         transport = self.transport.lower()
-        if transport not in {"webrtc", "udp"}:
-            raise ModelValidationError("video transport must be 'webrtc' or 'udp'")
+        if transport not in {"webrtc", "udp", "rtp_udp"}:
+            raise ModelValidationError(
+                "video transport must be 'webrtc', 'udp', or 'rtp_udp'"
+            )
+        backend = self.encoder_backend.lower()
+        if backend not in {"auto", "nvenc", "software"}:
+            raise ModelValidationError(
+                "encoder_backend must be 'auto', 'nvenc', or 'software'"
+            )
         quality = _integer(self.jpeg_quality, "jpeg_quality", 1)
         if quality > 100:
             raise ModelValidationError("jpeg_quality must be <= 100")
+        payload_type = _integer(self.rtp_payload_type, "rtp_payload_type")
+        if payload_type > 127:
+            raise ModelValidationError("rtp_payload_type must be <= 127")
+        mtu = _integer(self.rtp_mtu, "rtp_mtu", 256)
+        if mtu > 65507:
+            raise ModelValidationError("rtp_mtu must be <= 65507")
         object.__setattr__(self, "transport", transport)
+        object.__setattr__(self, "encoder_backend", backend)
         object.__setattr__(self, "jpeg_quality", quality)
         object.__setattr__(
             self,
             "legacy_chunk_size",
             _integer(self.legacy_chunk_size, "legacy_chunk_size", 1),
+        )
+        for name in (
+            "bitrate_bps",
+            "gop_frames",
+            "input_queue_capacity",
+            "output_queue_capacity",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _integer(getattr(self, name), name, 1),
+            )
+        object.__setattr__(self, "rtp_mtu", mtu)
+        object.__setattr__(self, "rtp_payload_type", payload_type)
+        object.__setattr__(
+            self,
+            "max_frame_age_s",
+            _positive(self.max_frame_age_s, "max_frame_age_s"),
         )
 
 

@@ -65,7 +65,15 @@
   "video": {
     "transport": "webrtc",
     "jpeg_quality": 100,
-    "legacy_chunk_size": 60000
+    "legacy_chunk_size": 60000,
+    "encoder_backend": "auto",
+    "bitrate_bps": 4000000,
+    "gop_frames": 30,
+    "input_queue_capacity": 1,
+    "output_queue_capacity": 1,
+    "rtp_mtu": 1200,
+    "rtp_payload_type": 96,
+    "max_frame_age_s": 0.25
   },
   "state_transport": {
     "transport": "webrtc",
