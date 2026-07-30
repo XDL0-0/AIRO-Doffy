@@ -39,7 +39,7 @@ pip install aiortc aiohttp av
 ```
 
 Additionally, this project depends on custom robotic libraries. Ensure the following are installed in your environment:
-- `airo-robots` (UR RTDE & Robotiq control)
+- `airo-robots[realman,ur]` (UR RTDE, Robotiq control, and the optional RealMan SDK)
 - `airo-camera-toolkit` (RealSense wrappers)
 - `airo-spatial-algebra` (SE3 containers)
 - `ur_analytic_ik` (Analytic Inverse Kinematics for UR)
@@ -56,10 +56,33 @@ The system uses `config.py` as its central configuration. Key settings:
 | `ROBOT_IP` | Selected robot IP address, defaults to `UR_IP` when unset | `None` |
 | `UR_IP` | UR robot IP address fallback | `10.42.0.162` |
 | `REALMAN_PORT` | RealMan API port | `8080` |
+| `REALMAN_READ_RETRIES` | Attempts for transient RealMan state-read timeouts | `3` |
+| `REALMAN_RETRY_DELAY` | Delay between RealMan state-read retries in seconds | `0.05` |
 | `PC_IP` | Host PC IP address | `10.10.131.72` |
 | `VR_IP` | VR headset IP address | `10.10.131.166` |
 | `TELEOP_COMMAND_MODE` | Teleoperation command path (`joint` / `tcp`) | `joint` |
 | `FREEZE_ROTATION` | Keep the TCP orientation fixed while mapping controller translation | `True` |
+| `GRIPPER` | Connect/control the gripper and include it in recorded state/actions | `False` |
+
+### RealMan CAN-FD
+
+| Parameter | Description | Default |
+|---|---|---|
+| `REALMAN_CTRL_RATE` | Dedicated CAN-FD setpoint rate; must remain strictly above 100 Hz | `200` |
+| `REALMAN_MIN_CANFD_RATE` | Minimum measured rate accepted by the runtime watchdog | `100.0` |
+| `REALMAN_RATE_CHECK_WINDOW` | Seconds per measured-rate window | `1.0` |
+| `REALMAN_RATE_FAILURE_WINDOWS` | Consecutive failed timing windows allowed before the startup gate aborts | `3` |
+| `REALMAN_CANFD_HEARTBEAT_TIMEOUT` | Maximum time without a completed CAN-FD SDK call before the health check fails | `0.05` |
+| `REALMAN_MAX_JOINT_SPEED` | Per-joint CAN-FD interpolation limit, capped by controller-reported limits, in rad/s | `2.0` |
+| `REALMAN_MAX_LINEAR_SPEED` | TCP translation interpolation limit in m/s | `0.25` |
+| `REALMAN_MAX_ANGULAR_SPEED` | TCP rotation interpolation limit in rad/s | `1.0` |
+| `REALMAN_REALTIME_STATE_PUSH` | Receive joint, TCP, and force state through the controller's realtime UDP push | `True` |
+| `REALMAN_STATE_PUSH_CYCLE_MS` | Realtime state-push cycle; must be a positive multiple of 5 ms | `5` |
+| `REALMAN_STATE_PUSH_PORT` | PC UDP port on which realtime state packets are received | `8098` |
+| `REALMAN_STATE_PUSH_TIMEOUT` | Startup wait for the first valid realtime state packet, in seconds | `2.0` |
+| `REALMAN_FORCE_COORDINATE` | Force frame requested from the controller: `0` sensor, `1` work, `2` tool | `0` |
+| `REALMAN_SENSOR_RATE` | Synchronous joint/TCP/force polling rate when realtime state push is disabled | `30.0` |
+| `REALMAN_VR_TIMEOUT` | Hold the last target after this many seconds without a VR packet | `0.25` |
 
 ### Tracking & Streaming
 | Parameter | Description | Default |
@@ -97,7 +120,7 @@ The system uses `config.py` as its central configuration. Key settings:
 
 | Parameter | Description | Default |
 |---|---|---|
-| `ENABLED` | Start the teleop visualizer from `main.py` | `True` |
+| `ENABLED` | Start the shared dashboard from a teleoperation entry point | `True` |
 | `HZ` | Visualizer refresh/publish rate | `30.0` |
 | `WINDOW_S` | Plot history window in seconds | `8.0` |
 | `FORCE_PANEL_RANGE` | Force plot and Fx/Fy panel +/- range in newtons | `30.0` |
@@ -110,13 +133,73 @@ Initiate the main teleoperation and dataset recording loop:
 python main.py
 ```
 - Real-time camera streams will appear in the VR headset automatically.
-- Controller movements dictate the robot pose / gripper aperture.
+- Controller movements dictate the robot pose and, when `GRIPPER=True`, the gripper aperture.
 - Squeeze trigger & buttons to start / stop dataset recording.
 - If `VisualizerConfig.ENABLED` is true, a dashboard opens with wrench plots, tactile bubbles, camera previews, robot status, dataset counters, and a rollback button.
 - A VR record-control value of `Undo`, `Rollback`, or `DeleteLast` removes the latest saved episode and reuses its index.
 - Pressing the reset trigger combination recalibrates force/tactile baselines when those sensors are enabled.
 
-### 2. Force/Tactile Visualizer
+### 2. RealMan CAN-FD Teleoperation
+
+For RealMan teleoperation without datasets, gripper, or tactile hardware:
+
+```bash
+python realman_teleop.py
+```
+
+Set `ROBOT_TYPE="realman"`, choose `TELEOP_COMMAND_MODE="joint"` or `"tcp"`,
+and keep `TRACKING_MODE="controller"`, `GRIPPER=False`, and
+`TACTILE_TRANSFER=False`. This entry point keeps camera streaming, the robot's
+integrated six-axis force sensor, and the shared visualizer. A dedicated thread
+targets `REALMAN_CTRL_RATE=200` Hz and continuously sends `rm_movej_canfd` or
+`rm_movep_canfd`. Joint, linear, and angular target changes are interpolated on
+that 5 ms command clock using `REALMAN_MAX_JOINT_SPEED`,
+`REALMAN_MAX_LINEAR_SPEED`, and `REALMAN_MAX_ANGULAR_SPEED`.
+
+Before VR motion is accepted, the sender must complete one clean timing window
+at a measured rate strictly above `REALMAN_MIN_CANFD_RATE=100` Hz. Packet gaps
+and SDK calls above 10 ms count as timing violations; after startup verification,
+one such violation stops the command path immediately. The command loop also
+records a successful-command heartbeat;
+`REALMAN_CANFD_HEARTBEAT_TIMEOUT=0.05` seconds is the health-check threshold for
+a CAN-FD call that stops completing. Startup aborts instead of enabling motion
+when the rate gate or heartbeat check fails. The dashboard reports the measured
+rate, packet gaps, SDK-call duration, and errors.
+
+Realtime robot state should normally use the controller's UDP push:
+
+```python
+REALMAN_REALTIME_STATE_PUSH = True
+REALMAN_STATE_PUSH_CYCLE_MS = 5
+REALMAN_STATE_PUSH_PORT = 8098
+REALMAN_STATE_PUSH_TIMEOUT = 2.0
+REALMAN_FORCE_COORDINATE = 0
+```
+
+Set `PC_IP` to the address of the PC network interface that the RealMan
+controller can reach. The controller sends UDP state packets to
+`PC_IP:REALMAN_STATE_PUSH_PORT`; allow inbound UDP on that port in the PC
+firewall, ensure both hosts have a valid route, and make sure another process is
+not already using the port. Startup waits up to `REALMAN_STATE_PUSH_TIMEOUT` for
+the first valid packet and fails with a connection diagnostic if none arrives.
+The default 5 ms cycle provides joint, TCP, and integrated force state without
+placing synchronous state reads in the CAN-FD command path.
+
+`REALMAN_FORCE_COORDINATE` selects the reported wrench frame: `0` is the force
+sensor frame, `1` the active work frame, and `2` the active tool frame. The
+script consumes the controller's zeroed force values. RealMan
+`zero_force_data` is already controller-compensated, so this entry point does
+not apply the repository's additional software gravity compensation.
+
+For an older SDK or controller setup that cannot provide realtime state push,
+set `REALMAN_REALTIME_STATE_PUSH=False`. This schedules synchronous state and
+force reads at `REALMAN_SENSOR_RATE` on the same thread that owns the RealMan
+SDK command calls, avoiding concurrent use of the SDK handle. It is an explicit
+fallback, not an automatic downgrade: those reads consume CAN-FD timing budget,
+so the same startup gate and runtime watchdog remain active and will refuse or
+stop motion if the measured command timing is no longer valid.
+
+### 3. Force/Tactile Visualizer
 Run the standalone dashboard against a UR robot:
 ```bash
 python test_tool/ForceVisualize.py --ip 10.42.0.162 --robot-type ur3e
@@ -142,7 +225,7 @@ python test_tool/ForceVisualize.py \
     --tcp-xyz-experiment
 ```
 
-### 3. Standalone VR Data Receiver
+### 4. Standalone VR Data Receiver
 Test VR connection without robot hardware:
 ```bash
 # Controller mode — print controller data
@@ -209,6 +292,7 @@ airo-doffy/
 ├── parse_vr.py         # VR data parsing (controller + hand tracking)
 ├── robot_backend.py    # Robot backend adapters for UR, RealMan, and generic manipulators
 ├── robot_teleop.py     # Robot-agnostic teleoperation backend client
+├── realman_teleop.py   # Lean RealMan camera/force teleop with 200 Hz CAN-FD
 ├── force_filter.py     # Shared 6D wrench filtering utilities
 ├── tactile_4point.py   # 4-taxel BLE MagTouch reader and tactile panel helpers
 ├── visualizer.py       # Shared live force/tactile/camera/dataset dashboard

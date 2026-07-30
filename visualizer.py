@@ -716,11 +716,12 @@ class TeleopDashboard:
         else:
             lines.append("tcp xyz  unavailable")
 
-        if sample.joints is not None and sample.joints.size >= 6:
-            deg = np.degrees(sample.joints[:6])
+        if sample.joints is not None and sample.joints.size:
+            deg = np.degrees(sample.joints)
             lines.append("joint deg")
-            lines.append(" ".join(f"{v:+5.1f}" for v in deg[:3]))
-            lines.append(" ".join(f"{v:+5.1f}" for v in deg[3:6]))
+            columns = 4 if deg.size > 6 else 3
+            for start in range(0, deg.size, columns):
+                lines.append(" ".join(f"{v:+5.1f}" for v in deg[start : start + columns]))
         else:
             lines.append("joint deg unavailable")
         self.pose_text.set_text("\n".join(lines))

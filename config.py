@@ -11,6 +11,30 @@ class Config:
     ROBOT_IP: str | None = None
     UR_IP: str = "10.42.0.162"
     REALMAN_PORT: int = 8080
+    REALMAN_READ_RETRIES: int = 3
+    REALMAN_RETRY_DELAY: float = 0.05
+    # Dedicated high-follow CAN-FD stream used by realman_teleop.py.
+    # RealMan requires <=10 ms between high-follow setpoints, so keep this
+    # strictly above 100 Hz. 200 Hz corresponds to a 5 ms period.
+    REALMAN_CTRL_RATE: int = 200
+    REALMAN_MIN_CANFD_RATE: float = 100.0
+    REALMAN_RATE_CHECK_WINDOW: float = 1.0
+    # Failed timing windows allowed while establishing the startup rate gate.
+    # After verification, a single >10 ms gap/call stops the command stream.
+    REALMAN_RATE_FAILURE_WINDOWS: int = 3
+    REALMAN_CANFD_HEARTBEAT_TIMEOUT: float = 0.05
+    REALMAN_SENSOR_RATE: float = 30.0
+    REALMAN_VR_TIMEOUT: float = 0.25
+    REALMAN_MAX_JOINT_SPEED: float = 2.0  # rad/s, applied before CAN-FD
+    REALMAN_MAX_LINEAR_SPEED: float = 0.25  # m/s
+    REALMAN_MAX_ANGULAR_SPEED: float = 1.0  # rad/s
+    REALMAN_CANFD_TRAJECTORY_MODE: int = 0
+    REALMAN_CANFD_RADIO: int = 0
+    REALMAN_REALTIME_STATE_PUSH: bool = True
+    REALMAN_STATE_PUSH_CYCLE_MS: int = 5
+    REALMAN_STATE_PUSH_PORT: int = 8098
+    REALMAN_STATE_PUSH_TIMEOUT: float = 2.0
+    REALMAN_FORCE_COORDINATE: int = 0  # 0 sensor, 1 work, 2 tool
     # "joint" preserves the original VR -> IK -> joint-servo path.
     # "tcp" sends TCP targets through the selected backend when possible.
     TELEOP_COMMAND_MODE: str = "joint"
@@ -66,13 +90,16 @@ class Config:
     INFERENCE_FPS: int = 10
 
     # ── Gripper ───────────────────────────────────────────────────────────
+    # When False, do not connect to/control a gripper.
+    GRIPPER: bool = False
     GRIPPER_SPEED: float = 0.1       # m/s, full range (~0.085m) in ~0.57s
     GRIPPER_MAX: float = 0.085       # max opening width [m]
 
     # ── Joint configuration ───────────────────────────────────────────────
-    INITIAL_JOINT: np.ndarray = field(
-        default_factory=lambda: np.array([1.57, -1.57, 1.57, -1.57, -1.57, 0])
-    )
+    # Defaults are selected in __post_init__ so Config(ROBOT_TYPE=...) gets
+    # the matching axes and number of joints instead of the class default's.
+    VR_TO_ROBOT_AXES: np.ndarray | None = None
+    INITIAL_JOINT: np.ndarray | None = None
     # INITIAL_JOINT: np.ndarray = field(
     #     default_factory=lambda: np.array([1.57, -2.07, 1.25, -1.2, -1.62, 0])
     # )
@@ -146,12 +173,120 @@ class Config:
 
         self.ROBOT_TYPE = self.ROBOT_TYPE.lower()
         self.DATA_TYPE = normalize_data_type(self.DATA_TYPE)
+        if self.VR_TO_ROBOT_AXES is None:
+            if self.ROBOT_TYPE == "realman":
+                # Unity/Quest (+X right, +Y up, +Z forward) -> RealMan
+                # (+X forward, +Y left, +Z up).
+                self.VR_TO_ROBOT_AXES = np.array(
+                    [
+                        [0.0, 0.0, 1.0],
+                        [-1.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                    ]
+                )
+            else:
+                # Unity/Quest axes -> UR base axes.
+                self.VR_TO_ROBOT_AXES = np.array(
+                    [
+                        [-1.0, 0.0, 0.0],
+                        [0.0, 0.0, -1.0],
+                        [0.0, 1.0, 0.0],
+                    ]
+                )
+        if self.INITIAL_JOINT is None:
+            if self.ROBOT_TYPE == "realman":
+                self.INITIAL_JOINT = np.array(
+                    [
+                        2.65586749,
+                        -0.06628761,
+                        -0.14056882,
+                        -1.26216978,
+                        0.11116002,
+                        -1.11919238,
+                        -0.45881216,
+                    ]
+                )
+            else:
+                self.INITIAL_JOINT = np.array(
+                    [1.57, -1.57, 1.57, -1.57, -1.57, 0.0]
+                )
+        self.VR_TO_ROBOT_AXES = np.asarray(self.VR_TO_ROBOT_AXES, dtype=float)
+        self.INITIAL_JOINT = np.asarray(self.INITIAL_JOINT, dtype=float)
+        if self.VR_TO_ROBOT_AXES.shape != (3, 3):
+            raise ValueError("VR_TO_ROBOT_AXES must have shape (3, 3).")
+        if not np.allclose(
+            self.VR_TO_ROBOT_AXES.T @ self.VR_TO_ROBOT_AXES,
+            np.identity(3),
+        ):
+            raise ValueError("VR_TO_ROBOT_AXES must be an orthogonal axis transform.")
         if self.TELEOP_COMMAND_MODE not in {"joint", "tcp"}:
             raise ValueError(f"Unsupported TELEOP_COMMAND_MODE: {self.TELEOP_COMMAND_MODE}")
-        if self.ROBOT_IP is None:
+        if self.ROBOT_IP is None and self.ROBOT_TYPE in {"ur3e", "ur5e"}:
             self.ROBOT_IP = self.UR_IP
+        if self.ROBOT_IP is None:
+            raise ValueError(
+                f"ROBOT_IP must be configured when ROBOT_TYPE='{self.ROBOT_TYPE}'."
+            )
         if self.TORQUE_MODE and self.ROBOT_TYPE not in {"ur3e", "ur5e"}:
             raise ValueError("TORQUE_MODE is currently only supported for UR robots.")
+        if self.REALMAN_READ_RETRIES < 1:
+            raise ValueError("REALMAN_READ_RETRIES must be at least 1.")
+        if self.REALMAN_RETRY_DELAY < 0.0:
+            raise ValueError("REALMAN_RETRY_DELAY cannot be negative.")
+        if self.REALMAN_MIN_CANFD_RATE < 100.0:
+            raise ValueError(
+                "REALMAN_MIN_CANFD_RATE must be at least 100 Hz."
+            )
+        if self.REALMAN_CTRL_RATE <= self.REALMAN_MIN_CANFD_RATE:
+            raise ValueError(
+                "REALMAN_CTRL_RATE must be strictly greater than "
+                "REALMAN_MIN_CANFD_RATE for high-follow CAN-FD control."
+            )
+        if self.REALMAN_RATE_CHECK_WINDOW <= 0.0:
+            raise ValueError("REALMAN_RATE_CHECK_WINDOW must be positive.")
+        if self.REALMAN_RATE_FAILURE_WINDOWS < 1:
+            raise ValueError("REALMAN_RATE_FAILURE_WINDOWS must be at least 1.")
+        if self.REALMAN_CANFD_HEARTBEAT_TIMEOUT <= 0.01:
+            raise ValueError(
+                "REALMAN_CANFD_HEARTBEAT_TIMEOUT must be greater than 10 ms."
+            )
+        if self.REALMAN_SENSOR_RATE <= 0.0:
+            raise ValueError("REALMAN_SENSOR_RATE must be positive.")
+        if self.REALMAN_VR_TIMEOUT <= 0.0:
+            raise ValueError("REALMAN_VR_TIMEOUT must be positive.")
+        if self.REALMAN_MAX_JOINT_SPEED <= 0.0:
+            raise ValueError("REALMAN_MAX_JOINT_SPEED must be positive.")
+        if self.REALMAN_MAX_LINEAR_SPEED <= 0.0:
+            raise ValueError("REALMAN_MAX_LINEAR_SPEED must be positive.")
+        if self.REALMAN_MAX_ANGULAR_SPEED <= 0.0:
+            raise ValueError("REALMAN_MAX_ANGULAR_SPEED must be positive.")
+        if self.REALMAN_CANFD_TRAJECTORY_MODE not in {0, 1, 2}:
+            raise ValueError("REALMAN_CANFD_TRAJECTORY_MODE must be 0, 1, or 2.")
+        if self.REALMAN_CANFD_RADIO < 0:
+            raise ValueError("REALMAN_CANFD_RADIO cannot be negative.")
+        if (
+            self.REALMAN_CANFD_TRAJECTORY_MODE == 1
+            and self.REALMAN_CANFD_RADIO > 100
+        ):
+            raise ValueError("Curve-fit REALMAN_CANFD_RADIO must be <= 100.")
+        if (
+            self.REALMAN_CANFD_TRAJECTORY_MODE == 2
+            and self.REALMAN_CANFD_RADIO > 999
+        ):
+            raise ValueError("Filter REALMAN_CANFD_RADIO must be <= 999.")
+        if (
+            self.REALMAN_STATE_PUSH_CYCLE_MS < 5
+            or self.REALMAN_STATE_PUSH_CYCLE_MS % 5
+        ):
+            raise ValueError(
+                "REALMAN_STATE_PUSH_CYCLE_MS must be a positive multiple of 5 ms."
+            )
+        if not 1 <= self.REALMAN_STATE_PUSH_PORT <= 65535:
+            raise ValueError("REALMAN_STATE_PUSH_PORT must be between 1 and 65535.")
+        if self.REALMAN_STATE_PUSH_TIMEOUT <= 0.0:
+            raise ValueError("REALMAN_STATE_PUSH_TIMEOUT must be positive.")
+        if self.REALMAN_FORCE_COORDINATE not in {0, 1, 2}:
+            raise ValueError("REALMAN_FORCE_COORDINATE must be 0, 1, or 2.")
         if self.DATA_TYPE == "delta_tcp" and self.SAVE_EEF:
             utils.logger.warning("SAVE_EEF is ignored when DATA_TYPE='delta_tcp'.")
         if self.DATA_TYPE == "tcp" and self.SAVE_EEF:

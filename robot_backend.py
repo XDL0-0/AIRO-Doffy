@@ -336,6 +336,52 @@ class URPositionBackend(PositionManipulatorBackend):
         self.robot.rtde_control.endTeachMode()
 
 
+class RealManBackend(PositionManipulatorBackend):
+    """RealMan backend with bounded retries for transient SDK read timeouts."""
+
+    def __init__(self, cfg, robot) -> None:
+        super().__init__(cfg, robot, "realman", NullGripper(cfg.GRIPPER_MAX))
+        self._read_retries = int(getattr(cfg, "REALMAN_READ_RETRIES", 3))
+        self._retry_delay = float(getattr(cfg, "REALMAN_RETRY_DELAY", 0.05))
+
+    def _read_with_retry(self, method_name: str, read):
+        for attempt in range(1, self._read_retries + 1):
+            try:
+                return read()
+            except RuntimeError as exc:
+                transient_timeout = "error code -2" in str(exc)
+                if not transient_timeout or attempt == self._read_retries:
+                    raise
+                utils.logger.warning(
+                    f"RealMan {method_name} timed out "
+                    f"(attempt {attempt}/{self._read_retries}); retrying..."
+                )
+                time.sleep(self._retry_delay)
+        raise RuntimeError(f"RealMan {method_name} retry loop ended unexpectedly.")
+
+    def get_joint_configuration(self) -> np.ndarray:
+        joints = self._read_with_retry(
+            "rm_get_joint_degree",
+            self.robot.get_joint_configuration,
+        )
+        return np.asarray(joints, dtype=float)
+
+    def get_tcp_pose(self) -> np.ndarray:
+        tcp_pose = self._read_with_retry(
+            "rm_get_current_arm_state",
+            self.robot.get_tcp_pose,
+        )
+        return self.to_tool_tcp_pose(np.asarray(tcp_pose, dtype=float))
+
+    def cleanup(self) -> None:
+        try:
+            close = getattr(self.robot, "close", None)
+            if callable(close):
+                close()
+        finally:
+            super().cleanup()
+
+
 class URTorqueBackend(RobotBackend):
     name = "ur_torque"
     supports_torque_mode = True
@@ -483,7 +529,7 @@ def make_robot_backend(cfg) -> RobotBackend:
         from airo_robots.manipulators.hardware.realman import RealmanControl
 
         robot = RealmanControl(ip_address=robot_ip, port=cfg.REALMAN_PORT)
-        return PositionManipulatorBackend(cfg, robot, "realman", NullGripper(cfg.GRIPPER_MAX))
+        return RealManBackend(cfg, robot)
 
     raise ValueError(
         f"Unsupported ROBOT_TYPE '{cfg.ROBOT_TYPE}'. Use 'ur3e', 'ur5e', or 'realman'."
