@@ -1,5 +1,11 @@
 """Application lifecycle and session orchestration."""
 
+from .data_collection import (
+    DataCollectionSession,
+    DataCollectionStatus,
+    RecordingCycleExtension,
+    SampleFactory,
+)
 from .lifecycle import (
     LifecycleManager,
     LifecycleManagerSnapshot,
@@ -17,14 +23,18 @@ from .ports import (
 from .session import TeleopCycle, TeleopSession, TeleopSessionMetrics
 
 __all__ = [
+    "ActionExecutor",
+    "CommandDispatcher",
+    "CommandSource",
+    "DataCollectionSession",
+    "DataCollectionStatus",
     "LifecycleManager",
     "LifecycleManagerSnapshot",
     "LifecycleManagerState",
     "ManagedWorker",
-    "ActionExecutor",
-    "CommandDispatcher",
-    "CommandSource",
+    "RecordingCycleExtension",
     "RobotStateSource",
+    "SampleFactory",
     "SessionExtension",
     "TeleopCycle",
     "TeleopSession",

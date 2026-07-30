@@ -170,6 +170,10 @@ class TeleopSession:
         )
         self._lifecycle = LifecycleManager(resources)
 
+    @property
+    def extensions(self) -> tuple[SessionExtension, ...]:
+        return self._extensions
+
     def metrics(self) -> TeleopSessionMetrics:
         with self._lock:
             return TeleopSessionMetrics(
