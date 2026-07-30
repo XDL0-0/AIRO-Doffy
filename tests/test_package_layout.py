@@ -91,6 +91,25 @@ assert "make_robot_backend" in robot_backend.__all__
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_tactile_facade_defers_legacy_sdk_imports(self) -> None:
+        code = """
+import sys
+import tactile_4point
+blocked = ("numpy", "sensor_comm_dds", "loguru")
+loaded = [name for name in sys.modules if name.startswith(blocked)]
+assert not loaded, loaded
+assert "airo_doffy.devices.tactile.legacy" not in sys.modules
+assert "FourPointTactileBleReader" in tactile_4point.__all__
+"""
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", code],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_visualizer_rollback_uses_typed_runtime_command(self) -> None:
         visualizer = (REPO_ROOT / "visualizer.py").read_text(encoding="utf-8-sig")
         runtime = (REPO_ROOT / "main.py").read_text(encoding="utf-8-sig")
