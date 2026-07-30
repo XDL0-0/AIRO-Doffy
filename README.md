@@ -1,308 +1,318 @@
-# VR Teleoperation for Robot Manipulators
+# AIRO-Doffy 2.0
 
-A high-performance codebase for controlling robot manipulators (UR3e, UR5e, RealMan, or compatible backends) using VR controllers or hand tracking via UDP. It features camera streaming to the VR headset via **HD chunked UDP** or **WebRTC** (aiortc), low-latency robot control, tactile sensing integration, dataset recording (HDF5 & LeRobot formats), and policy inference evaluation.
+AIRO-Doffy is a modular VR teleoperation and data-collection runtime for UR and
+RealMan manipulators. Version 2 separates hardware acquisition, protocol
+decoding, teleoperation mapping, safety, robot execution, video transport,
+recording, visualization, and application orchestration behind typed interfaces.
 
-## Key Features
-- **Low-Latency Teleoperation**: Real-time VR controller tracking to robot end-effector mapping with backend-specific IK/control and safety limits.
-- **Hand Tracking Support**: Receive and visualize 24-bone hand skeleton data from Meta Quest hand tracking (text and binary protocols).
-- **HD Video Streaming**: Two transport options:
-  - **UDP** (`camera_udp.py`): Chunked JPEG transfer, compatible with `UdpSocketMultiHD.cs`.
-  - **WebRTC** (`WebRTC_udp.py`): aiortc-based multi-track video (H.264/VP8) with WebSocket signaling + DataChannel for control. Lower bandwidth, NAT-friendly.
-- **Fast Gripper Control**: Custom non-blocking TCP socket implementation for the Robotiq 2F-85 gripper.
-- **Tactile & Force Integration**: Supports serial MagTouch and 4-taxel BLE MagTouch readers, UR force/torque readings, gravity compensation, baseline reset, and configurable wrench filtering.
-- **Live Teleop Visualizer**: Optional multiprocessing matplotlib dashboard for force/torque, camera previews, TCP/joint status, tactile bubbles, dataset status, and last-episode rollback.
-- **Dataset Recording**: Save robotic trajectories directly in ACT (HDF5) or Hugging Face `lerobot` formats.
-- **Dataset Rollback**: Delete the latest recorded ACT/HDF5 or LeRobot episode from the VR record-control channel or the visualizer.
-- **Policy Inference & Evaluation**: Load trained AI policies (e.g., ACT, Diffusion, Pi0) and evaluate them offline or run live robotics inference.
-- **Hand Visualizer**: Real-time matplotlib 3D hand skeleton visualization with finger bone connections and dynamic axis scaling.
+The repository is currently `2.0.0.dev0`. The v2 package and compatibility
+wrappers are implemented and covered by hardware-free tests. A production
+release candidate has not been tagged, and physical UR, RealMan, RealSense,
+Quest, and BLE4 validation remains an explicit deployment step.
+
+## What v2 provides
+
+- Immutable, timestamped robot, VR, camera, tactile, wrench, action, and
+  observation models.
+- UR3e/UR5e, RealMan RM75, mock robot, Robotiq 2F-85, RealSense, Quest VR, and
+  four-taxel MagTouch adapters.
+- Controller and hand-tracking input with legacy text compatibility and a
+  versioned binary protocol.
+- Pure pose transforms, replaceable controller/hand mappings, composable safety
+  filters, stale-input watchdogs, and backend-independent action executors.
+- Independent frame processing, bounded latest-frame encoding, legacy JPEG/UDP,
+  RTP/H.264 UDP, and WebRTC video transports.
+- Separate binary latest-only state and reliable ordered command channels.
+- Typed HDF5 and LeRobot schemas, bounded asynchronous export, rollback, and
+  explicit episode state.
+- A typed, latest-only visualization consumer that can run entirely from mock
+  snapshots.
+- Thin teleoperation and collection applications with deterministic lifecycle
+  and cooperative shutdown.
+
+## Architecture at a glance
+
+```text
+devices -> immutable samples -> mapping -> safety -> action executor -> robot
+   |                              |
+   +-> frame/video pipelines      +-> immutable TeleopCycle
+   +-> tactile/wrench                  |-> recording extension
+                                       |-> visualization consumer
+
+unreliable latest state  !=  reliable ordered runtime commands
+```
+
+The dependency direction points inward toward `airo_doffy.core`. Hardware SDKs
+are imported only inside adapters and only when their lifecycle starts. Runtime
+classes coordinate components but do not parse packets, process images, access
+SDKs, or serialize datasets.
+
+See:
+
+- [Architecture](docs/architecture.md)
+- [Communication protocols](docs/communication.md)
+- [Extension guide](docs/extension_guide.md)
+- [Migration guide](docs/migration_v2.md)
+- [Changelog](CHANGELOG.md)
 
 ## Installation
 
-### 1. Prerequisites
-- **Python 3.10+** (Recommended: Conda environment `airo-mono`)
-- **Robot**: Compatible robot backend, such as UR3e/UR5e with RTDE enabled or RealMan over its network API.
-- **Cameras**: Intel RealSense Cameras.
-- **VR Setup**: VR headset running the compatible Unity app with `DualControllerSender` / `HandTrackingSender` + `UdpSocketMultiHD` receiver.
+Python 3.10 or newer is required.
 
-### 2. Dependencies
-Install the required Python packages:
 ```bash
-pip install -r requirements.txt
+python -m venv .venv
+python -m pip install -e .
 ```
 
-Or install individually:
-```bash
-pip install numpy opencv-python pyrealsense2 scipy h5py torch matplotlib loguru pyserial ruckig pyav huggingface-hub
+The base installation has no mandatory third-party runtime dependency and is
+safe to import without hardware SDKs. Install only the extras needed by a
+deployment:
 
-# Additional dependencies for WebRTC streaming mode:
-pip install aiortc aiohttp av
+```bash
+python -m pip install -e ".[config]"
+python -m pip install -e ".[robot-ur]"
+python -m pip install -e ".[robot-realman]"
+python -m pip install -e ".[camera-realsense]"
+python -m pip install -e ".[video-h264,video-webrtc]"
+python -m pip install -e ".[tactile-ble4]"
+python -m pip install -e ".[recording,visualization]"
+python -m pip install -e ".[policy]"
+python -m pip install -e ".[dev]"
 ```
 
-Additionally, this project depends on custom robotic libraries. Ensure the following are installed in your environment:
-- `airo-robots[realman,ur]` (UR RTDE, Robotiq control, and the optional RealMan SDK)
-- `airo-camera-toolkit` (RealSense wrappers)
-- `airo-spatial-algebra` (SE3 containers)
-- `ur_analytic_ik` (Analytic Inverse Kinematics for UR)
-- `lerobot` (For Hugging Face dataset creation and policy inference)
-- `sensor_comm_dds` (For tactile sensor communication, optional)
+Relevant extras are declared in `pyproject.toml`. Some robotics libraries may
+require their own platform-specific installation steps.
 
 ## Configuration
-The system uses `config.py` as its central configuration. Key settings:
 
-### Network & Robot
-| Parameter | Description | Default |
+The v2 configuration is immutable and split into network, robot, camera, VR,
+teleoperation, tactile, recording, visualization, video, state transport,
+command transport, wrench, and runtime sections.
+
+Precedence is:
+
+1. `configs/default.yaml`
+2. optional robot profile from `configs/robots/`
+3. optional experiment profile from `configs/experiments/`
+4. `AIRO_DOFFY__SECTION__FIELD` environment variables
+5. `--set section.field=value` CLI overrides
+
+The committed default contains no device IP, camera serial, secret, or
+machine-specific absolute path. Deployment values must be supplied explicitly.
+
+Example:
+
+```bash
+airo-doffy-teleop \
+  --robot-config configs/robots/ur3e.yaml \
+  --experiment-config configs/experiments/vr_hand_tracking.yaml \
+  --set robot.ip=192.0.2.10 \
+  --set network.vr_ip=192.0.2.20 \
+  --session-factory my_deployment.sessions:build_teleop
+```
+
+On PowerShell, environment overrides look like:
+
+```powershell
+$env:AIRO_DOFFY__ROBOT__IP = '"192.0.2.10"'
+$env:AIRO_DOFFY__NETWORK__VR_IP = '"192.0.2.20"'
+```
+
+JSON scalars and arrays are parsed before falling back to plain text. Unknown
+sections, fields, and malformed values fail before hardware construction.
+
+## Applications and composition
+
+Installed entry points:
+
+```bash
+airo-doffy-teleop --help
+airo-doffy-collect --help
+```
+
+Both applications require a composition factory through `--session-factory` or
+`AIRO_DOFFY_TELEOP_SESSION_FACTORY` /
+`AIRO_DOFFY_COLLECT_SESSION_FACTORY`. A factory is a callable that accepts one
+`AiroDoffyConfig` and returns an object with `start()`, `run()`,
+`request_stop()`, and `close()`.
+
+This explicit boundary prevents the library from guessing which robot, cameras,
+ports, optional sensors, writer, and safety policy are appropriate for a
+workcell. The [extension guide](docs/extension_guide.md) contains a composition
+example.
+
+The root `main.py`, `realman_teleop.py`, and `inference.py` remain compatibility
+entry points during migration. They still use legacy configuration and should
+not be used as examples for new integrations.
+
+## Supported components
+
+### Robots and grippers
+
+| Component | v2 adapter | Notes |
 |---|---|---|
-| `ROBOT_TYPE` | Robot backend (`ur3e` / `ur5e` / `realman`) | `ur3e` |
-| `ROBOT_IP` | Selected robot IP address, defaults to `UR_IP` when unset | `None` |
-| `UR_IP` | UR robot IP address fallback | `10.42.0.162` |
-| `REALMAN_PORT` | RealMan API port | `8080` |
-| `REALMAN_READ_RETRIES` | Attempts for transient RealMan state-read timeouts | `3` |
-| `REALMAN_RETRY_DELAY` | Delay between RealMan state-read retries in seconds | `0.05` |
-| `PC_IP` | Host PC IP address | `10.10.131.72` |
-| `VR_IP` | VR headset IP address | `10.10.131.166` |
-| `TELEOP_COMMAND_MODE` | Teleoperation command path (`joint` / `tcp`) | `joint` |
-| `FREEZE_ROTATION` | Keep the TCP orientation fixed while mapping controller translation | `True` |
-| `GRIPPER` | Connect/control the gripper and include it in recorded state/actions | `False` |
+| UR3e / UR5e | `URRobotBackend` | 6 DOF; position or optional torque mode |
+| RealMan RM75 | `RealManRobotBackend` | 7 DOF; CAN-FD executor available |
+| Hardware-free | `MockRobotBackend` | latency and failure injection |
+| Robotiq 2F-85 | `Robotiq2F85Gripper` | isolated gripper lifecycle |
+| Hardware-free gripper | `NullGripper` | deterministic state |
 
-### RealMan CAN-FD
+Robot backends expose state and atomic actions. Cadence, latest-command
+scheduling, watchdogs, and shutdown belong to executors and runtime sessions.
 
-| Parameter | Description | Default |
-|---|---|---|
-| `REALMAN_CTRL_RATE` | Dedicated CAN-FD setpoint rate; must remain strictly above 100 Hz | `200` |
-| `REALMAN_MIN_CANFD_RATE` | Minimum measured rate accepted by the runtime watchdog | `100.0` |
-| `REALMAN_RATE_CHECK_WINDOW` | Seconds per measured-rate window | `1.0` |
-| `REALMAN_RATE_FAILURE_WINDOWS` | Consecutive failed timing windows allowed before the startup gate aborts | `3` |
-| `REALMAN_CANFD_HEARTBEAT_TIMEOUT` | Maximum time without a completed CAN-FD SDK call before the health check fails | `0.05` |
-| `REALMAN_MAX_JOINT_SPEED` | Per-joint CAN-FD interpolation limit, capped by controller-reported limits, in rad/s | `2.0` |
-| `REALMAN_MAX_LINEAR_SPEED` | TCP translation interpolation limit in m/s | `0.25` |
-| `REALMAN_MAX_ANGULAR_SPEED` | TCP rotation interpolation limit in rad/s | `1.0` |
-| `REALMAN_REALTIME_STATE_PUSH` | Receive joint, TCP, and force state through the controller's realtime UDP push | `True` |
-| `REALMAN_STATE_PUSH_CYCLE_MS` | Realtime state-push cycle; must be a positive multiple of 5 ms | `5` |
-| `REALMAN_STATE_PUSH_PORT` | PC UDP port on which realtime state packets are received | `8098` |
-| `REALMAN_STATE_PUSH_TIMEOUT` | Startup wait for the first valid realtime state packet, in seconds | `2.0` |
-| `REALMAN_FORCE_COORDINATE` | Force frame requested from the controller: `0` sensor, `1` work, `2` tool | `0` |
-| `REALMAN_SENSOR_RATE` | Synchronous joint/TCP/force polling rate when realtime state push is disabled | `30.0` |
-| `REALMAN_VR_TIMEOUT` | Hold the last target after this many seconds without a VR packet | `0.25` |
+### VR
 
-### Tracking & Streaming
-| Parameter | Description | Default |
-|---|---|---|
-| `TRACKING_MODE` | VR input mode: `"controller"` or `"hand"` | `controller` |
-| `REALSENSE_RESOLUTION` | Camera resolution `(width, height)` | `(640, 480)` |
-| `REALSENSE_FPS` | Camera framerate | `60` |
-| `JPEG_QUALITY` | JPEG encoding quality for VR streaming (1-100) | `50` |
-| `HD_CHUNK_SIZE` | Max payload bytes per UDP chunk (UDP mode only) | `60000` |
-| `SIGNALING_PORT` | WebSocket port for WebRTC signaling (WebRTC mode) | `8765` |
+- `controller`: exactly one left and one right controller.
+- `hand`: one or two hands, each with 26 joints and optional wrist pose.
+- Legacy text controller/hand messages remain parseable.
+- Binary v2 messages carry an explicit magic, version, flags, sequence, timestamp,
+  payload length, and CRC32.
 
-### Dataset
-| Parameter | Description | Default |
-|---|---|---|
-| `DATASET_DIR` | Dataset save path | `./datasets/...` |
-| `DATASET_TYPE` | `"a"` = ACT/HDF5, `"l"` = LeRobot | `l` |
-| `DATA_TYPE` | State/action representation (`qpos`, `both`, `tcp`, `delta_tcp`) | `both` |
-| `TACTILE_TRANSFER` | Enable tactile sensor data | `False` |
-| `FORCE_COLLECT` | Record TCP force `[Fx, Fy, Fz]` when available | `False` |
-| `TORQUE_COLLECT` | Record TCP torque `[Tx, Ty, Tz]` when available | `False` |
+Packet parsing does not open sockets. `VRReceiver` accepts an injected raw
+transport and rejects stale sequences before publishing the latest typed state.
 
-### Force, Tactile & Visualizer
-| Parameter | Description | Default |
-|---|---|---|
-| `GRAVITY_COMP` | Enable tool gravity compensation for TCP wrench readings | `True` |
-| `GRAVITY_COMP_FILTER_ALPHA` | Low-pass alpha used inside gravity compensation | `0.15` |
-| `FORCE_MOVING_AVERAGE_WINDOW` | Moving-average window applied to 6D wrench readings | `8` |
-| `FORCE_LOW_PASS_ALPHA` | Final wrench low-pass alpha after moving average/deadband | `0.15` |
-| `TACTILE_ENABLE` | Start tactile hardware when VR transfer or visualizer needs it | `True` |
-| `TACTILE_READER` | Tactile reader backend (`ble4` / `serial`) | `ble4` |
-| `TACTILE_SHAPE` | Stored tactile sample shape | `(4, 3)` |
-| `TACTILE_FILTER_ALPHA` | BLE tactile exponential filter alpha | `0.75` |
+### Video and cameras
 
-`visualizer_config.py` controls the live dashboard:
+RealSense acquisition publishes camera frames independently of transport.
+`PackedFrameProcessor` performs crop, zoom, nearest-neighbor resize, rotation,
+color conversion, and even-dimension preparation without camera SDKs.
 
-| Parameter | Description | Default |
-|---|---|---|
-| `ENABLED` | Start the shared dashboard from a teleoperation entry point | `True` |
-| `HZ` | Visualizer refresh/publish rate | `30.0` |
-| `WINDOW_S` | Plot history window in seconds | `8.0` |
-| `FORCE_PANEL_RANGE` | Force plot and Fx/Fy panel +/- range in newtons | `30.0` |
+Video choices:
 
-## How to Run
+- legacy JPEG/UDP for existing Unity receivers;
+- RTP/H.264 over UDP with RFC 6184 packetization and jitter handling;
+- WebRTC video tracks with signaling and latest-only submission.
 
-### 1. Data Collection & Teleoperation
-Initiate the main teleoperation and dataset recording loop:
-```bash
-python main.py
-```
-- Real-time camera streams will appear in the VR headset automatically.
-- Controller movements dictate the robot pose and, when `GRIPPER=True`, the gripper aperture.
-- Squeeze trigger & buttons to start / stop dataset recording.
-- If `VisualizerConfig.ENABLED` is true, a dashboard opens with wrench plots, tactile bubbles, camera previews, robot status, dataset counters, and a rollback button.
-- A VR record-control value of `Undo`, `Rollback`, or `DeleteLast` removes the latest saved episode and reuses its index.
-- Pressing the reset trigger combination recalibrates force/tactile baselines when those sensors are enabled.
+Encoding queues are bounded, default to depth 1, and drop old frames under
+overload. Hardware H.264 is preferred when configured and available; software
+fallback is explicit and observable.
 
-### 2. RealMan CAN-FD Teleoperation
+### Tactile and wrench
 
-For RealMan teleoperation without datasets, gripper, or tactile hardware:
+The supported new tactile path is the four-taxel BLE4 MagTouch adapter with a
+fixed `(4, 3)` output. Filtering, calibration, disconnect handling, mocks, and
+recording are independent of camera and VR objects. Older serial tactile code is
+retained only through compatibility modules.
+
+Wrench collection, gravity compensation, calibration, moving average, low-pass,
+deadband, and clamp stages are separate. The canonical order is
+`Fx, Fy, Fz, Tx, Ty, Tz`.
+
+## State and command channels
+
+High-frequency state and runtime commands intentionally use different delivery
+semantics:
+
+| Channel | Delivery | Buffering | Typical contents |
+|---|---|---|---|
+| state | unordered, unreliable | latest only | pose, joints, gripper, wrench |
+| commands | ordered, reliable | bounded queue + dedupe | start/stop recording, rollback, recalibrate, stop |
+
+Both paths use versioned binary envelopes, timestamps, sequence numbers, payload
+length validation, and CRC32. See [communication](docs/communication.md) for
+wire details and Unity migration notes.
+
+## Recording
+
+`RecordingCycleExtension` observes the existing teleoperation loop; it does not
+create a second control loop. Samples are validated against an immutable
+`RecordingSchema`, detached from live buffers, and exported by a bounded worker.
+
+Supported writers:
+
+- ACT-compatible HDF5;
+- LeRobot features and episodes.
+
+Episode numbering uses the highest persisted index plus one. Rollback is
+explicit, serialized with export operations, and reuses the removed index.
+Failed export remains visible and can be retried or discarded.
+
+## Policy inference and evaluation
+
+The `policy` optional dependency group contains the packages needed by the
+legacy policy path. The current `inference.py` remains a compatibility entry
+point while policy adapters are moved behind v2 interfaces:
 
 ```bash
-python realman_teleop.py
-```
-
-Set `ROBOT_TYPE="realman"`, choose `TELEOP_COMMAND_MODE="joint"` or `"tcp"`,
-and keep `TRACKING_MODE="controller"`, `GRIPPER=False`, and
-`TACTILE_TRANSFER=False`. This entry point keeps camera streaming, the robot's
-integrated six-axis force sensor, and the shared visualizer. A dedicated thread
-targets `REALMAN_CTRL_RATE=200` Hz and continuously sends `rm_movej_canfd` or
-`rm_movep_canfd`. Joint, linear, and angular target changes are interpolated on
-that 5 ms command clock using `REALMAN_MAX_JOINT_SPEED`,
-`REALMAN_MAX_LINEAR_SPEED`, and `REALMAN_MAX_ANGULAR_SPEED`.
-
-Before VR motion is accepted, the sender must complete one clean timing window
-at a measured rate strictly above `REALMAN_MIN_CANFD_RATE=100` Hz. Packet gaps
-and SDK calls above 10 ms count as timing violations; after startup verification,
-one such violation stops the command path immediately. The command loop also
-records a successful-command heartbeat;
-`REALMAN_CANFD_HEARTBEAT_TIMEOUT=0.05` seconds is the health-check threshold for
-a CAN-FD call that stops completing. Startup aborts instead of enabling motion
-when the rate gate or heartbeat check fails. The dashboard reports the measured
-rate, packet gaps, SDK-call duration, and errors.
-
-Realtime robot state should normally use the controller's UDP push:
-
-```python
-REALMAN_REALTIME_STATE_PUSH = True
-REALMAN_STATE_PUSH_CYCLE_MS = 5
-REALMAN_STATE_PUSH_PORT = 8098
-REALMAN_STATE_PUSH_TIMEOUT = 2.0
-REALMAN_FORCE_COORDINATE = 0
-```
-
-Set `PC_IP` to the address of the PC network interface that the RealMan
-controller can reach. The controller sends UDP state packets to
-`PC_IP:REALMAN_STATE_PUSH_PORT`; allow inbound UDP on that port in the PC
-firewall, ensure both hosts have a valid route, and make sure another process is
-not already using the port. Startup waits up to `REALMAN_STATE_PUSH_TIMEOUT` for
-the first valid packet and fails with a connection diagnostic if none arrives.
-The default 5 ms cycle provides joint, TCP, and integrated force state without
-placing synchronous state reads in the CAN-FD command path.
-
-`REALMAN_FORCE_COORDINATE` selects the reported wrench frame: `0` is the force
-sensor frame, `1` the active work frame, and `2` the active tool frame. The
-script consumes the controller's zeroed force values. RealMan
-`zero_force_data` is already controller-compensated, so this entry point does
-not apply the repository's additional software gravity compensation.
-
-For an older SDK or controller setup that cannot provide realtime state push,
-set `REALMAN_REALTIME_STATE_PUSH=False`. This schedules synchronous state and
-force reads at `REALMAN_SENSOR_RATE` on the same thread that owns the RealMan
-SDK command calls, avoiding concurrent use of the SDK handle. It is an explicit
-fallback, not an automatic downgrade: those reads consume CAN-FD timing budget,
-so the same startup gate and runtime watchdog remain active and will refuse or
-stop motion if the measured command timing is no longer valid.
-
-### 3. Force/Tactile Visualizer
-Run the standalone dashboard against a UR robot:
-```bash
-python -m scripts.diagnostics.force_visualizer --ip 10.42.0.162 --robot-type ur3e
-```
-
-Preview the shared visualizer UI without robot hardware:
-```bash
-python -m scripts.diagnostics.force_visualizer --mock
-```
-
-Show tactile data in the dashboard:
-```bash
-python -m scripts.diagnostics.force_visualizer --mock --mock-tactile
-python -m scripts.diagnostics.force_visualizer --ip 10.42.0.162 --robot-type ur3e --tactile
-```
-
-Run a small TCP xyz experiment with fixed orientation using `servo_to_tcp_pose`:
-```bash
-python -m scripts.diagnostics.force_visualizer \
-    --ip 10.42.0.162 \
-    --robot-type ur3e \
-    --payload-cog 0 0 0.058 \
-    --tcp-xyz-experiment
-```
-
-### 4. Standalone VR Data Receiver
-Test VR connection without robot hardware:
-```bash
-# Controller mode — print controller data
-python vr_data.py
-
-# Hand tracking mode — 3D hand visualizer
-python vr_data.py --visualize
-```
-
-### 4. Live Policy Inference
-Execute a previously trained AI policy directly onto the robot:
-```bash
-python inference.py --policy username/my_act_policy
 python inference.py --policy ./checkpoints/my_policy --device cuda --fps 10
 ```
 
-### 5. Offline Policy Evaluation
-Evaluate a trained policy against recorded dataset:
+Do not place policy inference, model downloads, or disk I/O in the robot control
+loop. A v2 deployment should publish bounded actions into the same safety and
+executor path used by teleoperation.
+
+## Diagnostics and observability
+
+Components expose immutable metrics for accepted/rejected sequences, dropped
+frames, queue pressure, encode latency, command acknowledgements, export state,
+worker health, and last error. Failures are surfaced through typed errors and
+`check_health()` rather than hidden inside background threads.
+
+The repository includes a video benchmark runner and mock renderers. Production
+dashboards should consume `VisualizationSnapshot`; they must not read mutable
+robot, camera, recorder, or tactile internals.
+
+## Testing
+
+The default hardware-free suite is:
+
 ```bash
-python eval_policy.py --policy username/my_policy
-python eval_policy.py \
-    --policy ./checkpoints/my_policy \
-    --dataset ./datasets/my_dataset_lero \
-    --episodes 0 1 2 \
-    --no-show
+python -m unittest discover -s tests
 ```
 
-## VR Data Protocols
+It includes unit tests, package-boundary checks, a complete mock integration
+session, default-skipped hardware checks, and compatibility characterization.
 
-### Controller Data (via `DualControllerSender.cs`)
-```
-<timestamp_ms>,<left: 14 values>,<right: 14 values>
-```
-Per-hand fields: `px,py,pz, rx,ry,rz,rw, jx,jy, trigger, grip, AX, BY, joyPress`
+Device-specific smoke tests live under `tests/hardware/` and require explicit
+environment variables. Read [their safety notes](tests/hardware/README.md)
+before enabling them.
 
-### Hand Tracking Data (via `HandTrackingSender.cs`)
-Text protocol:
-```
-H,<L|R>,<timestamp_ms>,<bone0_x>,<bone0_y>,<bone0_z>,...  (24 bones x 3 floats)
-```
-Binary protocol:
-```
-HB,<base64-encoded: [0x48, side, count_lo, count_hi, x0,y0,z0, ...]>
-```
+With development dependencies installed:
 
-### HD Video Chunks — UDP Mode (via `UdpSocketMultiHD.cs`)
-Each UDP packet: 12-byte big-endian header + JPEG payload
-```
-[frameId: u32] [chunkIndex: u16] [totalChunks: u16] [totalBytes: u32] [payload...]
+```bash
+python -m pytest
+python -m ruff check .
+python -m ruff format --check .
+python -m pyright
+python -m pre_commit run --all-files
 ```
 
-### WebRTC Video — WebRTC Mode (via `WebRTCVideoReceiver.cs`)
-- **Signaling**: WebSocket on `SIGNALING_PORT` (default 8765), JSON envelope: `{"type": "offer"|"answer"|"ice_candidate"|"hello", "session_id": "...", "payload": {...}}`
-- **Video**: Single `RTCPeerConnection` with one `VideoStreamTrack` per camera (H.264/VP8 codec).
-- **Control**: DataChannel `"control"` replaces UDP port 8005 for resolution/zoom commands.
+## Repository layout
 
-## Project Structure
+```text
+src/airo_doffy/
+  apps/            thin CLI and configuration handoff
+  config/          typed sections, layered loader, lazy factories
+  core/            immutable types, clocks, buffers, errors, interfaces
+  devices/         camera, VR, tactile, and wrench adapters
+  robots/          robot/gripper adapters and action executors
+  teleop/          transforms, mappings, safety filters, watchdog
+  streaming/       video, state, and reliable command channels
+  recording/       schema, samples, state, writers, export worker
+  visualization/   typed snapshots, consumer, commands, mock renderer
+  runtime/         lifecycle, teleop session, data-collection composition
+configs/           default, robot, and experiment YAML layers
+docs/              architecture, protocols, migration, and phase evidence
+tests/unit/        hardware-free component tests
+tests/integration/ complete mock session
+tests/hardware/    explicitly enabled device smoke tests
+deprecated/        unsupported legacy code retained for migration only
 ```
-airo-doffy/
-├── config.py           # Central configuration
-├── main.py             # Data collection entry point
-├── camera_udp.py       # Camera streaming (UDP chunks) + VR data reception
-├── WebRTC_udp.py       # Camera streaming (WebRTC) + VR data reception
-├── parse_vr.py         # VR data parsing (controller + hand tracking)
-├── robot_backend.py    # Robot backend adapters for UR, RealMan, and generic manipulators
-├── robot_teleop.py     # Robot-agnostic teleoperation backend client
-├── realman_teleop.py   # Lean RealMan camera/force teleop with 200 Hz CAN-FD
-├── force_filter.py     # Shared 6D wrench filtering utilities
-├── tactile_4point.py   # 4-taxel BLE MagTouch reader and tactile panel helpers
-├── visualizer.py       # Shared live force/tactile/camera/dataset dashboard
-├── visualizer_config.py # Visualizer settings
-├── vr_data.py          # Standalone VR receiver + hand visualizer
-├── data_schema.py      # Dataset and policy state/action schema helpers
-├── dataset.py          # Dataset recording (HDF5 / LeRobot)
-├── inference.py        # Policy inference
-├── tactile.py          # Tactile sensor interface
-├── udp_comms.py        # Two-way UDP communication
-├── utils.py            # Filters, safety checks, helpers
-└── example from VR/    # Unity C# source & Python examples
-```
+
+## Deprecation policy
+
+- Existing root imports and entry points remain compatibility wrappers during
+  the v2 migration.
+- Supported `src/airo_doffy` modules do not import from `deprecated/`.
+- Compatibility protocol and dataset behavior remains frozen unless a change is
+  explicitly approved and documented with tests and migration notes.
+- New integrations should import from `airo_doffy`, use typed configuration,
+  and inject dependencies through interfaces.
+- Wrapper removal requires a separately approved release change; it is not part
+  of the current development release.
+
+## License and release status
+
+No `v2.0` release tag is created by this refactor. Before tagging a release
+candidate, run the dev toolchain, HDF5 tests, applicable supervised hardware
+checks, and deployment-specific end-to-end latency measurements.
