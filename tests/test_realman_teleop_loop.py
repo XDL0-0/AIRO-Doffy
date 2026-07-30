@@ -4,10 +4,15 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import cv2
-import numpy as np
-from airo_spatial_algebra.se3 import SE3Container
-from scipy.spatial.transform import Rotation
+try:
+    import cv2
+    import numpy as np
+    from airo_spatial_algebra.se3 import SE3Container
+    from scipy.spatial.transform import Rotation
+except ImportError as exc:
+    raise unittest.SkipTest(
+        "legacy RealMan characterization requires optional math and vision dependencies"
+    ) from exc
 
 from config import Config
 from realman_teleop import (

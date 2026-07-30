@@ -1,0 +1,43 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: python -m ruff check
+        language: system
+        types: [python]
+      - id: ruff-format-check
+        name: ruff format check
+        entry: python -m ruff format --check
+        language: system
+        types: [python]
+      - id: pyright
+        name: pyright
+        entry: python -m pyright
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: unit-tests
+        name: unit tests
+        entry: python -m unittest discover -s tests/unit
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: integration-tests
+        name: mock integration tests
+        entry: python -m unittest discover -s tests/integration
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: package-boundaries
+        name: package boundary tests
+        entry: python -m unittest tests.test_package_layout
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: hardware-tests-default-skip
+        name: hardware tests default skip
+        entry: python -m unittest discover -s tests/hardware
+        language: system
+        pass_filenames: false
+        types: [python]

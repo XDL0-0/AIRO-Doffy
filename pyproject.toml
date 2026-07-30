@@ -81,6 +81,7 @@ visualization = [
 ]
 dev = [
   "build",
+  "pre-commit",
   "pyright",
   "pytest",
   "ruff",
@@ -100,6 +101,9 @@ airo_doffy = ["py.typed"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-ra"
+markers = [
+  "hardware: requires explicitly enabled physical hardware",
+]
 
 [tool.pyright]
 include = ["src", "tests"]
