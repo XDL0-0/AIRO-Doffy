@@ -14,3 +14,11 @@ class CameraSource(Lifecycle, Protocol):
 
     def read_latest(self) -> CameraFrame | None:
         """Return the newest captured frame without waiting."""
+
+
+@runtime_checkable
+class DepthCameraSource(CameraSource, Protocol):
+    """Color source that can also expose an aligned or paired depth frame."""
+
+    def read_latest_depth(self) -> CameraFrame | None:
+        """Return the newest packed depth frame without waiting."""
