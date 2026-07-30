@@ -23,6 +23,7 @@ from .protocol import (
     encode_acknowledgement,
     encode_command,
 )
+from .router import CommandHandler, CommandRouter, CommandRouterMetrics
 
 __all__ = [
     "COMMAND_PROTOCOL_VERSION",
@@ -32,6 +33,9 @@ __all__ = [
     "CommandDispatcher",
     "CommandMessageType",
     "CommandReceiverMetrics",
+    "CommandHandler",
+    "CommandRouter",
+    "CommandRouterMetrics",
     "CommandSenderMetrics",
     "ReliableCommandChannel",
     "ReliableCommandReceiver",
