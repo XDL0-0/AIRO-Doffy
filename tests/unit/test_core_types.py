@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import pickle
 import unittest
 
 from airo_doffy.core import (
@@ -239,6 +240,7 @@ class RuntimeMessageAndClockTest(unittest.TestCase):
             source_timestamp_ns=10,
         )
         self.assertEqual(command.kind, RuntimeCommandType.SET_VIDEO_PROFILE)
+        self.assertEqual(pickle.loads(pickle.dumps(command)), command)
         with self.assertRaises(ModelValidationError):
             RuntimeCommand(
                 kind=RuntimeCommandType.START_RECORDING,

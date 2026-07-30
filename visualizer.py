@@ -45,6 +45,7 @@ import numpy as np
 from matplotlib.patches import Circle
 from matplotlib.widgets import Button
 
+from airo_doffy.core.events import RuntimeCommand, RuntimeCommandType
 from visualizer_config import VisualizerConfig
 
 logger = logging.getLogger(__name__)
@@ -90,11 +91,15 @@ class VisualizerHandle:
                 except queue.Empty:
                     return
 
-    def drain_commands(self) -> list[dict]:
-        commands = []
+    def drain_commands(self) -> list[RuntimeCommand]:
+        commands: list[RuntimeCommand] = []
         while True:
             try:
-                commands.append(self.command_queue.get_nowait())
+                command = self.command_queue.get_nowait()
+                if isinstance(command, RuntimeCommand):
+                    commands.append(command)
+                else:
+                    logger.warning("Ignoring untyped visualizer command: %r", command)
             except queue.Empty:
                 return commands
 
@@ -318,6 +323,7 @@ class TeleopDashboard:
         self.show_rollback_button = show_rollback_button
         self.interval_ms = max(10, int(1000 / hz))
         self.latest = TeleopSample(timestamp=time.monotonic(), wrench=np.zeros(6))
+        self._command_sequence = 0
         self.times: deque[float] = deque(maxlen=max(10, int(window_s * hz * 2)))
         self.values: deque[np.ndarray] = deque(maxlen=max(10, int(window_s * hz * 2)))
         self.t0: float | None = None
@@ -562,8 +568,14 @@ class TeleopDashboard:
     def _request_rollback(self, _event) -> None:
         try:
             self.command_queue.put_nowait(
-                {"command": "rollback_last_episode", "timestamp": time.monotonic()}
+                RuntimeCommand(
+                    kind=RuntimeCommandType.ROLLBACK_LAST_EPISODE,
+                    sequence=self._command_sequence,
+                    source_timestamp_ns=time.monotonic_ns(),
+                    origin="visualizer",
+                )
             )
+            self._command_sequence += 1
             self.rollback_button.label.set_text("Undo queued")
         except queue.Full:
             self.rollback_button.label.set_text("Queue full")

@@ -7,6 +7,7 @@ import time
 
 import numpy as np
 
+from airo_doffy.core.events import RuntimeCommandType
 import utils
 from config import Config
 from visualizer_config import VisualizerConfig
@@ -478,7 +479,7 @@ def main() -> None:
 
             if visualizer_handle is not None:
                 for command in visualizer_handle.drain_commands():
-                    if command.get("command") == "rollback_last_episode":
+                    if command.kind is RuntimeCommandType.ROLLBACK_LAST_EPISODE:
                         with cu_manager._lock:
                             cu_manager.data_collecting_state = False
                             cu_manager.data_export_state = False

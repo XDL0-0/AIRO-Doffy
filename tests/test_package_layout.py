@@ -69,6 +69,15 @@ print(airo_doffy.__version__)
             with self.subTest(module_name=module_name):
                 importlib.import_module(module_name)
 
+    def test_visualizer_rollback_uses_typed_runtime_command(self) -> None:
+        visualizer = (REPO_ROOT / "visualizer.py").read_text(encoding="utf-8-sig")
+        runtime = (REPO_ROOT / "main.py").read_text(encoding="utf-8-sig")
+        self.assertIn("RuntimeCommand(", visualizer)
+        self.assertIn(
+            "command.kind is RuntimeCommandType.ROLLBACK_LAST_EPISODE",
+            runtime,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
