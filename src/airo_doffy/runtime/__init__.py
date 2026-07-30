@@ -7,11 +7,27 @@ from .lifecycle import (
     ManagedWorker,
     WorkerSnapshot,
 )
+from .ports import (
+    ActionExecutor,
+    CommandDispatcher,
+    CommandSource,
+    RobotStateSource,
+    SessionExtension,
+)
+from .session import TeleopCycle, TeleopSession, TeleopSessionMetrics
 
 __all__ = [
     "LifecycleManager",
     "LifecycleManagerSnapshot",
     "LifecycleManagerState",
     "ManagedWorker",
+    "ActionExecutor",
+    "CommandDispatcher",
+    "CommandSource",
+    "RobotStateSource",
+    "SessionExtension",
+    "TeleopCycle",
+    "TeleopSession",
+    "TeleopSessionMetrics",
     "WorkerSnapshot",
 ]
