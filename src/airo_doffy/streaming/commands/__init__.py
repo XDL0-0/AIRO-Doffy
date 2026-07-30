@@ -1,5 +1,15 @@
 """Reliable runtime command protocols and channels."""
 
+from .channels import (
+    CommandDispatcher,
+    CommandReceiverMetrics,
+    CommandSenderMetrics,
+    ReliableCommandChannel,
+    ReliableCommandReceiver,
+    ReliableCommandSender,
+    WebRtcCommandDataChannel,
+    create_aiortc_reliable_command_channel,
+)
 from .protocol import (
     COMMAND_PROTOCOL_VERSION,
     MAX_COMMAND_MESSAGE_BYTES,
@@ -19,8 +29,16 @@ __all__ = [
     "MAX_COMMAND_MESSAGE_BYTES",
     "CommandAcknowledgement",
     "CommandAckStatus",
+    "CommandDispatcher",
     "CommandMessageType",
+    "CommandReceiverMetrics",
+    "CommandSenderMetrics",
+    "ReliableCommandChannel",
+    "ReliableCommandReceiver",
+    "ReliableCommandSender",
     "ReliableMessage",
+    "WebRtcCommandDataChannel",
+    "create_aiortc_reliable_command_channel",
     "decode_acknowledgement",
     "decode_command",
     "decode_reliable_message",
