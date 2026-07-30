@@ -14,10 +14,12 @@ from airo_doffy.core import (
     WrenchSample,
 )
 from airo_doffy.core.errors import ModelValidationError
+from airo_doffy.core.events import RuntimeCommand, RuntimeCommandType
 from airo_doffy.visualization import (
     MemorySnapshotRenderer,
     RecordingView,
     TypedSnapshotConsumer,
+    VisualizationCommandOutbox,
     VisualizationSnapshot,
 )
 
@@ -187,6 +189,31 @@ class TypedSnapshotConsumerTest(unittest.TestCase):
         self.assertFalse(consumer.publish(_snapshot(1, with_sensors=False)))
         consumer.close()
         self.assertTrue(renderer.closed)
+
+
+class VisualizationCommandOutboxTest(unittest.TestCase):
+    def command(self, sequence: int) -> RuntimeCommand:
+        return RuntimeCommand(
+            kind=RuntimeCommandType.ROLLBACK_LAST_EPISODE,
+            sequence=sequence,
+            source_timestamp_ns=sequence + 1,
+            origin="visualizer",
+        )
+
+    def test_commands_are_typed_bounded_and_drained_by_the_runtime(self) -> None:
+        outbox = VisualizationCommandOutbox(capacity=1)
+        command = self.command(0)
+        self.assertTrue(outbox.submit(command))
+        self.assertFalse(outbox.submit(self.command(1)))
+        self.assertEqual(outbox.drain(), (command,))
+        self.assertEqual(outbox.accepted_count, 1)
+        self.assertEqual(outbox.rejected_count, 1)
+
+    def test_closed_outbox_rejects_without_mutating_runtime_state(self) -> None:
+        outbox = VisualizationCommandOutbox()
+        outbox.close()
+        self.assertFalse(outbox.submit(self.command(0)))
+        self.assertEqual(outbox.drain(), ())
 
 
 if __name__ == "__main__":

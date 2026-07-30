@@ -1,6 +1,7 @@
 """Typed snapshot models, publishers, and dashboard consumers."""
 
 from .base import SnapshotConsumer, SnapshotRenderer, VisualizationCommandSink
+from .commands import VisualizationCommandOutbox
 from .consumer import TypedSnapshotConsumer, VisualizationMetrics
 from .mock import MemorySnapshotRenderer
 from .models import RecordingView, VisualizationSnapshot
@@ -12,6 +13,7 @@ __all__ = [
     "SnapshotRenderer",
     "TypedSnapshotConsumer",
     "VisualizationCommandSink",
+    "VisualizationCommandOutbox",
     "VisualizationMetrics",
     "VisualizationSnapshot",
 ]
