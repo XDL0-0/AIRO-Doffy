@@ -119,6 +119,11 @@ assert "FourPointTactileBleReader" in tactile_4point.__all__
             runtime,
         )
 
+    def test_legacy_camera_manager_reuses_frozen_jpeg_packetizer(self) -> None:
+        source = (REPO_ROOT / "camera_udp.py").read_text(encoding="utf-8")
+        self.assertIn("packetize_legacy_jpeg", source)
+        self.assertNotIn("struct.pack(", source)
+
 
 if __name__ == "__main__":
     unittest.main()

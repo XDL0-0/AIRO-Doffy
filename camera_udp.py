@@ -6,7 +6,6 @@ both controller / hand-tracking data from the VR headset.
 
 from __future__ import annotations
 
-import struct
 import cv2
 import time
 import threading
@@ -19,6 +18,11 @@ import udp_comms as U
 from config import Config
 from parse_vr import parse_data, parse_hand_data, detect_packet_type
 from airo_camera_toolkit.cameras.realsense.realsense import Realsense
+from airo_doffy.streaming.video.legacy_jpeg_udp import (
+    LEGACY_JPEG_HEADER,
+    LEGACY_JPEG_HEADER_SIZE,
+    packetize_legacy_jpeg,
+)
 
 MAX_CAMERAS = 5
 STREAM_FPS = 30
@@ -27,8 +31,8 @@ VR_RECEIVE_HZ = 100
 CONNECTION_TIMEOUT = 30.0
 
 # HD chunk protocol header: !IHHI = uint32 + uint16 + uint16 + uint32 = 12 bytes
-HD_HEADER_FMT = "!IHHI"
-HD_HEADER_SIZE = 12
+HD_HEADER_FMT = LEGACY_JPEG_HEADER.format
+HD_HEADER_SIZE = LEGACY_JPEG_HEADER_SIZE
 
 
 class CameraUDPManager:
@@ -192,33 +196,25 @@ class CameraUDPManager:
             return 0
 
         image_bytes: bytes = buf.tobytes()
-        total_bytes = len(image_bytes)
         chunk_size = self.hd_chunk_size
-        num_chunks = (total_bytes + chunk_size - 1) // chunk_size
 
         # Per-camera frame counter — avoids interleaving IDs across cameras
         ctr = self._frame_counters.get(cam_idx, 0)
         frame_id = ctr & 0xFFFFFFFF
         self._frame_counters[cam_idx] = ctr + 1
+        packets = packetize_legacy_jpeg(
+            image_bytes,
+            frame_id=frame_id,
+            chunk_size=chunk_size,
+        )
 
         raw_sock = sock._sock
         target = (sock.send_ip, sock.udp_send_port)
 
-        for i in range(num_chunks):
-            start = i * chunk_size
-            end = min(start + chunk_size, total_bytes)
-            payload = image_bytes[start:end]
+        for packet in packets:
+            raw_sock.sendto(packet, target)
 
-            header = struct.pack(
-                HD_HEADER_FMT,
-                frame_id,
-                i,
-                num_chunks,
-                total_bytes & 0xFFFFFFFF,
-            )
-            raw_sock.sendto(header + payload, target)
-
-        return num_chunks
+        return len(packets)
 
     # ── Image processing ──────────────────────────────────────────────────
 
