@@ -141,6 +141,7 @@ class TypedConfigModelTest(unittest.TestCase):
         self.assertIsNone(config.network.pc_ip)
         self.assertIsNone(config.network.vr_ip)
         self.assertIsNone(config.robot.ip)
+        self.assertIsNone(config.camera.serial_number)
         self.assertEqual(config.robot.initial_joints_rad, (1.57, -1.57, 1.57, -1.57, -1.57, 0.0))
         self.assertEqual(config.camera, CameraConfig(resolution=(640, 480), fps=60))
         self.assertEqual(config.vr, VRConfig(tracking_mode="controller"))
@@ -175,6 +176,12 @@ class TypedConfigModelTest(unittest.TestCase):
     def test_section_validation(self) -> None:
         with self.assertRaises(ModelValidationError):
             CameraConfig(resolution=(640, 0))
+        with self.assertRaises(ModelValidationError):
+            CameraConfig(capture_rate_hz=0)
+        with self.assertRaises(ModelValidationError):
+            CameraConfig(stream_id="")
+        with self.assertRaises(ModelValidationError):
+            CameraConfig(max_consecutive_errors=0)
         with self.assertRaises(ModelValidationError):
             TactileConfig(backend="serial")
         with self.assertRaises(ModelValidationError):

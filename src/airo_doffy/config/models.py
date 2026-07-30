@@ -238,7 +238,12 @@ class CameraConfig:
 
     resolution: tuple[int, int] = (640, 480)
     fps: int = 60
+    capture_rate_hz: float = 30.0
     depth_enabled: bool = False
+    stream_id: str = "camera_0"
+    serial_number: str | None = None
+    max_consecutive_errors: int = 10
+    retry_delay_s: float = 1.0
 
     def __post_init__(self) -> None:
         try:
@@ -251,6 +256,27 @@ class CameraConfig:
             (_integer(width, "resolution.width", 1), _integer(height, "resolution.height", 1)),
         )
         object.__setattr__(self, "fps", _integer(self.fps, "fps", 1))
+        object.__setattr__(
+            self,
+            "capture_rate_hz",
+            _positive(self.capture_rate_hz, "capture_rate_hz"),
+        )
+        object.__setattr__(self, "stream_id", _text(self.stream_id, "stream_id"))
+        object.__setattr__(
+            self,
+            "serial_number",
+            _text(self.serial_number, "serial_number", optional=True),
+        )
+        object.__setattr__(
+            self,
+            "max_consecutive_errors",
+            _integer(self.max_consecutive_errors, "max_consecutive_errors", 1),
+        )
+        object.__setattr__(
+            self,
+            "retry_delay_s",
+            _positive(self.retry_delay_s, "retry_delay_s"),
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

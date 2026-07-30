@@ -16,6 +16,7 @@
   "camera": {
     "resolution": [640, 480],
     "fps": 60,
+    "capture_rate_hz": 30.0,
     "depth_enabled": false
   },
   "vr": {
