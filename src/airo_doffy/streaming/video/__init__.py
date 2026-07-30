@@ -6,6 +6,17 @@ from .base import (
     VideoEncodingPipeline,
     VideoTransport,
 )
+from .benchmark import (
+    BenchmarkInput,
+    DeliveryProbe,
+    DeliveryReceipt,
+    LatencySummary,
+    VideoBenchmarkPath,
+    VideoBenchmarkResult,
+    VideoBenchmarkRunner,
+    compare_video_paths,
+    summarize_latencies,
+)
 from .encoding_pipeline import (
     LatestVideoEncodingPipeline,
     VideoEncodingMetrics,
@@ -50,8 +61,12 @@ from .webrtc_transport import (
 __all__ = [
     "FrameProcessor",
     "FrameTransform",
+    "BenchmarkInput",
+    "DeliveryProbe",
+    "DeliveryReceipt",
     "H264EncoderSettings",
     "LatestVideoEncodingPipeline",
+    "LatencySummary",
     "LEGACY_JPEG_HEADER",
     "LEGACY_JPEG_HEADER_SIZE",
     "LegacyJpegEncoder",
@@ -66,6 +81,9 @@ __all__ = [
     "RtpH264TransportMetrics",
     "RtpH264UdpTransport",
     "VideoEncoder",
+    "VideoBenchmarkPath",
+    "VideoBenchmarkResult",
+    "VideoBenchmarkRunner",
     "VideoEncodingPipeline",
     "VideoEncodingMetrics",
     "VideoTransport",
@@ -77,10 +95,12 @@ __all__ = [
     "create_legacy_jpeg_udp",
     "create_rtp_h264_udp",
     "create_webrtc_video",
+    "compare_video_paths",
     "packetize_h264_rtp",
     "packetize_legacy_jpeg",
     "parse_rtp_packet",
     "parse_signaling_envelope",
     "signaling_envelope",
     "split_h264_access_unit",
+    "summarize_latencies",
 ]
