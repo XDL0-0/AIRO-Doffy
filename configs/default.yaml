@@ -6,7 +6,8 @@
     "pose_port": 8001,
     "control_port": 8005,
     "signaling_port": 8765,
-    "video_rtp_port": 5004
+    "video_rtp_port": 5004,
+    "state_diagnostic_port": 5005
   },
   "robot": {
     "robot_type": "ur3e",
@@ -79,13 +80,17 @@
   },
   "state_transport": {
     "transport": "webrtc",
+    "channel_label": "realtime_state",
     "ordered": false,
     "max_retransmits": 0
   },
   "command_transport": {
     "transport": "webrtc",
+    "channel_label": "commands",
     "ordered": true,
-    "reliable": true
+    "reliable": true,
+    "ack_timeout_s": 1.0,
+    "dedupe_capacity": 1024
   },
   "wrench": {
     "force_collect": false,
