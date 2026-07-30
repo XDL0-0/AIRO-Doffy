@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from ..core.errors import ModelValidationError, OptionalDependencyError
-from ..core.interfaces import Lifecycle
 from ..devices.cameras.base import CameraSource
 from ..devices.tactile.base import TactileSensor
 from ..devices.vr.base import VRInputSource
 from ..recording.base import EpisodeRecorder
 from ..robots.base import RobotBackend
 from ..streaming.video.base import VideoEncoder, VideoTransport
+from ..visualization.base import SnapshotConsumer
 from .models import (
     CameraConfig,
     NetworkConfig,
@@ -142,5 +142,8 @@ class VisualizerFactory:
 
     target: str
 
-    def create(self, config: VisualizationConfig) -> Lifecycle:
-        return cast(Lifecycle, _construct(self.target, Lifecycle, config))
+    def create(self, config: VisualizationConfig) -> SnapshotConsumer:
+        return cast(
+            SnapshotConsumer,
+            _construct(self.target, SnapshotConsumer, config),
+        )

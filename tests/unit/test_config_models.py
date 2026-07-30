@@ -17,6 +17,7 @@ from airo_doffy.config import (
     CommandTransportConfig,
     RecordingConfig,
     RobotConfig,
+    RuntimeConfig,
     StateTransportConfig,
     TactileConfig,
     TeleopConfig,
@@ -146,6 +147,8 @@ class TypedConfigModelTest(unittest.TestCase):
         self.assertEqual(config.camera, CameraConfig(resolution=(640, 480), fps=60))
         self.assertEqual(config.vr, VRConfig(tracking_mode="controller"))
         self.assertEqual(config.recording.data_type, "both")
+        self.assertEqual(config.recording.export_queue_capacity, 2)
+        self.assertIsNone(config.recording.sample_capacity)
         self.assertEqual(config.tactile.shape, (4, 3))
         self.assertEqual(config.tactile.deadband_sigma, 3.0)
         self.assertEqual(config.tactile.max_abs, 20000.0)
@@ -158,6 +161,9 @@ class TypedConfigModelTest(unittest.TestCase):
         self.assertEqual(config.command_transport.ack_timeout_s, 1.0)
         self.assertEqual(config.command_transport.dedupe_capacity, 1024)
         self.assertEqual(config.visualization, VisualizationConfig())
+        self.assertEqual(config.visualization.command_queue_capacity, 8)
+        self.assertEqual(config.runtime.worker_join_timeout_s, 5.0)
+        self.assertEqual(config.runtime.max_control_dt_s, 0.05)
 
     def test_realman_defaults_and_timing_validation(self) -> None:
         robot = RobotConfig(robot_type="realman")
@@ -201,6 +207,16 @@ class TypedConfigModelTest(unittest.TestCase):
             TactileConfig(backend="serial")
         with self.assertRaises(ModelValidationError):
             RecordingConfig(data_type="unknown")
+        with self.assertRaises(ModelValidationError):
+            RecordingConfig(export_queue_capacity=0)
+        with self.assertRaises(ModelValidationError):
+            RecordingConfig(sample_capacity=0)
+        with self.assertRaises(ModelValidationError):
+            VisualizationConfig(command_queue_capacity=0)
+        with self.assertRaises(ModelValidationError):
+            RuntimeConfig(worker_join_timeout_s=0)
+        with self.assertRaises(ModelValidationError):
+            RuntimeConfig(max_control_dt_s=float("inf"))
         with self.assertRaises(ModelValidationError):
             VideoStreamingConfig(jpeg_quality=101)
         with self.assertRaises(ModelValidationError):

@@ -75,6 +75,11 @@ class _Tactile(_Lifecycle):
         pass
 
 
+class _Visualizer(_Lifecycle):
+    def publish(self, snapshot) -> bool:
+        return True
+
+
 class _Recorder:
     def close(self) -> None:
         pass
@@ -119,7 +124,8 @@ class ConfigFactoryTest(unittest.TestCase):
         module.make_vr = constructor("vr", _VRSource)
         module.make_tactile = constructor("tactile", _Tactile)
         module.make_recorder = constructor("recorder", _Recorder)
-        module.make_visualizer = constructor("visualizer", _Lifecycle)
+        module.make_visualizer = constructor("visualizer", _Visualizer)
+        module.make_lifecycle_only = constructor("lifecycle", _Lifecycle)
         module.make_invalid = lambda config: object()
         module.not_callable = object()
         sys.modules[self.module_name] = module
@@ -175,6 +181,13 @@ class ConfigFactoryTest(unittest.TestCase):
             RobotFactory(target=f"{self.module_name}:not_callable").create(RobotConfig())
         with self.assertRaisesRegex(ModelValidationError, "does not satisfy RobotBackend"):
             RobotFactory(target=f"{self.module_name}:make_invalid").create(RobotConfig())
+        with self.assertRaisesRegex(
+            ModelValidationError,
+            "does not satisfy SnapshotConsumer",
+        ):
+            VisualizerFactory(
+                target=f"{self.module_name}:make_lifecycle_only"
+            ).create(VisualizationConfig())
 
 
 if __name__ == "__main__":

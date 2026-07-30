@@ -487,6 +487,8 @@ class RecordingConfig:
     push_to_hub: bool = False
     save_eef: bool = False
     data_type: str = "both"
+    export_queue_capacity: int = 2
+    sample_capacity: int | None = None
 
     def __post_init__(self) -> None:
         dataset_type = self.dataset_type.lower()
@@ -496,6 +498,17 @@ class RecordingConfig:
         object.__setattr__(self, "dataset_dir", _text(self.dataset_dir, "dataset_dir"))
         object.__setattr__(self, "dataset_type", dataset_type)
         object.__setattr__(self, "data_type", _data_type(self.data_type))
+        object.__setattr__(
+            self,
+            "export_queue_capacity",
+            _integer(self.export_queue_capacity, "export_queue_capacity", 1),
+        )
+        if self.sample_capacity is not None:
+            object.__setattr__(
+                self,
+                "sample_capacity",
+                _integer(self.sample_capacity, "sample_capacity", 1),
+            )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -506,10 +519,20 @@ class VisualizationConfig:
     hz: float = 30.0
     window_s: float = 8.0
     force_panel_range: float = 30.0
+    command_queue_capacity: int = 8
 
     def __post_init__(self) -> None:
         for name in ("hz", "window_s", "force_panel_range"):
             object.__setattr__(self, name, _positive(getattr(self, name), name))
+        object.__setattr__(
+            self,
+            "command_queue_capacity",
+            _integer(
+                self.command_queue_capacity,
+                "command_queue_capacity",
+                1,
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -684,6 +707,8 @@ class RuntimeConfig:
     inference_fps: int = 10
     inference_max_steps: int = 1000
     inference_episodes: int = 1
+    worker_join_timeout_s: float = 5.0
+    max_control_dt_s: float = 0.05
 
     def __post_init__(self) -> None:
         for name in (
@@ -694,6 +719,16 @@ class RuntimeConfig:
             "inference_episodes",
         ):
             object.__setattr__(self, name, _integer(getattr(self, name), name, 1))
+        object.__setattr__(
+            self,
+            "worker_join_timeout_s",
+            _positive(self.worker_join_timeout_s, "worker_join_timeout_s"),
+        )
+        object.__setattr__(
+            self,
+            "max_control_dt_s",
+            _positive(self.max_control_dt_s, "max_control_dt_s"),
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

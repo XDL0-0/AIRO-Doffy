@@ -67,13 +67,16 @@
     "dataset_type": "l",
     "push_to_hub": false,
     "save_eef": false,
-    "data_type": "both"
+    "data_type": "both",
+    "export_queue_capacity": 2,
+    "sample_capacity": null
   },
   "visualization": {
     "enabled": true,
     "hz": 30.0,
     "window_s": 8.0,
-    "force_panel_range": 30.0
+    "force_panel_range": 30.0,
+    "command_queue_capacity": 8
   },
   "video": {
     "transport": "webrtc",
@@ -115,6 +118,8 @@
     "collect_rate_hz": 10,
     "inference_fps": 10,
     "inference_max_steps": 1000,
-    "inference_episodes": 1
+    "inference_episodes": 1,
+    "worker_join_timeout_s": 5.0,
+    "max_control_dt_s": 0.05
   }
 }

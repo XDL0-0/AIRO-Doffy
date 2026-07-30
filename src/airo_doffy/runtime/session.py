@@ -83,12 +83,20 @@ class TeleopSession:
         command_dispatcher: CommandDispatcher | None = None,
         clock: Clock | None = None,
         max_dt_s: float = 0.05,
+        worker_join_timeout_s: float = 5.0,
     ) -> None:
         rate = float(target_hz)
         if not math.isfinite(rate) or rate <= 0:
             raise ModelValidationError("target_hz must be positive and finite")
         if not math.isfinite(max_dt_s) or max_dt_s <= 0:
             raise ModelValidationError("max_dt_s must be positive and finite")
+        if (
+            not math.isfinite(worker_join_timeout_s)
+            or worker_join_timeout_s <= 0
+        ):
+            raise ModelValidationError(
+                "worker_join_timeout_s must be positive and finite"
+            )
         if not isinstance(vr_source, VRInputSource):
             raise ModelValidationError("vr_source must satisfy VRInputSource")
         if not isinstance(state_source, RobotStateSource):
@@ -158,6 +166,7 @@ class TeleopSession:
         self._executor_worker = ManagedWorker(
             lambda stop: self._executor.run(stop),
             name="robot-action-executor",
+            join_timeout_s=worker_join_timeout_s,
         )
         resources = [
             ("action_executor", executor),
