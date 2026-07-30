@@ -16,12 +16,27 @@ from .h264_encoder import (
     LowLatencyH264Encoder,
     create_h264_encoder,
 )
+from .legacy_jpeg_udp import (
+    LEGACY_JPEG_HEADER,
+    LEGACY_JPEG_HEADER_SIZE,
+    LegacyJpegEncoder,
+    LegacyJpegUdpMetrics,
+    LegacyJpegUdpTransport,
+    create_legacy_jpeg_encoder,
+    create_legacy_jpeg_udp,
+    packetize_legacy_jpeg,
+)
 
 __all__ = [
     "FrameProcessor",
     "FrameTransform",
     "H264EncoderSettings",
     "LatestVideoEncodingPipeline",
+    "LEGACY_JPEG_HEADER",
+    "LEGACY_JPEG_HEADER_SIZE",
+    "LegacyJpegEncoder",
+    "LegacyJpegUdpMetrics",
+    "LegacyJpegUdpTransport",
     "LowLatencyH264Encoder",
     "PackedFrameProcessor",
     "VideoEncoder",
@@ -29,4 +44,7 @@ __all__ = [
     "VideoEncodingMetrics",
     "VideoTransport",
     "create_h264_encoder",
+    "create_legacy_jpeg_encoder",
+    "create_legacy_jpeg_udp",
+    "packetize_legacy_jpeg",
 ]
