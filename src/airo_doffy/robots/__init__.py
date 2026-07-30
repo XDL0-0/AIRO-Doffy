@@ -3,6 +3,7 @@
 from .base import RobotBackend
 from .executor import ExecutorSnapshot, LatestActionExecutor
 from .mock import InjectedRobotError, MockRobotBackend
+from .ur import URRobotBackend, create_ur_backend
 
 __all__ = [
     "ExecutorSnapshot",
@@ -10,4 +11,6 @@ __all__ = [
     "LatestActionExecutor",
     "MockRobotBackend",
     "RobotBackend",
+    "URRobotBackend",
+    "create_ur_backend",
 ]
