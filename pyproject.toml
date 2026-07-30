@@ -10,6 +10,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
+[project.scripts]
+airo-doffy-collect = "airo_doffy.apps.collect:entrypoint"
+airo-doffy-teleop = "airo_doffy.apps.teleop:entrypoint"
+
 [project.optional-dependencies]
 config = [
   "PyYAML>=6.0",
