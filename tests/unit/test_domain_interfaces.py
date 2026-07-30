@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
+from pathlib import Path
 
 from airo_doffy.core import (
     CameraFrame,
@@ -155,18 +157,32 @@ class DomainInterfaceTest(unittest.TestCase):
                 self.assertIsInstance(instance, protocol)
 
     def test_interface_imports_do_not_load_optional_sdks(self) -> None:
-        blocked = (
-            "numpy",
-            "torch",
-            "cv2",
-            "scipy",
-            "pyrealsense2",
-            "aiortc",
-            "serial",
-            "airo_robots",
+        code = """
+import sys
+from airo_doffy.devices.cameras import CameraSource
+from airo_doffy.devices.tactile import TactileSensor
+from airo_doffy.devices.vr import VRInputSource
+from airo_doffy.devices.wrench import WrenchSource
+from airo_doffy.recording import EpisodeRecorder
+from airo_doffy.robots import RobotBackend
+from airo_doffy.streaming.video import FrameProcessor, VideoEncoder, VideoTransport
+from airo_doffy.teleop.mappings import TeleopMapping
+from airo_doffy.teleop.safety import ActionFilter
+blocked = (
+    "numpy", "torch", "cv2", "scipy", "pyrealsense2",
+    "aiortc", "serial", "airo_robots",
+)
+loaded = [name for name in sys.modules if name.startswith(blocked)]
+assert not loaded, loaded
+"""
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", code],
+            cwd=Path(__file__).resolve().parents[2],
+            check=False,
+            capture_output=True,
+            text=True,
         )
-        loaded = [name for name in sys.modules if name.startswith(blocked)]
-        self.assertEqual(loaded, [])
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
