@@ -208,8 +208,9 @@ semantics:
 | state | unordered, unreliable | latest only | pose, joints, gripper, wrench |
 | commands | ordered, reliable | bounded queue + dedupe | start/stop recording, rollback, recalibrate, stop |
 
-Both paths use versioned binary envelopes, timestamps, sequence numbers, payload
-length validation, and CRC32. See [communication](docs/communication.md) for
+The state path uses a versioned binary envelope; the command path uses strict
+versioned JSON. Both validate timestamps, sequences, lengths, enums, and
+reserved fields as applicable. See [communication](docs/communication.md) for
 wire details and Unity migration notes.
 
 ## Recording
