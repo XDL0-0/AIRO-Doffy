@@ -8,6 +8,7 @@ from .binary_v2 import (
     decode_vr_binary_v2,
     encode_vr_binary_v2,
 )
+from .mock import MockVRInputSource, create_mock_vr
 from .protocol import (
     decode_vr_message,
     decode_vr_input,
@@ -22,6 +23,7 @@ __all__ = [
     "RawVRTransport",
     "VRReceiver",
     "VRReceiverStats",
+    "MockVRInputSource",
     "BINARY_V2_HEADER",
     "BINARY_V2_MAGIC",
     "BINARY_V2_VERSION",
@@ -31,5 +33,6 @@ __all__ = [
     "detect_packet_type",
     "parse_data",
     "parse_hand_data",
+    "create_mock_vr",
     "encode_vr_binary_v2",
 ]
