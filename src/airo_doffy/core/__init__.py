@@ -5,6 +5,8 @@ from .clocks import Clock, MonotonicClock, WallClock
 from .errors import (
     AiroDoffyError,
     BufferClosedError,
+    CommandRejectedError,
+    CommandTimeoutError,
     LifecycleError,
     ModelValidationError,
     OptionalDependencyError,
@@ -47,6 +49,8 @@ __all__ = [
     "Clock",
     "ClockDomain",
     "Closable",
+    "CommandRejectedError",
+    "CommandTimeoutError",
     "ControllerButton",
     "ControllerState",
     "EncodedFrame",

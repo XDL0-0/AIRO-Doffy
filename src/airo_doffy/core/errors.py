@@ -23,3 +23,11 @@ class OptionalDependencyError(AiroDoffyError, ImportError):
 
 class VideoEncodingError(AiroDoffyError, RuntimeError):
     """A configured video encoder could not initialize or encode a frame."""
+
+
+class CommandTimeoutError(AiroDoffyError, TimeoutError):
+    """A reliable command did not receive an acknowledgement before its deadline."""
+
+
+class CommandRejectedError(AiroDoffyError, RuntimeError):
+    """A command handler rejected a valid command without executing it."""

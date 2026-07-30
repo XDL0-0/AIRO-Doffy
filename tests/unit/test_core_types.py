@@ -241,6 +241,21 @@ class RuntimeMessageAndClockTest(unittest.TestCase):
         )
         self.assertEqual(command.kind, RuntimeCommandType.SET_VIDEO_PROFILE)
         self.assertEqual(pickle.loads(pickle.dumps(command)), command)
+        for kind, value in (
+            (RuntimeCommandType.SET_TELEOP_MODE, "hand"),
+            (RuntimeCommandType.SET_CAMERA_ZOOM, "1.5"),
+            (RuntimeCommandType.SET_CAMERA_RESOLUTION, "1280x720"),
+        ):
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    RuntimeCommand(
+                        kind=kind,
+                        value=value,
+                        sequence=2,
+                        source_timestamp_ns=11,
+                    ).value,
+                    value,
+                )
         with self.assertRaises(ModelValidationError):
             RuntimeCommand(
                 kind=RuntimeCommandType.START_RECORDING,

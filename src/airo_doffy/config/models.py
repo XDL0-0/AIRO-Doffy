@@ -569,13 +569,31 @@ class CommandTransportConfig:
     """Reliable ordered runtime-command channel policy."""
 
     transport: str = "webrtc"
+    channel_label: str = "commands"
     ordered: bool = True
     reliable: bool = True
+    ack_timeout_s: float = 1.0
+    dedupe_capacity: int = 1024
 
     def __post_init__(self) -> None:
         if self.transport.lower() != "webrtc" or not self.ordered or not self.reliable:
             raise ModelValidationError("command transport must be reliable ordered WebRTC")
         object.__setattr__(self, "transport", "webrtc")
+        object.__setattr__(
+            self,
+            "channel_label",
+            _text(self.channel_label, "channel_label"),
+        )
+        object.__setattr__(
+            self,
+            "ack_timeout_s",
+            _positive(self.ack_timeout_s, "ack_timeout_s"),
+        )
+        object.__setattr__(
+            self,
+            "dedupe_capacity",
+            _integer(self.dedupe_capacity, "dedupe_capacity", 1),
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

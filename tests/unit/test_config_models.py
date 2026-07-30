@@ -154,6 +154,9 @@ class TypedConfigModelTest(unittest.TestCase):
         self.assertEqual(config.state_transport.channel_label, "realtime_state")
         self.assertFalse(config.state_transport.ordered)
         self.assertEqual(config.state_transport.max_retransmits, 0)
+        self.assertEqual(config.command_transport.channel_label, "commands")
+        self.assertEqual(config.command_transport.ack_timeout_s, 1.0)
+        self.assertEqual(config.command_transport.dedupe_capacity, 1024)
         self.assertEqual(config.visualization, VisualizationConfig())
 
     def test_realman_defaults_and_timing_validation(self) -> None:
@@ -210,6 +213,12 @@ class TypedConfigModelTest(unittest.TestCase):
             StateTransportConfig(channel_label="")
         with self.assertRaises(ModelValidationError):
             CommandTransportConfig(reliable=False)
+        with self.assertRaises(ModelValidationError):
+            CommandTransportConfig(channel_label="")
+        with self.assertRaises(ModelValidationError):
+            CommandTransportConfig(ack_timeout_s=0)
+        with self.assertRaises(ModelValidationError):
+            CommandTransportConfig(dedupe_capacity=0)
 
     def test_sections_are_frozen(self) -> None:
         config = AiroDoffyConfig()

@@ -17,7 +17,13 @@ class RuntimeCommandType(str, Enum):
     STOP_RECORDING = "stop_recording"
     ROLLBACK_LAST_EPISODE = "rollback_last_episode"
     RECALIBRATE_TACTILE = "recalibrate_tactile"
+    RESET_WRENCH_BASELINE = "reset_wrench_baseline"
     RESET_TELEOP_REFERENCE = "reset_teleop_reference"
+    SET_TELEOP_MODE = "set_teleop_mode"
+    SET_CAMERA_ZOOM = "set_camera_zoom"
+    SET_CAMERA_RESOLUTION = "set_camera_resolution"
+    SAFE_HOLD = "safe_hold"
+    CONTROLLED_STOP = "controlled_stop"
     PAUSE = "pause"
     RESUME = "resume"
     SET_VIDEO_PROFILE = "set_video_profile"
@@ -72,9 +78,17 @@ class RuntimeCommand:
             kind = RuntimeCommandType(self.kind)
         except (TypeError, ValueError) as exc:
             raise ModelValidationError(f"unsupported runtime command: {self.kind!r}") from exc
-        if kind is RuntimeCommandType.SET_VIDEO_PROFILE:
+        value_commands = {
+            RuntimeCommandType.SET_VIDEO_PROFILE,
+            RuntimeCommandType.SET_TELEOP_MODE,
+            RuntimeCommandType.SET_CAMERA_ZOOM,
+            RuntimeCommandType.SET_CAMERA_RESOLUTION,
+        }
+        if kind in value_commands:
             if not isinstance(self.value, str) or not self.value.strip():
-                raise ModelValidationError("set_video_profile requires a non-empty string value")
+                raise ModelValidationError(
+                    f"{kind.value} requires a non-empty string value"
+                )
         elif self.value is not None:
             raise ModelValidationError(f"{kind.value} does not accept a value")
         if not isinstance(self.origin, str) or not self.origin.strip():
