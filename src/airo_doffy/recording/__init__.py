@@ -2,6 +2,13 @@
 
 from .base import EpisodeRecorder
 from .errors import ExportQueueFullError, RecordingError, RecordingSchemaMismatchError
+from .export_worker import (
+    ExportResult,
+    ExportTaskKind,
+    ExportTicket,
+    ExportWorker,
+    ExportWorkerMetrics,
+)
 from .samples import Episode, FrozenArray, NamedArray, RecordingSample, SampleBuffer
 from .schema import FieldSpec, RecordingSchema, build_recording_schema, normalize_data_type
 from .state import (
@@ -28,6 +35,11 @@ __all__ = [
     "EpisodeStatus",
     "EpisodeWriter",
     "ExportQueueFullError",
+    "ExportResult",
+    "ExportTaskKind",
+    "ExportTicket",
+    "ExportWorker",
+    "ExportWorkerMetrics",
     "FieldSpec",
     "FrozenArray",
     "HDF5EpisodeWriter",
