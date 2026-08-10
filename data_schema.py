@@ -61,21 +61,27 @@ def should_store_extra_tcp_pose(data_type: str) -> bool:
     return normalized in {"both", "delta_tcp"}
 
 
-def build_data_schema(data_type: str, dof: int) -> DataSchema:
+def build_data_schema(
+    data_type: str,
+    dof: int,
+    gripper: bool = True,
+) -> DataSchema:
     normalized = normalize_data_type(data_type)
-    joint_dim = int(dof) + 1
-    tcp_dim = 8
-    delta_tcp_dim = 7
+    gripper_names = ["gripper"] if gripper else []
+    gripper_dim = int(gripper)
+    joint_dim = int(dof) + gripper_dim
+    tcp_dim = 7 + gripper_dim
+    delta_tcp_dim = 6 + gripper_dim
 
     if normalized == "tcp":
         state_dim = tcp_dim
         action_dim = tcp_dim
-        state_names = ["qx", "qy", "qz", "qw", "x", "y", "z", "gripper"]
-        action_names = ["qx", "qy", "qz", "qw", "x", "y", "z", "gripper"]
+        state_names = ["qx", "qy", "qz", "qw", "x", "y", "z"] + gripper_names
+        action_names = ["qx", "qy", "qz", "qw", "x", "y", "z"] + gripper_names
     elif normalized == "delta_tcp":
         state_dim = joint_dim
         action_dim = delta_tcp_dim
-        state_names = [f"joint_{i}" for i in range(dof)] + ["gripper"]
+        state_names = [f"joint_{i}" for i in range(dof)] + gripper_names
         action_names = [
             "delta_x",
             "delta_y",
@@ -83,13 +89,12 @@ def build_data_schema(data_type: str, dof: int) -> DataSchema:
             "delta_rotvec_x",
             "delta_rotvec_y",
             "delta_rotvec_z",
-            "gripper",
-        ]
+        ] + gripper_names
     else:
         state_dim = joint_dim
         action_dim = joint_dim
-        state_names = [f"joint_{i}" for i in range(dof)] + ["gripper"]
-        action_names = [f"joint_{i}" for i in range(dof)] + ["gripper"]
+        state_names = [f"joint_{i}" for i in range(dof)] + gripper_names
+        action_names = [f"joint_{i}" for i in range(dof)] + gripper_names
 
     return DataSchema(
         data_type=normalized,
@@ -98,4 +103,5 @@ def build_data_schema(data_type: str, dof: int) -> DataSchema:
         action_dim=action_dim,
         state_names=state_names,
         action_names=action_names,
+        gripper_dim=gripper_dim,
     )

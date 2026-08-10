@@ -17,7 +17,7 @@ lerobot
 
 # airo robotics stack
 airo-camera-toolkit
-airo-robots
+airo-robots[realman,ur]
 airo-spatial-algebra
 ur-analytic-ik
 

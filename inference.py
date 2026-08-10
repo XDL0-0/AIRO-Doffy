@@ -62,6 +62,7 @@ POLICY_CLASS_MAP = {
     "ddpm_dit": "lerobot_policy_actiongen.ddpm_dit.modeling_ddpm_dit.DDPMDiTPolicy",
     "fm_unet": "lerobot_policy_actiongen.fm_unet.modeling_fm_unet.FMUnetPolicy",
     "fm_dit": "lerobot_policy_actiongen.fm_dit.modeling_fm_dit.FMDiTPolicy",
+    "forceflowpp": "policies.forceflowpp.modeling_forceflowpp.ForceFlowPPPolicy",
 }
 
 
@@ -267,7 +268,12 @@ class InferenceRobotController:
         self.gripper = self.backend.gripper
         self.dof = self.backend.dof
         self.initial_joint = self.backend.initial_joint_configuration(cfg.INITIAL_JOINT)
-        self.schema = build_data_schema(cfg.DATA_TYPE, self.dof)
+        self.gripper_enabled = cfg.GRIPPER
+        self.schema = build_data_schema(
+            cfg.DATA_TYPE,
+            self.dof,
+            gripper=self.gripper_enabled,
+        )
         self.state_representation = state_representation(cfg.DATA_TYPE)
         self.action_representation = action_representation(cfg.DATA_TYPE)
         self.last_tcp_quat: np.ndarray | None = None
@@ -327,11 +333,14 @@ class InferenceRobotController:
 
     def get_state(self) -> np.ndarray:
         """Return observation.state according to Config.DATA_TYPE and robot DoF."""
-        gripper = self._normalize_gripper_width(self.gripper.get_current_width())
         if self.state_representation == "tcp":
-            return np.concatenate([self.get_tcp_pose_extra(), [gripper]]).astype(np.float32)
-        joints = np.asarray(self.backend.get_joint_configuration(), dtype=float)
-        return np.concatenate([joints, [gripper]]).astype(np.float32)
+            state = self.get_tcp_pose_extra()
+        else:
+            state = np.asarray(self.backend.get_joint_configuration(), dtype=np.float32)
+        if self.gripper_enabled:
+            gripper = self._normalize_gripper_width(self.gripper.get_current_width())
+            state = np.concatenate([state, [gripper]]).astype(np.float32)
+        return state
 
     def get_tcp_pose_extra(self) -> np.ndarray:
         """TCP pose as [qx, qy, qz, qw, x, y, z], matching DATA_TYPE='both'."""
@@ -369,16 +378,23 @@ class InferenceRobotController:
         from airo_spatial_algebra.se3 import SE3Container
 
         action = np.asarray(action, dtype=np.float64)
-        if action.shape[0] >= 8:
+        if self.gripper_enabled and action.shape[0] >= 8:
             tcp = SE3Container.from_quaternion_and_translation(action[:4], action[4:7])
             gripper = float(action[7])
-        elif action.shape[0] >= 7:
+        elif self.gripper_enabled and action.shape[0] >= 7:
             tcp = SE3Container.from_rotation_vector_and_translation(action[3:6], action[:3])
             gripper = float(action[6])
+        elif not self.gripper_enabled and action.shape[0] >= 7:
+            tcp = SE3Container.from_quaternion_and_translation(action[:4], action[4:7])
+            gripper = None
+        elif not self.gripper_enabled and action.shape[0] >= 6:
+            tcp = SE3Container.from_rotation_vector_and_translation(action[3:6], action[:3])
+            gripper = None
         else:
+            suffix = ",gripper" if self.gripper_enabled else ""
             raise ValueError(
-                "TCP action must be [qx,qy,qz,qw,x,y,z,gripper] or "
-                "[x,y,z,rx,ry,rz,gripper]."
+                f"TCP action must be [qx,qy,qz,qw,x,y,z{suffix}] or "
+                f"[x,y,z,rx,ry,rz{suffix}]."
             )
         return tcp.homogeneous_matrix, gripper
 
@@ -417,11 +433,15 @@ class InferenceRobotController:
             target_rotation, target_translation
         )
         self.delta_tcp_target_pose = target.homogeneous_matrix.copy()
-        gripper = float(action[6]) if action.shape[0] > 6 else None
+        gripper = (
+            float(action[6])
+            if self.gripper_enabled and action.shape[0] > 6
+            else None
+        )
         return self.delta_tcp_target_pose, gripper
 
     def _set_gripper_from_normalized(self, gripper: float | None) -> None:
-        if gripper is None:
+        if not self.gripper_enabled or gripper is None:
             return
         self.gripper._set_target_width(self._denormalize_gripper_width(float(gripper)))
 
@@ -454,7 +474,7 @@ class InferenceRobotController:
                 self._set_gripper_from_normalized(gripper)
             return ok
 
-        # Joint action = [joint_targets(dof), gripper_target].
+        # Joint action contains joint targets and, when enabled, a gripper target.
         if action.shape[0] < self.dof:
             raise ValueError(f"Joint action has {action.shape[0]} values, expected at least {self.dof}.")
         joint_target = np.asarray(action[: self.dof], dtype=np.float64)
@@ -472,7 +492,7 @@ class InferenceRobotController:
 
         self.backend.command_joint_configuration(joint_target, dt)
 
-        if len(action) > self.dof:
+        if self.gripper_enabled and len(action) > self.dof:
             self._set_gripper_from_normalized(float(action[self.dof]))
 
         return True
@@ -490,7 +510,8 @@ class InferenceRobotController:
 
     def reset(self) -> None:
         self.delta_tcp_target_pose = None
-        self.gripper.move(cfg.GRIPPER_MAX)
+        if self.gripper_enabled:
+            self.gripper.move(cfg.GRIPPER_MAX)
         self.backend.reset(self.initial_joint)
         time.sleep(1.0)
         utils.logger.info("Robot reset to initial pose.")
@@ -528,7 +549,11 @@ class InferenceCameraManager:
             utils.logger.warning("No Realsense cameras detected!")
 
     def get_images(self) -> dict[str, np.ndarray]:
-        return {n: c.get_rgb_image() for n, c in self.cameras.items()}
+        images = {}
+        for name, camera in self.cameras.items():
+            camera.grab_images()
+            images[name] = camera.retrieve_rgb_image()
+        return images
 
 
 class TactileDataHolder:
@@ -767,10 +792,8 @@ def main() -> None:
         default="joint",
         choices=["joint", "joint_configuration", "qpos", "tcp", "tcp_quat", "delta_tcp"],
         help=(
-            "Policy action representation. joint/joint_configuration/qpos expects "
-            "[joint0..joint5, gripper]; tcp expects [qx,qy,qz,qw,x,y,z,gripper] "
-            "or [x,y,z,rx,ry,rz,gripper]; delta_tcp expects "
-            "[dx,dy,dz,drx,dry,drz,gripper]."
+            "Policy action representation. A final gripper value is expected only "
+            "when Config.GRIPPER is enabled."
         ),
     )
     args = parser.parse_args()
@@ -785,6 +808,7 @@ def main() -> None:
     utils.logger.info(f"Device:  {device}")
     utils.logger.info(f"Control: {'torque' if cfg.TORQUE_MODE else 'position'}")
     utils.logger.info(f"Action:  {action_type}")
+    utils.logger.info(f"Gripper: {cfg.GRIPPER}")
     utils.logger.info(f"Tactile: {tactile_mode}")
     utils.logger.info(
         f"FPS: {args.fps}  |  Episodes: {args.episodes}  |  Max steps: {args.max_steps}"

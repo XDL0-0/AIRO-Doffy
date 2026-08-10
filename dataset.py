@@ -24,8 +24,10 @@ class DatasetRecorder:
         robot_type: str | None = None,
         force_collect: bool | None = None,
         torque_collect: bool | None = None,
+        gripper: bool | None = None,
+        config: Config | None = None,
     ):
-        cfg = Config()
+        cfg = Config() if config is None else config
         self.save_eef = cfg.SAVE_EEF
         self.task_description = cfg.TASK_NAME
         self.camera_num = camera_num
@@ -33,8 +35,21 @@ class DatasetRecorder:
         self.data_type = cfg.DATA_TYPE
         self.robot_dof = int(robot_dof if robot_dof is not None else len(cfg.INITIAL_JOINT))
         self.robot_type = robot_type or cfg.ROBOT_TYPE
-        self.schema = build_data_schema(self.data_type, self.robot_dof)
+        self.gripper = bool(gripper) if gripper is not None else cfg.GRIPPER
+        self.schema = build_data_schema(
+            self.data_type,
+            self.robot_dof,
+            gripper=self.gripper,
+        )
         self.push_to_hub = cfg.PUSH_TO_HUB if self.dataset_type == "l" else False
+        self.lerobot_image_writer_processes = int(
+            cfg.LEROBOT_IMAGE_WRITER_PROCESSES
+        )
+        self.lerobot_image_writer_threads = int(
+            cfg.LEROBOT_IMAGE_WRITER_THREADS
+        )
+        self.lerobot_video_codec = str(cfg.LEROBOT_VIDEO_CODEC)
+        self.lerobot_encoder_threads = int(cfg.LEROBOT_ENCODER_THREADS)
         self.tactile_mode = cfg.TACTILE_TRANSFER
         self.tactile_shape = tuple(cfg.TACTILE_SHAPE)
         self.force_collect = bool(force_collect) if force_collect is not None else cfg.FORCE_COLLECT
@@ -68,6 +83,7 @@ class DatasetRecorder:
         utils.logger.info(f"Dataset Type: {self.dataset_type}")
         utils.logger.info(f"Data Type: {self.data_type}")
         utils.logger.info(f"Robot DoF: {self.robot_dof}")
+        utils.logger.info(f"Gripper: {self.gripper}")
         utils.logger.info(f"State dim: {self.state_dim}")
         utils.logger.info(f"Action dim: {self.action_dim}")
         if self.tactile_mode:
@@ -189,7 +205,12 @@ class DatasetRecorder:
         expected_keys = set(features.keys())
 
         try:
-            probe_dataset = LeRobotDataset(repo_id=repo_id, root=root)
+            probe_dataset = LeRobotDataset(
+                repo_id=repo_id,
+                root=root,
+                vcodec=self.lerobot_video_codec,
+                encoder_threads=self.lerobot_encoder_threads,
+            )
 
             loaded_keys = {
                 k for k in probe_dataset.features
@@ -210,9 +231,18 @@ class DatasetRecorder:
             self.recorded_episodes = probe_dataset.num_episodes
             probe_dataset = None
             if hasattr(LeRobotDataset, "resume"):
-                self.lerobot_dataset = LeRobotDataset.resume(repo_id=repo_id, root=root)
+                self.lerobot_dataset = LeRobotDataset.resume(
+                    repo_id=repo_id,
+                    root=root,
+                )
             else:
-                self.lerobot_dataset = LeRobotDataset(repo_id=repo_id, root=root)
+                self.lerobot_dataset = LeRobotDataset(
+                    repo_id=repo_id,
+                    root=root,
+                    vcodec=self.lerobot_video_codec,
+                    encoder_threads=self.lerobot_encoder_threads,
+                )
+            self._start_lerobot_image_writer()
             utils.logger.warning(
                 f"LeRobot Dataset found. Continuing from episode {self.recorded_episodes}"
             )
@@ -228,9 +258,32 @@ class DatasetRecorder:
                 robot_type=self.robot_type,
                 features=features,
                 use_videos=True,
-                image_writer_processes=0,
+                image_writer_processes=self.lerobot_image_writer_processes,
+                image_writer_threads=self.lerobot_image_writer_threads,
+                vcodec=self.lerobot_video_codec,
+                encoder_threads=self.lerobot_encoder_threads,
             )
             self.recorded_episodes = 0
+
+    def _start_lerobot_image_writer(self) -> None:
+        if self.lerobot_dataset is None:
+            return
+        start = getattr(self.lerobot_dataset, "start_image_writer", None)
+        if callable(start):
+            start(
+                self.lerobot_image_writer_processes,
+                self.lerobot_image_writer_threads,
+            )
+
+    def _finalize_lerobot_dataset(self) -> None:
+        if self.lerobot_dataset is None:
+            return
+        try:
+            self.lerobot_dataset.finalize()
+        finally:
+            stop = getattr(self.lerobot_dataset, "stop_image_writer", None)
+            if callable(stop):
+                stop()
 
     # ── Data collection ───────────────────────────────────────────────────
 
@@ -415,7 +468,14 @@ class DatasetRecorder:
             exported = True
 
         if exported:
+            # The recorder already has the authoritative length while the
+            # episode is being finalized.  Keep it for the live visualizer
+            # instead of immediately depending on newly written metadata.
+            episode_index = self.recorded_episodes
+            episode_length = int(self.collect_step)
             self.recorded_episodes += 1
+            self._last_episode_length_cache = episode_length
+            self._last_episode_length_cache_for = episode_index
         utils.logger.info(f"Saving took {time.time() - t0:.1f}s")
 
     def recording_status(self, collecting: bool = False) -> dict[str, object]:
@@ -431,11 +491,16 @@ class DatasetRecorder:
 
     def _cached_last_episode_length(self) -> int | None:
         episode_index = self.recorded_episodes - 1
-        if self._last_episode_length_cache_for == episode_index:
+        if (
+            self._last_episode_length_cache_for == episode_index
+            and self._last_episode_length_cache is not None
+        ):
             return self._last_episode_length_cache
-        self._last_episode_length_cache_for = episode_index
-        self._last_episode_length_cache = self._last_episode_length(episode_index)
-        return self._last_episode_length_cache
+        last_episode_length = self._last_episode_length(episode_index)
+        if last_episode_length is not None:
+            self._last_episode_length_cache_for = episode_index
+            self._last_episode_length_cache = last_episode_length
+        return last_episode_length
 
     def _last_episode_length(self, episode_index: int) -> int | None:
         if episode_index < 0:
@@ -475,12 +540,11 @@ class DatasetRecorder:
             f"({self.collect_step} frames already added)..."
         )
         self.lerobot_dataset.save_episode()
-        # LeRobot keeps parquet writers open for efficient batch recording.
-        # Closing after each episode writes the parquet footer immediately, so
-        # appended episodes remain replayable even if the recorder stops later.
-        self.lerobot_dataset.finalize()
-        self.lerobot_dataset = None
-        utils.logger.info("LeRobot episode saved and finalized.")
+        # Keep the live recorder open between episodes. Reconstructing a
+        # LeRobotDataset on the first frame of every new episode is expensive
+        # enough to starve a high-rate robot command thread. Writers are
+        # finalized during rollback or shutdown.
+        utils.logger.info("LeRobot episode saved.")
         return True
 
     def _export_hdf5(self, max_timesteps: int, cu_manager) -> None:
@@ -591,7 +655,7 @@ class DatasetRecorder:
             return True
 
         if self.lerobot_dataset is not None:
-            self.lerobot_dataset.finalize()
+            self._finalize_lerobot_dataset()
             self.lerobot_dataset = None
 
         info_path = self.dataset_dir / "meta" / "info.json"
@@ -816,6 +880,6 @@ class DatasetRecorder:
 
     def close(self) -> None:
         if self.dataset_type == "l" and self.lerobot_dataset is not None:
-            self.lerobot_dataset.finalize()
+            self._finalize_lerobot_dataset()
             if self.push_to_hub:
                 self.lerobot_dataset.push_to_hub()
