@@ -262,7 +262,7 @@ def visualizer_publish_loop(
                 teleop.refresh_wrench_snapshot()
             state, _action, wrench, extra = teleop.get_state_snapshot()
         except Exception as exc:
-            state = np.zeros(teleop.dof + 1, dtype=float)
+            state = np.zeros(teleop.schema.state_dim, dtype=float)
             wrench = np.zeros(6, dtype=float)
             extra = {}
             error = str(exc)
@@ -416,6 +416,7 @@ def main() -> None:
         robot_type=teleop.backend.dataset_robot_type,
         force_collect=cfg.FORCE_COLLECT and teleop.backend.supports_force,
         torque_collect=cfg.TORQUE_COLLECT and teleop.backend.supports_force,
+        gripper=teleop.gripper_enabled,
     )
     cu_manager.start_comms_threads()
 

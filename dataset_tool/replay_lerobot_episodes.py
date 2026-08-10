@@ -620,7 +620,8 @@ def run_camera_alignment(episode_idx: int) -> None:
                 if camera is None:
                     continue
 
-                live_frame = live_rgb_to_bgr(camera.get_rgb_image())
+                camera.grab_images()
+                live_frame = live_rgb_to_bgr(camera.retrieve_rgb_image())
                 live_frame = resize_to_match(live_frame, dataset_frame)
                 blended = cv2.addWeighted(dataset_frame, 0.5, live_frame, 0.5, 0)
                 display = np.concatenate(

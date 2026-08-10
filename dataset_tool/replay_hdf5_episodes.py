@@ -107,8 +107,10 @@ for i in range(from_episode_idx, to_episode_idx):
         # dataset_initial_image = dataset_initial_image.transpose(1, 2, 0).astype(np.uint8)
 
         while True:
-            img_0 = data_process(camera_list[f'camera_0'].get_rgb_image())
-            img_1 = data_process(camera_list[f'camera_1'].get_rgb_image())
+            camera_list['camera_0'].grab_images()
+            camera_list['camera_1'].grab_images()
+            img_0 = data_process(camera_list['camera_0'].retrieve_rgb_image())
+            img_1 = data_process(camera_list['camera_1'].retrieve_rgb_image())
             # blend the two images
             blended_image_0 = cv2.addWeighted(dataset_initial_image_0, 0.3, img_0, 0.5, 0)
             blended_image_1 = cv2.addWeighted(dataset_initial_image_1, 0.5, img_1, 0.5, 0)

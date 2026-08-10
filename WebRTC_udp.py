@@ -38,7 +38,7 @@ from airo_camera_toolkit.cameras.realsense.realsense import Realsense
 MAX_CAMERAS = 5
 STREAM_FPS = 30
 TACTILE_FPS = 100
-VR_RECEIVE_HZ = 100
+VR_RECEIVE_HZ = 60
 CONNECTION_TIMEOUT = 60.0
 
 
@@ -49,9 +49,9 @@ class RealsenseCameraTrack(VideoStreamTrack):
     """A VideoStreamTrack that reads frames from a shared camera data dict.
 
     Each instance is bound to one camera index.  The camera read thread
-    (running in the main manager) writes BGR images into *camera_data*; this
-    track's ``recv()`` picks them up, applies zoom, JPEG‑quality conversion,
-    and wraps the result in an ``av.VideoFrame``.
+    (running in the main manager) writes RGB images into *camera_data*; this
+    track's ``recv()`` picks them up, applies zoom, converts to BGR, and wraps
+    the result in an ``av.VideoFrame``.
     """
 
     kind = "video"
@@ -74,20 +74,10 @@ class RealsenseCameraTrack(VideoStreamTrack):
         while raw is None:
             with self._manager._lock:
                 raw = self._manager.camera_data.get(f"camera_{self._cam_idx}")
-                frame_ts_ns = self._manager.camera_data_timestamps_ns.get(
-                    f"camera_{self._cam_idx}", 0
-                )
             if raw is None:
                 await asyncio.sleep(0.005)
 
-        frame_bgr, frame_rgb = self._manager.data_process(raw, self._cam_idx)
-
-        # Store RGB version for dataset collection purposes.
-        with self._manager._lock:
-            self._manager.camera_images[f"camera_{self._cam_idx}"] = frame_rgb
-            self._manager.camera_image_timestamps_ns[
-                f"camera_{self._cam_idx}"
-            ] = frame_ts_ns
+        frame_bgr, _ = self._manager.data_process(raw, self._cam_idx)
 
         video_frame = VideoFrame.from_ndarray(frame_bgr, format="bgr24")
         video_frame.pts = pts
@@ -538,17 +528,24 @@ class WebRTCUDPManager:
         utils.logger.info(f"RX camera thread {idx} starts!")
         while self.running:
             try:
-                img = camera.get_rgb_image()
+                camera.grab_images()
+                img = camera.retrieve_rgb_image()
+                if img.dtype != np.uint8:
+                    img = np.clip(img * 255, 0, 255).astype(np.uint8)
                 depth = None
                 if self.depth_mode:
                     try:
-                        depth = camera._retrieve_depth_map()
+                        depth = camera.retrieve_depth_map()
                     except (RuntimeError, AttributeError):
                         pass
                 with self._lock:
                     capture_ts_ns = time.monotonic_ns()
                     self.camera_data[f"camera_{idx}"] = img
                     self.camera_data_timestamps_ns[f"camera_{idx}"] = capture_ts_ns
+                    # Recording and visualization must not depend on whether a
+                    # WebRTC peer is currently consuming the video track.
+                    self.camera_images[f"camera_{idx}"] = img
+                    self.camera_image_timestamps_ns[f"camera_{idx}"] = capture_ts_ns
                     if depth is not None:
                         self.depth_images[f"camera_{idx}"] = depth
                         self.depth_timestamps_ns[f"camera_{idx}"] = capture_ts_ns

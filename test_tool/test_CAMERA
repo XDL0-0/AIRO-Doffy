@@ -1,0 +1,20 @@
+import cv2
+import matplotlib.pyplot as plt
+from airo_camera_toolkit.cameras.realsense.realsense import Realsense
+
+import numpy as np
+camera = Realsense(fps=30, resolution=Realsense.RESOLUTION_720,enable_depth=False, enable_pointcloud=False,)
+while True:
+    camera.grab_images()
+    image = (camera.retrieve_rgb_image()*255).astype(np.uint8)
+
+    # print(image.dtype)
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    cv2.imshow('image',image_rgb)
+    cv2.waitKey(1)
+#     plt.clf()  # Clear the previously displayed content.
+#     plt.imshow(image)
+#     plt.axis('off')  # Hide the axes.
+#     plt.draw()  # Refresh the image.
+#     plt.pause(0.01)  # Pause briefly so the image can update.
+# plt.show()
