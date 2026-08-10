@@ -5,10 +5,15 @@ import utils
 
 @dataclass
 class Config:
+    # PC_IP: str = "10.10.131.162"
+    # VR_IP: str = "10.10.130.155"
+
+    PC_IP: str = "10.135.223.48"
+    VR_IP: str = "10.135.223.229"
     # ── Robot ──────────────────────────────────────────────────────────────
     # Supported: "ur3e", "ur5e", "realman".
-    ROBOT_TYPE: str = "ur3e"
-    ROBOT_IP: str | None = None
+    ROBOT_TYPE: str = "realman"
+    ROBOT_IP: str | None = "192.168.1.18"
     UR_IP: str = "10.42.0.162"
     REALMAN_PORT: int = 8080
     REALMAN_READ_RETRIES: int = 3
@@ -16,8 +21,8 @@ class Config:
     # Dedicated high-follow CAN-FD stream used by realman_teleop.py.
     # RealMan requires <=10 ms between high-follow setpoints, so keep this
     # strictly above 100 Hz. 200 Hz corresponds to a 5 ms period.
-    REALMAN_CTRL_RATE: int = 200
-    REALMAN_MIN_CANFD_RATE: float = 100.0
+    REALMAN_CTRL_RATE: int = 180
+    REALMAN_MIN_CANFD_RATE: float = 100
     REALMAN_RATE_CHECK_WINDOW: float = 1.0
     # Failed timing windows allowed while establishing the startup rate gate.
     # After verification, a single >10 ms gap/call stops the command stream.
@@ -25,11 +30,25 @@ class Config:
     REALMAN_CANFD_HEARTBEAT_TIMEOUT: float = 0.05
     REALMAN_SENSOR_RATE: float = 30.0
     REALMAN_VR_TIMEOUT: float = 0.25
-    REALMAN_MAX_JOINT_SPEED: float = 2.0  # rad/s, applied before CAN-FD
-    REALMAN_MAX_LINEAR_SPEED: float = 0.25  # m/s
-    REALMAN_MAX_ANGULAR_SPEED: float = 1.0  # rad/s
-    REALMAN_CANFD_TRAJECTORY_MODE: int = 0
-    REALMAN_CANFD_RADIO: int = 0
+    REALMAN_MAX_JOINT_SPEED = 0.5
+    REALMAN_MAX_JOINT_ACCELERATION = 1.0
+
+    REALMAN_MAX_LINEAR_SPEED = 0.25
+    REALMAN_MAX_LINEAR_ACCELERATION = 0.8
+
+    REALMAN_MAX_ANGULAR_SPEED = 0.5
+    REALMAN_MAX_ANGULAR_ACCELERATION = 1.5
+    REALMAN_CANFD_TRAJECTORY_MODE: int = 2
+    REALMAN_CANFD_RADIO: int = 50
+    # Dedicated continuous Cartesian solver recommended by RealMan for
+    # teleoperation. The solver runs at REALMAN_CTRL_RATE and its output is
+    # still passed through the host-side joint speed/safety gates.
+    REALMAN_QP_IK_ENABLE: bool = True
+    REALMAN_QP_DQ_WEIGHT: float = 0.5
+    REALMAN_QP_LIMIT_HOLDON: bool = True
+    # Keep the 7-DoF J4 (or 6-DoF J3) elbow on its initial side of zero.
+    # RealMan warns that a fully straight 0-degree elbow can oscillate.
+    REALMAN_QP_ELBOW_MARGIN_DEG: float = 3.0
     REALMAN_REALTIME_STATE_PUSH: bool = True
     REALMAN_STATE_PUSH_CYCLE_MS: int = 5
     REALMAN_STATE_PUSH_PORT: int = 8098
@@ -37,11 +56,34 @@ class Config:
     REALMAN_FORCE_COORDINATE: int = 0  # 0 sensor, 1 work, 2 tool
     # "joint" preserves the original VR -> IK -> joint-servo path.
     # "tcp" sends TCP targets through the selected backend when possible.
-    TELEOP_COMMAND_MODE: str = "joint"
-    FREEZE_ROTATION: bool = True       # Keep TCP orientation fixed during teleoperation.
+    TELEOP_COMMAND_MODE: str = "tcp"
+    FREEZE_ROTATION: bool = False       # Keep TCP orientation fixed during teleoperation.
 
-    PC_IP: str = "10.10.131.162"
-    VR_IP: str = "10.10.130.155"
+
+
+    # ── TCP tool ──────────────────────────────────────────────────────────
+    # Supported: "Gripper", "None", "Hand". The BrainCo hand is available on
+    # RealMan in both controller mode (joystick presets) and hand-tracking mode.
+    TCP_TOOL: str = "Hand"
+    # Backward-compatible mirror. __post_init__ derives this from TCP_TOOL.
+    GRIPPER: bool = False
+    GRIPPER_SPEED: float = 0.1       # m/s, full range (~0.085m) in ~0.57s
+    GRIPPER_MAX: float = 0.085       # max opening width [m]
+    BRAINCO_HAND_BAUDRATE: int = 460800
+    BRAINCO_HAND_READ_RETRIES: int = 10
+    BRAINCO_HAND_RETRY_DELAY: float = 0.25
+    BRAINCO_HAND_MODE_SETTLE_DELAY: float = 2.0
+    BRAINCO_HAND_MAX_SEND_HZ: float = 50.0
+    # Right joystick Y: forward grabs, backward releases. The action is
+    # edge-triggered and rearms after the stick returns inside this threshold.
+    BRAINCO_HAND_JOYSTICK_THRESHOLD: float = 0.7
+    # Ignore normalized finger changes smaller than this before smoothing.
+    BRAINCO_HAND_DEAD_ZONE: float = 0.015
+    # Set to 0 to disable smoothing while retaining the dead zone.
+    BRAINCO_HAND_FILTER_CUTOFF_HZ: float = 8.0
+    # OpenXR palm-width progress corresponding to the full thumb-rotation range.
+    # The open endpoint is calibrated from the first valid VR hand frame.
+    BRAINCO_THUMB_ROTATE_PROGRESS_RANGE: float = 1.2
 
     # ── Task / Dataset ────────────────────────────────────────────────────
     TASK_NAME: str = "pick_and_place"
@@ -49,6 +91,12 @@ class Config:
     DATASET_TYPE: str = "l"          # 'a' = ACT (hdf5), 'l' = lerobot
     PUSH_TO_HUB: bool = False
     SAVE_EEF: bool = False
+    # Keep image compression and video encoding from starving high-rate robot
+    # command threads during LeRobot recording.
+    LEROBOT_IMAGE_WRITER_PROCESSES: int = 1
+    LEROBOT_IMAGE_WRITER_THREADS: int = 1
+    LEROBOT_VIDEO_CODEC: str = "h264"
+    LEROBOT_ENCODER_THREADS: int = 1
     # Supported: "qpos"/"joint_configuration", "both", "tcp"/"tcp_quat"/"eef", "delta_tcp".
     # "both" keeps joint state/action and stores extra.tcp_pose for conversion or policies.
     DATA_TYPE: str = "both"
@@ -70,7 +118,7 @@ class Config:
     # RESOLUTION_540 = (960, 540)
 
     # RESOLUTION_480 = (640, 480)
-    REALSENSE_FPS: int = 60
+    REALSENSE_FPS: int = 30
 
     # ── Network ───────────────────────────────────────────────────────────
     IP_PORT: int = 8000                  # base port for UDP camera/VR sockets
@@ -80,25 +128,25 @@ class Config:
 
     # ── Video streaming ───────────────────────────────────────────────────
     VIDEO_TRANSPORT: str = "webrtc"      # "udp" = chunked JPEG (camera_udp), "webrtc" = WebRTC_udp
-    JPEG_QUALITY: int = 100
+    JPEG_QUALITY: int = 50
     HD_CHUNK_SIZE: int = 60000          # max payload bytes per UDP chunk
 
     # ── Control rates (Hz) ────────────────────────────────────────────────
-    UR_CTRL_RATE: int = 60
+    UR_CTRL_RATE: int = 100
     KELO_CTRL_RATE: int = 10
     COLLECT_RATE: int = 10
     INFERENCE_FPS: int = 10
 
-    # ── Gripper ───────────────────────────────────────────────────────────
-    # When False, do not connect to/control a gripper.
-    GRIPPER: bool = False
-    GRIPPER_SPEED: float = 0.1       # m/s, full range (~0.085m) in ~0.57s
-    GRIPPER_MAX: float = 0.085       # max opening width [m]
+
 
     # ── Joint configuration ───────────────────────────────────────────────
     # Defaults are selected in __post_init__ so Config(ROBOT_TYPE=...) gets
     # the matching axes and number of joints instead of the class default's.
     VR_TO_ROBOT_AXES: np.ndarray | None = None
+    # Signs for controller-relative rotations in Unity local axes:
+    # [pitch/X, yaw/Y, roll/Z]. RealMan pitch and roll are reversed to match
+    # the physical tool motion.
+    VR_ROTATION_AXIS_SIGNS: np.ndarray | None = None
     INITIAL_JOINT: np.ndarray | None = None
     # INITIAL_JOINT: np.ndarray = field(
     #     default_factory=lambda: np.array([1.57, -2.07, 1.25, -1.2, -1.62, 0])
@@ -113,7 +161,7 @@ class Config:
 
 
     # ── Ruckig OTG ────────────────────────────────────────────────────────
-    RUCKIG_ENABLE: bool = True
+    RUCKIG_ENABLE: bool = False
     RUCKIG_MAX_VEL: np.ndarray = field(
         default_factory=lambda: np.array([2.5, 2.5, 2.5, 3.0, 4.0, 4.0])
     )  # rad/s per joint; larger for wrist joints near the gripper
@@ -150,7 +198,7 @@ class Config:
     INFERENCE_EPISODES: int = 1
 
     # ── Tactile ───────────────────────────────────────────────────────────
-    TACTILE_ENABLE: bool = True          # Start tactile hardware when VR transfer or visualizer needs it.
+    TACTILE_ENABLE: bool = False          # Start tactile hardware when VR transfer or visualizer needs it.
     TACTILE_TRANSFER: bool = False
     TACTILE_PORT: int = 8012             # PC → Quest: tactile sensor data
     TACTILE_READER: str = "ble4"         # "ble4" or "serial"
@@ -172,6 +220,26 @@ class Config:
         from data_schema import normalize_data_type
 
         self.ROBOT_TYPE = self.ROBOT_TYPE.lower()
+        self.TRACKING_MODE = self.TRACKING_MODE.lower()
+        tool_aliases = {
+            "gripper": "Gripper",
+            "none": "None",
+            "hand": "Hand",
+        }
+        requested_tool = str(self.TCP_TOOL).strip().lower()
+        if requested_tool not in tool_aliases:
+            supported = ", ".join(tool_aliases.values())
+            raise ValueError(
+                f"Unsupported TCP_TOOL '{self.TCP_TOOL}'. Supported: {supported}"
+            )
+        self.TCP_TOOL = tool_aliases[requested_tool]
+        if self.TCP_TOOL == "Hand" and self.ROBOT_TYPE != "realman":
+            utils.logger.warning(
+                "TCP_TOOL='Hand' requires ROBOT_TYPE='realman'; "
+                "falling back to TCP_TOOL='None'."
+            )
+            self.TCP_TOOL = "None"
+        self.GRIPPER = self.TCP_TOOL == "Gripper"
         self.DATA_TYPE = normalize_data_type(self.DATA_TYPE)
         if self.VR_TO_ROBOT_AXES is None:
             if self.ROBOT_TYPE == "realman":
@@ -193,24 +261,41 @@ class Config:
                         [0.0, 1.0, 0.0],
                     ]
                 )
+        if self.VR_ROTATION_AXIS_SIGNS is None:
+            self.VR_ROTATION_AXIS_SIGNS = (
+                np.array([-1.0, 1.0, -1.0])
+                if self.ROBOT_TYPE == "realman"
+                else np.ones(3)
+            )
         if self.INITIAL_JOINT is None:
             if self.ROBOT_TYPE == "realman":
                 self.INITIAL_JOINT = np.array(
                     [
-                        2.65586749,
-                        -0.06628761,
-                        -0.14056882,
-                        -1.26216978,
-                        0.11116002,
-                        -1.11919238,
-                        -0.45881216,
+                        2.20,
+                        -0.26,
+                        0.10,
+                        -1.17,
+                        -0.11,
+                        -0.89,
+                        -0.50,
                     ]
                 )
+                        # 2.6,
+                        # -0.725,
+                        # 2.04,
+                        # 1.55,
+                        # 0.73,
+                        # 1.29,
+                        # -1.55
             else:
                 self.INITIAL_JOINT = np.array(
                     [1.57, -1.57, 1.57, -1.57, -1.57, 0.0]
                 )
         self.VR_TO_ROBOT_AXES = np.asarray(self.VR_TO_ROBOT_AXES, dtype=float)
+        self.VR_ROTATION_AXIS_SIGNS = np.asarray(
+            self.VR_ROTATION_AXIS_SIGNS,
+            dtype=float,
+        )
         self.INITIAL_JOINT = np.asarray(self.INITIAL_JOINT, dtype=float)
         if self.VR_TO_ROBOT_AXES.shape != (3, 3):
             raise ValueError("VR_TO_ROBOT_AXES must have shape (3, 3).")
@@ -219,8 +304,16 @@ class Config:
             np.identity(3),
         ):
             raise ValueError("VR_TO_ROBOT_AXES must be an orthogonal axis transform.")
+        if self.VR_ROTATION_AXIS_SIGNS.shape != (3,) or not np.all(
+            np.isin(self.VR_ROTATION_AXIS_SIGNS, (-1.0, 1.0))
+        ):
+            raise ValueError(
+                "VR_ROTATION_AXIS_SIGNS must contain three values, each +1 or -1."
+            )
         if self.TELEOP_COMMAND_MODE not in {"joint", "tcp"}:
             raise ValueError(f"Unsupported TELEOP_COMMAND_MODE: {self.TELEOP_COMMAND_MODE}")
+        if self.TRACKING_MODE not in {"controller", "hand"}:
+            raise ValueError(f"Unsupported TRACKING_MODE: {self.TRACKING_MODE}")
         if self.ROBOT_IP is None and self.ROBOT_TYPE in {"ur3e", "ur5e"}:
             self.ROBOT_IP = self.UR_IP
         if self.ROBOT_IP is None:
@@ -233,6 +326,30 @@ class Config:
             raise ValueError("REALMAN_READ_RETRIES must be at least 1.")
         if self.REALMAN_RETRY_DELAY < 0.0:
             raise ValueError("REALMAN_RETRY_DELAY cannot be negative.")
+        if self.BRAINCO_HAND_BAUDRATE not in {9600, 115200, 256000, 460800}:
+            raise ValueError("Unsupported BRAINCO_HAND_BAUDRATE.")
+        if self.BRAINCO_HAND_READ_RETRIES < 1:
+            raise ValueError("BRAINCO_HAND_READ_RETRIES must be at least 1.")
+        if self.BRAINCO_HAND_RETRY_DELAY < 0.0:
+            raise ValueError("BRAINCO_HAND_RETRY_DELAY cannot be negative.")
+        if self.BRAINCO_HAND_MODE_SETTLE_DELAY < 0.0:
+            raise ValueError("BRAINCO_HAND_MODE_SETTLE_DELAY cannot be negative.")
+        if self.BRAINCO_HAND_MAX_SEND_HZ <= 0.0:
+            raise ValueError("BRAINCO_HAND_MAX_SEND_HZ must be positive.")
+        if not 0.0 < self.BRAINCO_HAND_JOYSTICK_THRESHOLD <= 1.0:
+            raise ValueError(
+                "BRAINCO_HAND_JOYSTICK_THRESHOLD must be in (0, 1]."
+            )
+        if not 0.0 <= self.BRAINCO_HAND_DEAD_ZONE < 1.0:
+            raise ValueError("BRAINCO_HAND_DEAD_ZONE must be in [0, 1).")
+        if self.BRAINCO_HAND_FILTER_CUTOFF_HZ < 0.0:
+            raise ValueError(
+                "BRAINCO_HAND_FILTER_CUTOFF_HZ cannot be negative."
+            )
+        if self.BRAINCO_THUMB_ROTATE_PROGRESS_RANGE <= 0.0:
+            raise ValueError(
+                "BRAINCO_THUMB_ROTATE_PROGRESS_RANGE must be positive."
+            )
         if self.REALMAN_MIN_CANFD_RATE < 100.0:
             raise ValueError(
                 "REALMAN_MIN_CANFD_RATE must be at least 100 Hz."
@@ -256,10 +373,28 @@ class Config:
             raise ValueError("REALMAN_VR_TIMEOUT must be positive.")
         if self.REALMAN_MAX_JOINT_SPEED <= 0.0:
             raise ValueError("REALMAN_MAX_JOINT_SPEED must be positive.")
+        if self.REALMAN_MAX_JOINT_ACCELERATION <= 0.0:
+            raise ValueError(
+                "REALMAN_MAX_JOINT_ACCELERATION must be positive."
+            )
         if self.REALMAN_MAX_LINEAR_SPEED <= 0.0:
             raise ValueError("REALMAN_MAX_LINEAR_SPEED must be positive.")
+        if self.REALMAN_MAX_LINEAR_ACCELERATION <= 0.0:
+            raise ValueError(
+                "REALMAN_MAX_LINEAR_ACCELERATION must be positive."
+            )
         if self.REALMAN_MAX_ANGULAR_SPEED <= 0.0:
             raise ValueError("REALMAN_MAX_ANGULAR_SPEED must be positive.")
+        if self.REALMAN_MAX_ANGULAR_ACCELERATION <= 0.0:
+            raise ValueError(
+                "REALMAN_MAX_ANGULAR_ACCELERATION must be positive."
+            )
+        if not 0.0 < self.REALMAN_QP_DQ_WEIGHT <= 1.0:
+            raise ValueError("REALMAN_QP_DQ_WEIGHT must be in (0, 1].")
+        if not 0.0 < self.REALMAN_QP_ELBOW_MARGIN_DEG < 90.0:
+            raise ValueError(
+                "REALMAN_QP_ELBOW_MARGIN_DEG must be between 0 and 90 degrees."
+            )
         if self.REALMAN_CANFD_TRAJECTORY_MODE not in {0, 1, 2}:
             raise ValueError("REALMAN_CANFD_TRAJECTORY_MODE must be 0, 1, or 2.")
         if self.REALMAN_CANFD_RADIO < 0:
@@ -293,6 +428,19 @@ class Config:
             utils.logger.warning("SAVE_EEF is redundant when DATA_TYPE='tcp'.")
         if self.DATA_TYPE not in {"qpos", "both", "tcp", "delta_tcp"}:
             raise ValueError(f"Unsupported DATA_TYPE: {self.DATA_TYPE}")
+        if self.LEROBOT_IMAGE_WRITER_PROCESSES < 0:
+            raise ValueError("LEROBOT_IMAGE_WRITER_PROCESSES cannot be negative.")
+        if self.LEROBOT_IMAGE_WRITER_THREADS < 0:
+            raise ValueError("LEROBOT_IMAGE_WRITER_THREADS cannot be negative.")
+        if (
+            self.LEROBOT_IMAGE_WRITER_PROCESSES == 0
+            and self.LEROBOT_IMAGE_WRITER_THREADS == 0
+        ):
+            raise ValueError(
+                "At least one LeRobot image-writer process or thread is required."
+            )
+        if self.LEROBOT_ENCODER_THREADS < 1:
+            raise ValueError("LEROBOT_ENCODER_THREADS must be at least 1.")
         if self.TACTILE_READER not in {"ble4", "serial"}:
             raise ValueError(f"Unsupported TACTILE_READER: {self.TACTILE_READER}")
         if self.FORCE_MOVING_AVERAGE_WINDOW < 1:

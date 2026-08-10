@@ -50,21 +50,35 @@ class RobotTeleop:
         self.ur = self.backend.robot
         self.ik = self.backend.ik_solver
         self.gripper = self.backend.gripper
+        self.hand = self.backend.hand
 
         self.dof = self.backend.dof
         self.initial_joint = self.backend.initial_joint_configuration(cfg.INITIAL_JOINT)
         self.robot_type = cfg.ROBOT_TYPE
         self.control_rate = cfg.UR_CTRL_RATE
         self.control_mode = cfg.TELEOP_COMMAND_MODE
+        self.tcp_tool = self.backend.tcp_tool
+        self.gripper_enabled = self.tcp_tool == "Gripper"
         self.gripper_speed = cfg.GRIPPER_SPEED
         self.gripper_max = cfg.GRIPPER_MAX
         self.data_type = cfg.DATA_TYPE
         self.freeze_rotation = cfg.FREEZE_ROTATION
-        self.schema = build_data_schema(self.data_type, self.dof)
+        self.schema = build_data_schema(
+            self.data_type,
+            self.dof,
+            gripper=self.gripper_enabled,
+        )
         self.state_representation = state_representation(self.data_type)
         self.action_representation = action_representation(self.data_type)
         self.collect_tcp_extra = should_store_extra_tcp_pose(self.data_type)
         self.tcp_transform = cfg.TCP_TRANSFORM
+        self.vr_to_robot_axes = np.asarray(cfg.VR_TO_ROBOT_AXES, dtype=float)
+        self.vr_to_robot_handedness = float(np.linalg.det(self.vr_to_robot_axes))
+        self.vr_angular_axes = self.vr_to_robot_handedness * self.vr_to_robot_axes
+        self.vr_rotation_axis_signs = np.asarray(
+            cfg.VR_ROTATION_AXIS_SIGNS,
+            dtype=float,
+        )
         self.joint_threshold = self._joint_threshold_for_dof(cfg.MOVE_THRESHOLD)
         self.fine_mode = False
         self.last_quat: np.ndarray | None = None
@@ -78,6 +92,8 @@ class RobotTeleop:
         self.tracking_mode = cfg.TRACKING_MODE
         self._controller_reset_trigger_threshold = cfg.CONTROLLER_RESET_TRIGGER_THRESHOLD
         self._controller_reset_held = False
+        self._hand_joystick_motion: str | None = None
+        self._hand_joystick_threshold = cfg.BRAINCO_HAND_JOYSTICK_THRESHOLD
         self._hand_ref_se3: SE3Container | None = None
         self._hand_last_palm: np.ndarray | None = None
         self._hand_initialized = False
@@ -97,12 +113,17 @@ class RobotTeleop:
         )
         utils.logger.info(f"Freeze rotation: {self.freeze_rotation}")
         utils.logger.info(f"Tracking mode: {self.tracking_mode}")
+        utils.logger.info(f"TCP tool: {self.tcp_tool}")
+        utils.logger.info(f"Gripper: {self.gripper_enabled}")
         utils.logger.info(f"Moving to initial joint: {self.initial_joint}")
 
         self.backend.reset(self.initial_joint)
 
-        self.gripper.open()
-        self.gripper_solution_width = self.gripper.get_current_width()
+        if self.gripper_enabled:
+            self.gripper.open()
+            self.gripper_solution_width = self.gripper.get_current_width()
+        else:
+            self.gripper_solution_width = self.gripper_max
         gripper_init = self._normalize_gripper_width(self.gripper_solution_width)
         self.last_joint_bias = 0.0
         self.filtered_joint_target = np.array(self.initial_joint, dtype=float)
@@ -193,6 +214,48 @@ class RobotTeleop:
                 setattr(self, attr, None)
         gc.collect()
 
+    def _disable_hand_tool(self, reason: str) -> None:
+        """Permanently downgrade the active hand tool to None for this run."""
+        close = getattr(self.hand, "close", None)
+        if callable(close):
+            close()
+        self.hand = None
+        self.backend.hand = None
+        self.tcp_tool = "None"
+        self.backend.tcp_tool = "None"
+        self.cfg.TCP_TOOL = "None"
+        utils.logger.warning("%s; falling back to TCP_TOOL='None'.", reason)
+
+    def _process_brainco_joystick(self, right: dict) -> None:
+        """Edge-trigger BrainCo grab/release and advance staged motion."""
+        if self.hand is None or self.tcp_tool != "Hand":
+            self._hand_joystick_motion = None
+            return
+
+        joystick_y = float(right.get("Joystick", (0.0, 0.0))[1])
+        if joystick_y > self._hand_joystick_threshold:
+            motion = "grab"
+        elif joystick_y < -self._hand_joystick_threshold:
+            motion = "release"
+        else:
+            motion = None
+
+        try:
+            if motion is not None and motion != self._hand_joystick_motion:
+                self.hand.request_motion(motion)
+                utils.logger.info(
+                    "BrainCo hand motion: %s (right joystick %s).",
+                    motion,
+                    "forward" if motion == "grab" else "backward",
+                )
+            else:
+                advance = getattr(self.hand, "advance_motion", None)
+                if callable(advance):
+                    advance()
+        except Exception as exc:
+            self._disable_hand_tool(f"BrainCo hand command failed ({exc})")
+        self._hand_joystick_motion = motion
+
     def _get_tool_rotation(self) -> np.ndarray:
         return self._read_tcp_pose()[:3, :3]
 
@@ -213,21 +276,34 @@ class RobotTeleop:
         else:
             self.last_quat = utils.quat_cal(se3.rotation_matrix, self.last_quat)
             quat = self.last_quat
-        return np.concatenate([quat, se3.translation, [gripper_norm]]).astype(np.float32)
+        values = [quat, se3.translation]
+        if self.gripper_enabled:
+            values.append(np.array([gripper_norm]))
+        return np.concatenate(values).astype(np.float32)
 
-    @staticmethod
-    def _delta_tcp_vector(reference_tcp: np.ndarray, target_tcp: np.ndarray, gripper_norm: float) -> np.ndarray:
+    def _delta_tcp_vector(
+        self,
+        reference_tcp: np.ndarray,
+        target_tcp: np.ndarray,
+        gripper_norm: float,
+    ) -> np.ndarray:
         reference = SE3Container.from_homogeneous_matrix(reference_tcp)
         target = SE3Container.from_homogeneous_matrix(target_tcp)
         delta_translation = target.translation - reference.translation
         delta_rotation = target.rotation_matrix @ reference.rotation_matrix.T
         delta_rotvec, _ = cv2.Rodrigues(delta_rotation)
-        return np.concatenate([delta_translation, delta_rotvec.reshape(3), [gripper_norm]]).astype(np.float32)
+        values = [delta_translation, delta_rotvec.reshape(3)]
+        if self.gripper_enabled:
+            values.append(np.array([gripper_norm]))
+        return np.concatenate(values).astype(np.float32)
 
     def _build_state_vector(self, joints: np.ndarray, tcp_pose: np.ndarray, gripper_norm: float) -> np.ndarray:
         if self.state_representation == "tcp":
             return self._tcp_vector(tcp_pose, gripper_norm, action=False)
-        return np.concatenate([np.asarray(joints, dtype=float), [gripper_norm]]).astype(np.float32)
+        state = np.asarray(joints, dtype=np.float32)
+        if self.gripper_enabled:
+            state = np.concatenate([state, [gripper_norm]]).astype(np.float32)
+        return state
 
     def _build_action_vector(
         self,
@@ -242,7 +318,10 @@ class RobotTeleop:
             return self._delta_tcp_vector(reference_tcp, tcp_target, gripper_norm)
         if joint_target is None:
             joint_target = self.previous_joint_action
-        return np.concatenate([np.asarray(joint_target, dtype=float), [gripper_norm]]).astype(np.float32)
+        action = np.asarray(joint_target, dtype=np.float32)
+        if self.gripper_enabled:
+            action = np.concatenate([action, [gripper_norm]]).astype(np.float32)
+        return action
 
     def _publish_snapshot(
         self,
@@ -363,13 +442,45 @@ class RobotTeleop:
         self.SE3_controller_std = self._extract_se3(data)
         self.SE3_tcp_pose_in_base_frame_std = SE3Container.from_homogeneous_matrix(self._read_tcp_pose())
 
-    @staticmethod
-    def _extract_se3(controller_data: list[dict]) -> SE3Container:
+    def _vr_pose_to_robot_se3(
+        self,
+        position: tuple[float, float, float] | np.ndarray,
+        quaternion: tuple[float, float, float, float] | np.ndarray,
+    ) -> SE3Container:
+        """Convert a Unity/Quest pose into the configured robot base axes."""
+        position_vr = np.asarray(position, dtype=float)
+        quaternion_vr = np.asarray(quaternion, dtype=float)
+        position_robot = self.vr_to_robot_axes @ position_vr
+        quaternion_robot = np.concatenate(
+            [
+                self.vr_to_robot_handedness
+                * (self.vr_to_robot_axes @ quaternion_vr[:3]),
+                quaternion_vr[3:],
+            ]
+        )
+        return SE3Container.from_quaternion_and_translation(
+            quaternion_robot,
+            position_robot,
+        )
+
+    def _extract_se3(self, controller_data: list[dict]) -> SE3Container:
         r = controller_data[1]["Rotation"]
         p = controller_data[1]["Position"]
-        rotation_rh = np.array([r[0], r[2], -r[1], r[3]])
-        position_rh = np.array([-p[0], -p[2], p[1]])
-        return SE3Container.from_quaternion_and_translation(rotation_rh, position_rh)
+        return self._vr_pose_to_robot_se3(p, r)
+
+    def _remap_controller_rotation_vector(
+        self,
+        rotation_vector_robot: np.ndarray,
+    ) -> np.ndarray:
+        """Map Unity-local pitch/yaw/roll onto EEF pitch/yaw/roll."""
+
+        rotation_vector_vr = (
+            self.vr_angular_axes.T
+            @ np.asarray(rotation_vector_robot, dtype=float)
+        )
+        rotation_vector_vr *= self.vr_rotation_axis_signs
+        pitch, yaw, roll = rotation_vector_vr
+        return np.array([roll, pitch, yaw])
 
     def _update_fine_mode(self, controller_data: list[dict], mode_status: str | None) -> None:
         if mode_status == "ON" and not self.fine_mode:
@@ -416,9 +527,13 @@ class RobotTeleop:
         return wrench
 
     def capture_gripper_width(self) -> float:
+        if not self.gripper_enabled:
+            return float(self.gripper_solution_width)
         return float(self.gripper.get_current_width())
 
     def capture_gripper(self) -> np.ndarray:
+        if not self.gripper_enabled:
+            return np.empty((0,), dtype=float)
         return self._gripper_array_from_width(self.capture_gripper_width())
 
     def calibrate_force_sensor(self) -> None:
@@ -445,6 +560,8 @@ class RobotTeleop:
     # ── Gripper and reset ─────────────────────────────────────────────────
 
     def _update_gripper(self, gripper_state: int, dt: float, gripper_width: float) -> None:
+        if not self.gripper_enabled:
+            return
         if gripper_state:
             self.gripper_solution_width += self.gripper_speed * dt * gripper_state
             self.gripper_solution_width = np.clip(self.gripper_solution_width, 0.0, self.gripper_max)
@@ -465,9 +582,11 @@ class RobotTeleop:
             self.gripper._set_target_width(self.gripper_solution_width)
 
     def reset_robot_and_gripper(self) -> None:
-        self.gripper.move(self.gripper_max)
+        if self.gripper_enabled:
+            self.gripper.move(self.gripper_max)
         self.backend.reset(self.initial_joint)
-        self.gripper_solution_width = self.gripper.get_current_width()
+        if self.gripper_enabled:
+            self.gripper_solution_width = self.gripper.get_current_width()
         self.SE3_tcp_pose_in_base_frame_std = SE3Container.from_homogeneous_matrix(self._read_tcp_pose())
         self.filtered_joint_target = np.array(self.initial_joint)
         self.last_sent_target = np.array(self.initial_joint)
@@ -485,7 +604,7 @@ class RobotTeleop:
             gripper_norm,
         )
         self._zero_force_baseline_after_reset()
-        utils.logger.info("---- Reset complete ----")
+        utils.logger.info("---- Robot reset complete ----")
 
     # ── Command helpers ───────────────────────────────────────────────────
 
@@ -553,7 +672,8 @@ class RobotTeleop:
             alpha_t, alpha_r = 1.0, 1.0
 
         rvec, _ = cv2.Rodrigues(rotation_diff)
-        rvec = self.rot_filter.update(rvec.flatten(), dt) * alpha_r
+        rvec = self._remap_controller_rotation_vector(rvec.flatten())
+        rvec = self.rot_filter.update(rvec, dt) * alpha_r
         rotation_diff, _ = cv2.Rodrigues(rvec)
         translation_diff *= alpha_t
 
@@ -603,6 +723,16 @@ class RobotTeleop:
                 self.last_joint_bias = target_j5_clipped - joint_target[5]
                 joint_target[5] = target_j5_clipped
                 tcp_target = self.backend.ik_solver.forward_kinematics(*joint_target) @ self.tcp_transform
+        elif self.backend.name == "realman":
+            joystick_x = float(controller_data[1]["Joystick"][0])
+            self.last_joint_bias += (
+                (joystick_x > 0.8) - (joystick_x < -0.8)
+            ) * 0.01
+            rotation_increment, _ = cv2.Rodrigues(
+                np.asarray([0.0, 0.0, self.last_joint_bias], dtype=float)
+            )
+            tcp_target = np.asarray(tcp_target, dtype=float).copy()
+            tcp_target[:3, :3] = tcp_target[:3, :3] @ rotation_increment
 
         final_joints, final_tcp = self._send_target(tcp_target, dt)
         action_gripper_norm = self._normalize_gripper_width(self.gripper_solution_width)
@@ -623,20 +753,17 @@ class RobotTeleop:
     _RING_TIP_IDX = 20
     _PINKY_TIP_IDX = 25
 
-    @staticmethod
-    def _extract_hand_se3(rh: dict) -> SE3Container:
+    def _extract_hand_se3(self, rh: dict) -> SE3Container:
         wrist_pose = rh.get("wrist_pose")
         if wrist_pose is not None:
             p = wrist_pose["position"]
             r = wrist_pose["rotation"]
-            rotation_rh = np.array([r[0], r[2], -r[1], r[3]])
-            position_rh = np.array([-p[0], -p[2], p[1]])
-            return SE3Container.from_quaternion_and_translation(rotation_rh, position_rh)
+            return self._vr_pose_to_robot_se3(p, r)
 
         p = rh["bones"][0]
-        position_rh = np.array([-p[0], -p[2], p[1]])
-        return SE3Container.from_quaternion_and_translation(
-            np.array([0.0, 0.0, 0.0, 1.0]), position_rh
+        return self._vr_pose_to_robot_se3(
+            p,
+            np.array([0.0, 0.0, 0.0, 1.0]),
         )
 
     def _hand_set_reference(self, hand_se3: SE3Container) -> None:
@@ -696,6 +823,20 @@ class RobotTeleop:
                 return
         self._hand_last_palm = hand_se3.translation.copy()
 
+        if self.hand is not None:
+            try:
+                hand_joints = self.hand.follow_openxr_hand(bones)
+                utils.logger.debug(
+                    "BrainCo hand target: %s",
+                    np.round(hand_joints, 3).tolist(),
+                )
+            except ValueError as exc:
+                # A partially tracked OpenXR frame must not disable otherwise
+                # healthy hand hardware.
+                utils.logger.debug("Ignoring invalid OpenXR hand frame: %s", exc)
+            except Exception as exc:
+                self._disable_hand_tool(f"BrainCo hand command failed ({exc})")
+
         if not self._hand_initialized:
             self._hand_set_reference(hand_se3)
             self.reset_sign = False
@@ -704,18 +845,23 @@ class RobotTeleop:
         tcp_target = self._target_from_delta(self._hand_ref_se3, hand_se3, dt)
         final_joints, final_tcp = self._send_target(tcp_target, dt)
 
-        thumb_tip = np.array(bones[self._THUMB_TIP_IDX])
-        index_tip = np.array(bones[self._INDEX_TIP_IDX])
-        finger_dist = np.linalg.norm(thumb_tip - index_tip)
-        if finger_dist > self._hand_gripper_open:
-            gripper_state = 1
-        elif finger_dist < self._hand_gripper_close:
-            gripper_state = -1
-        else:
-            gripper_state = 0
+        if self.gripper_enabled:
+            thumb_tip = np.array(bones[self._THUMB_TIP_IDX])
+            index_tip = np.array(bones[self._INDEX_TIP_IDX])
+            finger_dist = np.linalg.norm(thumb_tip - index_tip)
+            if finger_dist > self._hand_gripper_open:
+                gripper_state = 1
+            elif finger_dist < self._hand_gripper_close:
+                gripper_state = -1
+            else:
+                gripper_state = 0
 
-        gripper_width_m = self.capture_gripper_width()
-        self._update_gripper(gripper_state, dt, gripper_width_m)
+            gripper_width_m = self.capture_gripper_width()
+            self._update_gripper(gripper_state, dt, gripper_width_m)
+            utils.logger.debug(
+                f"Hand teleop: finger_dist={finger_dist:.3f}m  "
+                f"gripper_state={gripper_state}"
+            )
         action_gripper_norm = self._normalize_gripper_width(self.gripper_solution_width)
         self._publish_snapshot(
             state_joints,
@@ -724,9 +870,6 @@ class RobotTeleop:
             final_joints,
             final_tcp,
             action_gripper_norm,
-        )
-        utils.logger.debug(
-            f"Hand teleop: finger_dist={finger_dist:.3f}m  gripper_state={gripper_state}"
         )
 
     # ── Main step ─────────────────────────────────────────────────────────
@@ -769,7 +912,7 @@ class RobotTeleop:
                         self._last_toggle_time = current_time
                 elif np.linalg.norm(thumb_tip - ring_tip) < self._hand_reset_dist:
                     if (current_time - self._last_reset_time) > 2.0:
-                        utils.logger.warning("Gesture: Resetting Robot and Gripper to Initial Position")
+                        utils.logger.warning("Gesture: Resetting robot to initial position")
                         self.reset_sign = True
                         self.reset_robot_and_gripper()
                         self._reset_hand_reference_state()
@@ -797,9 +940,10 @@ class RobotTeleop:
 
         self._update_fine_mode(controller_data, fine_mode_status)
 
-        x = -controller_data[1]["Joystick"][1]
-        gripper_state = (x > 0.7) - (x < -0.7)
-        self._update_gripper(gripper_state, dt, gripper_width_m)
+        if self.gripper_enabled:
+            x = -controller_data[1]["Joystick"][1]
+            gripper_state = (x > 0.7) - (x < -0.7)
+            self._update_gripper(gripper_state, dt, gripper_width_m)
 
         reset_pressed = (
             bool(controller_data[1]["Joystick_Press"])
@@ -812,6 +956,8 @@ class RobotTeleop:
             self._controller_reset_held = True
             return
         self._controller_reset_held = False
+
+        self._process_brainco_joystick(controller_data[1])
 
         if self._standby_mode(controller_data):
             action_gripper_norm = self._normalize_gripper_width(self.gripper_solution_width)

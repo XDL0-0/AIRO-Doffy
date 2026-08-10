@@ -17,6 +17,7 @@ SDK handle is used concurrently.
 
 from __future__ import annotations
 
+from ctypes import c_float
 from dataclasses import dataclass
 import threading
 import time
@@ -28,6 +29,7 @@ from airo_spatial_algebra.se3 import SE3Container
 
 import utils
 from config import Config
+from dataset import DatasetRecorder
 from force_filter import WrenchFilter
 from robot_backend import RealManBackend, make_robot_backend
 from visualizer_config import VisualizerConfig
@@ -50,6 +52,7 @@ class CanfdLoopSnapshot:
     max_sdk_call_ms: float
     last_command_start_ns: int
     last_command_success_ns: int
+    completed_timing_windows: int
     consecutive_timing_failure_windows: int
     timing_verified: bool
     running: bool
@@ -70,6 +73,163 @@ class RealManStateSnapshot:
     input_stale: bool
 
 
+class RealManRemoteIkSolver:
+    """Thin radians-facing adapter for RealMan's teleoperation QP solver."""
+
+    def __init__(
+        self,
+        arm: Any,
+        api: Any,
+        *,
+        dof: int,
+        period_s: float,
+        initial_joints_radians: np.ndarray,
+        joint_acceleration_limits_radians: np.ndarray,
+        dq_weight: float,
+        limit_holdon: bool,
+        elbow_margin_degrees: float,
+    ) -> None:
+        required = (
+            "rm_algo_ik_remote_init",
+            "rm_algo_set_error_weight",
+            "rm_algo_set_dq_weight",
+            "rm_algo_ik_remote",
+        )
+        missing = [name for name in required if not callable(getattr(arm, name, None))]
+        if missing:
+            raise TypeError(
+                "RealMan SDK is missing teleoperation solver method(s): "
+                + ", ".join(missing)
+            )
+        matrix_type = getattr(api, "rm_Mat_t", None)
+        if matrix_type is None:
+            raise TypeError("RealMan SDK does not expose rm_Mat_t.")
+
+        self.arm = arm
+        self.api = api
+        self.dof = int(dof)
+        self._matrix_type = matrix_type
+        self._output_type = c_float * self.dof
+        self.last_status = 0
+
+        # Targets in this application are absolute poses in the robot work/base
+        # frame, hence tool_or_work=1. dT must match the fixed solver cadence.
+        self.arm.rm_algo_ik_remote_init(float(period_s), 1)
+        self.arm.rm_algo_set_error_weight([1.0] * 6)
+        self.arm.rm_algo_set_dq_weight([float(dq_weight)] * self.dof)
+        set_joint_max_acc = getattr(self.arm, "rm_algo_set_joint_max_acc", None)
+        if callable(set_joint_max_acc):
+            acceleration_limits = np.asarray(
+                joint_acceleration_limits_radians,
+                dtype=float,
+            )
+            if (
+                acceleration_limits.shape != (self.dof,)
+                or np.any(acceleration_limits <= 0.0)
+            ):
+                raise ValueError(
+                    "joint_acceleration_limits_radians must be positive with "
+                    f"shape ({self.dof},)."
+                )
+            # RealMan's algorithm API uses RPM/s; the rest of this application
+            # uses SI radians/s^2.
+            set_joint_max_acc(
+                (acceleration_limits * 60.0 / (2.0 * np.pi)).tolist()
+            )
+        set_limit_holdon = getattr(self.arm, "rm_algo_set_enable_limit_holdon", None)
+        if callable(set_limit_holdon):
+            set_limit_holdon(int(limit_holdon))
+
+        self._configure_nonzero_elbow_limit(
+            np.asarray(initial_joints_radians, dtype=float),
+            float(elbow_margin_degrees),
+        )
+
+    @staticmethod
+    def is_available(arm: Any, api: Any) -> bool:
+        return (
+            api is not None
+            and getattr(api, "rm_Mat_t", None) is not None
+            and callable(getattr(arm, "rm_algo_ik_remote_init", None))
+            and callable(getattr(arm, "rm_algo_ik_remote", None))
+        )
+
+    def _configure_nonzero_elbow_limit(
+        self,
+        initial_joints_radians: np.ndarray,
+        margin_degrees: float,
+    ) -> None:
+        set_limit = getattr(self.arm, "rm_algo_set_joint_limit_angle", None)
+        if not callable(set_limit):
+            utils.logger.warning(
+                "RealMan SDK cannot configure the QP elbow limit; configure a "
+                "nonzero elbow soft limit on the teach pendant."
+            )
+            return
+
+        elbow_index = 3 if self.dof == 7 else 2
+        if initial_joints_radians.shape != (self.dof,):
+            raise ValueError(f"Expected {self.dof} initial RealMan joint angles.")
+        initial_elbow_degrees = float(np.degrees(initial_joints_radians[elbow_index]))
+        if abs(initial_elbow_degrees) <= margin_degrees:
+            raise ValueError(
+                "Initial RealMan elbow is too close to the QP singular boundary: "
+                f"{initial_elbow_degrees:.2f} degrees. Move it beyond "
+                f"+/-{margin_degrees:g} degrees before teleoperation."
+            )
+
+        dof_type = (
+            self.api.rm_dofType_e.DOF_TYPE_7
+            if self.dof == 7
+            else self.api.rm_dofType_e.DOF_TYPE_6
+        )
+        joint = (
+            self.api.rm_jointType_e.JOINT_Q4
+            if self.dof == 7
+            else self.api.rm_jointType_e.JOINT_Q3
+        )
+        if initial_elbow_degrees < 0.0:
+            limit_type = self.api.rm_limitType_e.LIMIT_MAX
+            limit_angle = -margin_degrees
+        else:
+            limit_type = self.api.rm_limitType_e.LIMIT_MIN
+            limit_angle = margin_degrees
+        result = set_limit(dof_type, joint, limit_type, limit_angle)
+        if result != 0:
+            raise RuntimeError(
+                "rm_algo_set_joint_limit_angle failed with RealMan error code "
+                f"{result}."
+            )
+
+    def solve(
+        self,
+        tcp_target: np.ndarray,
+        current_joints_radians: np.ndarray,
+    ) -> np.ndarray | None:
+        tcp_target = np.asarray(tcp_target, dtype=float)
+        current = np.asarray(current_joints_radians, dtype=float)
+        if tcp_target.shape != (4, 4) or not np.all(np.isfinite(tcp_target)):
+            raise ValueError("Expected a finite 4x4 QP TCP target.")
+        if current.shape != (self.dof,) or not np.all(np.isfinite(current)):
+            raise ValueError(f"Expected {self.dof} finite current joint angles.")
+
+        matrix = self._matrix_type(row=4, col=4, data=tcp_target.tolist())
+        q_out = self._output_type()
+        self.last_status = int(
+            self.arm.rm_algo_ik_remote(
+                matrix,
+                np.degrees(current).tolist(),
+                q_out,
+            )
+        )
+        if self.last_status != 0:
+            return None
+        result = np.radians(np.asarray(list(q_out), dtype=float))
+        if result.shape != (self.dof,) or not np.all(np.isfinite(result)):
+            return None
+        return result
+
+
 class CanfdCommandLoop:
     """Continuously send the latest joint or TCP target through RealMan CAN-FD."""
 
@@ -83,11 +243,14 @@ class CanfdCommandLoop:
         minimum_hz: float,
         rate_check_window: float,
         maximum_failure_windows: int,
-        trajectory_mode: int = 0,
-        radio: int = 0,
+        trajectory_mode: int = 1,
+        radio: int = 60,
         joint_speed_limits: float | np.ndarray | None = None,
+        joint_acceleration_limits: float | np.ndarray | None = None,
         linear_speed_limit: float | None = None,
+        linear_acceleration_limit: float | None = None,
         angular_speed_limit: float | None = None,
+        angular_acceleration_limit: float | None = None,
         heartbeat_timeout: float = 0.05,
     ) -> None:
         if control_mode not in {"joint", "tcp"}:
@@ -137,16 +300,51 @@ class CanfdCommandLoop:
                     f"joint_speed_limits must be positive with shape ({self.dof},)."
                 )
             self.joint_speed_limits = limits
+        if joint_acceleration_limits is None:
+            self.joint_acceleration_limits = np.full(self.dof, np.inf)
+        else:
+            acceleration_limits = np.asarray(
+                joint_acceleration_limits,
+                dtype=float,
+            )
+            if acceleration_limits.ndim == 0:
+                acceleration_limits = np.full(
+                    self.dof,
+                    float(acceleration_limits),
+                )
+            if (
+                acceleration_limits.shape != (self.dof,)
+                or np.any(acceleration_limits <= 0.0)
+            ):
+                raise ValueError(
+                    "joint_acceleration_limits must be positive with shape "
+                    f"({self.dof},)."
+                )
+            self.joint_acceleration_limits = acceleration_limits
         self.linear_speed_limit = (
             np.inf if linear_speed_limit is None else float(linear_speed_limit)
+        )
+        self.linear_acceleration_limit = (
+            np.inf
+            if linear_acceleration_limit is None
+            else float(linear_acceleration_limit)
         )
         self.angular_speed_limit = (
             np.inf if angular_speed_limit is None else float(angular_speed_limit)
         )
+        self.angular_acceleration_limit = (
+            np.inf
+            if angular_acceleration_limit is None
+            else float(angular_acceleration_limit)
+        )
         if self.linear_speed_limit <= 0.0:
             raise ValueError("linear_speed_limit must be positive.")
+        if self.linear_acceleration_limit <= 0.0:
+            raise ValueError("linear_acceleration_limit must be positive.")
         if self.angular_speed_limit <= 0.0:
             raise ValueError("angular_speed_limit must be positive.")
+        if self.angular_acceleration_limit <= 0.0:
+            raise ValueError("angular_acceleration_limit must be positive.")
         self.heartbeat_timeout = float(heartbeat_timeout)
         if self.heartbeat_timeout <= 0.01:
             raise ValueError("heartbeat_timeout must be greater than 10 ms.")
@@ -154,6 +352,12 @@ class CanfdCommandLoop:
         self._target_lock = threading.Lock()
         self._target: np.ndarray | None = None
         self._setpoint: np.ndarray | None = None
+        self._joint_velocity = np.zeros(self.dof)
+        self._linear_velocity = np.zeros(3)
+        self._angular_velocity = np.zeros(3)
+        self._planned_joint_velocity = np.zeros(self.dof)
+        self._planned_linear_velocity = np.zeros(3)
+        self._planned_angular_velocity = np.zeros(3)
         self._hold_requested = False
         self._pending_lock = threading.Lock()
         self._pending_joint_target: (
@@ -163,6 +367,7 @@ class CanfdCommandLoop:
         self._joint_target_resolver: (
             Callable[[np.ndarray, float], np.ndarray | None] | None
         ) = None
+        self._continuous_joint_resolution = False
         self._maintenance_callback: Callable[[], None] | None = None
         self._maintenance_period_ns = 0
 
@@ -176,6 +381,7 @@ class CanfdCommandLoop:
         self._max_sdk_call_ms = 0.0
         self._last_command_start_ns = 0
         self._last_command_success_ns = 0
+        self._completed_timing_windows = 0
         self._consecutive_timing_failure_windows = 0
         self._timing_verified = False
         self._running = False
@@ -192,6 +398,7 @@ class CanfdCommandLoop:
             self._hold_requested = False
             if self._setpoint is None:
                 self._setpoint = target.copy()
+                self._reset_velocity_state()
 
     def set_tcp_target(self, realman_pose: np.ndarray) -> None:
         if self.control_mode != "tcp":
@@ -204,17 +411,21 @@ class CanfdCommandLoop:
             self._hold_requested = False
             if self._setpoint is None:
                 self._setpoint = target.copy()
+                self._reset_velocity_state()
 
     def set_joint_target_resolver(
         self,
         resolver: Callable[[np.ndarray, float], np.ndarray | None],
+        *,
+        continuous: bool = False,
     ) -> None:
         if self.control_mode != "joint":
             raise RuntimeError("A joint target resolver is only valid in joint mode.")
         self._joint_target_resolver = resolver
+        self._continuous_joint_resolution = bool(continuous)
 
     def request_joint_target(self, tcp_pose: np.ndarray, dt: float) -> None:
-        """Queue only the newest TCP target for SDK IK on the CAN-FD owner thread."""
+        """Publish the newest TCP target for IK on the CAN-FD owner thread."""
 
         if self.control_mode != "joint":
             raise RuntimeError("Joint target requests are only valid in joint mode.")
@@ -248,12 +459,14 @@ class CanfdCommandLoop:
             return False
         with self._pending_lock:
             pending = self._pending_joint_target
-            self._pending_joint_target = None
+            if not self._continuous_joint_resolution:
+                self._pending_joint_target = None
         if pending is None:
             return False
         if self._joint_target_resolver is None:
             raise RuntimeError("No joint target resolver was configured.")
-        tcp_pose, dt, generation = pending
+        tcp_pose, request_dt, generation = pending
+        dt = self.period_s if self._continuous_joint_resolution else request_dt
         resolved = self._joint_target_resolver(tcp_pose, dt)
         if resolved is None:
             return False
@@ -280,6 +493,79 @@ class CanfdCommandLoop:
             return delta
         return delta * (maximum_norm / norm)
 
+    def _reset_velocity_state(self) -> None:
+        self._joint_velocity.fill(0.0)
+        self._linear_velocity.fill(0.0)
+        self._angular_velocity.fill(0.0)
+        self._planned_joint_velocity.fill(0.0)
+        self._planned_linear_velocity.fill(0.0)
+        self._planned_angular_velocity.fill(0.0)
+
+    def _limited_joint_step(
+        self,
+        error: np.ndarray,
+        velocity: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        braking_speed = np.full(self.dof, np.inf)
+        finite_acceleration = np.isfinite(self.joint_acceleration_limits)
+        braking_speed[finite_acceleration] = np.sqrt(
+            2.0
+            * self.joint_acceleration_limits[finite_acceleration]
+            * np.abs(error[finite_acceleration])
+        )
+        desired_velocity = np.zeros(self.dof)
+        moving = error != 0.0
+        desired_velocity[moving] = np.sign(error[moving]) * np.minimum(
+            self.joint_speed_limits[moving],
+            braking_speed[moving],
+        )
+        maximum_velocity_change = (
+            self.joint_acceleration_limits * self.period_s
+        )
+        next_velocity = velocity + np.clip(
+            desired_velocity - velocity,
+            -maximum_velocity_change,
+            maximum_velocity_change,
+        )
+        step = next_velocity * self.period_s
+        reaches_target = (
+            (step * error >= 0.0)
+            & (np.abs(step) >= np.abs(error))
+            & (error != 0.0)
+        )
+        step[reaches_target] = error[reaches_target]
+        next_velocity[reaches_target] = 0.0
+        return step, next_velocity
+
+    def _limited_vector_velocity_step(
+        self,
+        error: np.ndarray,
+        velocity: np.ndarray,
+        speed_limit: float,
+        acceleration_limit: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        distance = float(np.linalg.norm(error))
+        if distance == 0.0:
+            desired_velocity = np.zeros(3)
+        else:
+            desired_speed = min(
+                speed_limit,
+                float(np.sqrt(2.0 * acceleration_limit * distance)),
+            )
+            desired_velocity = error * (desired_speed / distance)
+        next_velocity = velocity + self._limit_vector_step(
+            desired_velocity - velocity,
+            acceleration_limit * self.period_s,
+        )
+        step = next_velocity * self.period_s
+        if (
+            distance > 0.0
+            and float(np.dot(step, error)) >= 0.0
+            and float(np.linalg.norm(step)) >= distance
+        ):
+            return error, np.zeros(3)
+        return step, next_velocity
+
     def _next_setpoint(self) -> np.ndarray:
         with self._target_lock:
             if self._target is None or self._setpoint is None:
@@ -287,20 +573,32 @@ class CanfdCommandLoop:
             if self._hold_requested:
                 self._target = self._setpoint.copy()
                 self._hold_requested = False
+                self._reset_velocity_state()
             target = self._target.copy()
             current = self._setpoint.copy()
+            joint_velocity = self._joint_velocity.copy()
+            linear_velocity = self._linear_velocity.copy()
+            angular_velocity = self._angular_velocity.copy()
 
         if self.control_mode == "joint":
             # RealMan joints are bounded, not continuous modulo 2π. Direct
             # interpolation stays inside the interval between two validated
             # joint configurations and cannot wrap across a physical limit.
-            delta = target - current
-            maximum_step = self.joint_speed_limits * self.period_s
-            return current + np.clip(delta, -maximum_step, maximum_step)
+            step, next_velocity = self._limited_joint_step(
+                target - current,
+                joint_velocity,
+            )
+            with self._target_lock:
+                self._planned_joint_velocity = next_velocity
+            return current + step
 
-        translation_delta = self._limit_vector_step(
-            target[:3] - current[:3],
-            self.linear_speed_limit * self.period_s,
+        translation_delta, next_linear_velocity = (
+            self._limited_vector_velocity_step(
+                target[:3] - current[:3],
+                linear_velocity,
+                self.linear_speed_limit,
+                self.linear_acceleration_limit,
+            )
         )
         current_se3 = SE3Container.from_euler_angles_and_translation(
             current[3:],
@@ -312,18 +610,26 @@ class CanfdCommandLoop:
         )
         rotation_delta = current_se3.rotation_matrix.T @ target_se3.rotation_matrix
         rotation_vector, _ = cv2.Rodrigues(rotation_delta)
-        rotation_step = self._limit_vector_step(
-            rotation_vector.reshape(3),
-            self.angular_speed_limit * self.period_s,
+        rotation_step, next_angular_velocity = (
+            self._limited_vector_velocity_step(
+                rotation_vector.reshape(3),
+                angular_velocity,
+                self.angular_speed_limit,
+                self.angular_acceleration_limit,
+            )
         )
         rotation_increment, _ = cv2.Rodrigues(rotation_step)
         next_se3 = SE3Container.from_rotation_matrix_and_translation(
             current_se3.rotation_matrix @ rotation_increment,
             current[:3] + translation_delta,
         )
-        return np.concatenate(
+        next_setpoint = np.concatenate(
             [next_se3.translation, next_se3.orientation_as_euler_angles]
         )
+        with self._target_lock:
+            self._planned_linear_velocity = next_linear_velocity
+            self._planned_angular_velocity = next_angular_velocity
+        return next_setpoint
 
     def _commit_setpoint(self, setpoint: np.ndarray) -> None:
         with self._target_lock:
@@ -331,6 +637,12 @@ class CanfdCommandLoop:
             if self._hold_requested:
                 self._target = self._setpoint.copy()
                 self._hold_requested = False
+                self._reset_velocity_state()
+            elif self.control_mode == "joint":
+                self._joint_velocity = self._planned_joint_velocity.copy()
+            else:
+                self._linear_velocity = self._planned_linear_velocity.copy()
+                self._angular_velocity = self._planned_angular_velocity.copy()
 
     def hold_current_setpoint(self) -> None:
         """Stop progressing toward a pending target at the next CAN-FD packet."""
@@ -342,6 +654,32 @@ class CanfdCommandLoop:
             if self._setpoint is not None:
                 self._target = self._setpoint.copy()
                 self._hold_requested = True
+
+    def target_reached(self) -> bool:
+        """Return whether the rate-limited setpoint has reached its target."""
+
+        with self._target_lock:
+            if self._target is None or self._setpoint is None:
+                return False
+            target = self._target.copy()
+            setpoint = self._setpoint.copy()
+
+        if self.control_mode == "joint":
+            return bool(np.allclose(setpoint, target, rtol=0.0, atol=1e-6))
+
+        if not np.allclose(setpoint[:3], target[:3], rtol=0.0, atol=1e-5):
+            return False
+        setpoint_rotation = SE3Container.from_euler_angles_and_translation(
+            setpoint[3:],
+            setpoint[:3],
+        ).rotation_matrix
+        target_rotation = SE3Container.from_euler_angles_and_translation(
+            target[3:],
+            target[:3],
+        ).rotation_matrix
+        rotation_delta = setpoint_rotation.T @ target_rotation
+        rotation_vector, _ = cv2.Rodrigues(rotation_delta)
+        return float(np.linalg.norm(rotation_vector)) <= 1e-4
 
     def send_once(self) -> None:
         """Send one high-follow packet. Exposed for hardware-adapter tests."""
@@ -403,6 +741,7 @@ class CanfdCommandLoop:
     ) -> tuple[bool, bool]:
         achieved_hz = interval_count / elapsed_s
         with self._stats_lock:
+            self._completed_timing_windows += 1
             first_measurement = self._achieved_hz is None
             self._achieved_hz = achieved_hz
             rate_too_slow = achieved_hz <= self.minimum_hz
@@ -466,6 +805,12 @@ class CanfdCommandLoop:
                     )
                 with self._stats_lock:
                     self._last_command_start_ns = command_start_ns
+                # The teleoperation QP solver is a continuous controller: use
+                # the latest Cartesian target at this loop's fixed dT before
+                # emitting each joint packet. Legacy one-shot IK remains after
+                # the packet so existing adapters do not change behavior.
+                if self._continuous_joint_resolution:
+                    self.resolve_pending_target()
                 self.send_once()
                 command_complete_ns = time.perf_counter_ns()
                 with self._stats_lock:
@@ -515,7 +860,8 @@ class CanfdCommandLoop:
                     window_interval_ns = 0
                     window_gap_violations = 0
 
-                self.resolve_pending_target()
+                if not self._continuous_joint_resolution:
+                    self.resolve_pending_target()
                 if (
                     self._maintenance_callback is not None
                     and time.perf_counter_ns() >= next_maintenance_ns
@@ -560,6 +906,7 @@ class CanfdCommandLoop:
                 max_sdk_call_ms=self._max_sdk_call_ms,
                 last_command_start_ns=self._last_command_start_ns,
                 last_command_success_ns=self._last_command_success_ns,
+                completed_timing_windows=self._completed_timing_windows,
                 consecutive_timing_failure_windows=(
                     self._consecutive_timing_failure_windows
                 ),
@@ -606,11 +953,12 @@ class CanfdCommandLoop:
         stop_event: threading.Event,
         timeout: float | None = None,
     ) -> CanfdLoopSnapshot:
-        """Wait for one clean measured timing window before enabling motion input."""
+        """Wait for a new clean timing window before enabling motion input."""
 
         if timeout is None:
             timeout = self.rate_check_window * (self.maximum_failure_windows + 2)
         deadline = time.monotonic() + timeout
+        initial_window_count = self.snapshot().completed_timing_windows
 
         while time.monotonic() < deadline:
             snapshot = self.snapshot()
@@ -621,7 +969,8 @@ class CanfdCommandLoop:
                 self.report_external_failure(heartbeat_error, stop_event)
                 raise RuntimeError(heartbeat_error)
             if (
-                snapshot.achieved_hz is not None
+                snapshot.completed_timing_windows > initial_window_count
+                and snapshot.achieved_hz is not None
                 and snapshot.achieved_hz > self.minimum_hz
                 and snapshot.consecutive_timing_failure_windows == 0
             ):
@@ -641,7 +990,7 @@ class CanfdCommandLoop:
 
 
 class RealManTeleop:
-    """RealMan-only controller mapping and cached robot sensor state."""
+    """RealMan controller/hand mapping and cached robot sensor state."""
 
     def __init__(
         self,
@@ -653,8 +1002,6 @@ class RealManTeleop:
         self.cfg = Config() if cfg is None else cfg
         if self.cfg.ROBOT_TYPE != "realman":
             raise ValueError("realman_teleop.py requires Config.ROBOT_TYPE='realman'.")
-        if self.cfg.TRACKING_MODE != "controller":
-            raise ValueError("realman_teleop.py supports VR controller tracking only.")
         if self.cfg.GRIPPER:
             raise ValueError("Disable Config.GRIPPER for the RealMan-only teleoperation script.")
         if self.cfg.TACTILE_TRANSFER:
@@ -670,6 +1017,9 @@ class RealManTeleop:
 
             self.dof = int(self.backend.dof)
             self.control_mode = self.cfg.TELEOP_COMMAND_MODE
+            self.tracking_mode = self.cfg.TRACKING_MODE
+            self.tcp_tool = getattr(self.backend, "tcp_tool", self.cfg.TCP_TOOL)
+            self.hand = getattr(self.backend, "hand", None)
             self.joint_threshold = self._joint_threshold_for_dof(self.cfg.MOVE_THRESHOLD)
             self.vr_to_robot_axes = np.asarray(self.cfg.VR_TO_ROBOT_AXES, dtype=float)
             self.vr_to_robot_handedness = float(np.linalg.det(self.vr_to_robot_axes))
@@ -680,6 +1030,7 @@ class RealManTeleop:
             )
 
             initial_joint = self.backend.initial_joint_configuration(self.cfg.INITIAL_JOINT)
+            self.initial_joint = np.asarray(initial_joint, dtype=float).copy()
             utils.logger.info(f"Moving RealMan to initial joint configuration: {initial_joint}")
             self.backend.reset(initial_joint)
 
@@ -730,6 +1081,7 @@ class RealManTeleop:
         self._wrench = np.asarray(wrench, dtype=float)
         self._state_timestamp_ns = now_ns
         self._force_timestamp_ns = now_ns
+        self._action_timestamp_ns = now_ns
         self._state_error = ""
         self._force_error = ""
 
@@ -738,10 +1090,21 @@ class RealManTeleop:
         self._input_stale = False
         self._requires_reference = True
         self._grip_active = False
+        self._controller_reset_held = False
+        self._hand_joystick_motion: str | None = None
+        self._hand_joystick_threshold = (
+            self.cfg.BRAINCO_HAND_JOYSTICK_THRESHOLD
+        )
+        self._wrist_joint_bias = 0.0
+        self._reset_in_progress = False
+        self._reset_requires_grip_release = False
         self._last_joint_target = self._joints.copy()
         self._last_tcp_target = self._tcp_pose.copy()
+        self._initial_tcp_pose = self._tcp_pose.copy()
         self._controller_reference = controller_reference
         self._robot_reference = SE3Container.from_homogeneous_matrix(self._tcp_pose)
+        self._hand_initialized = False
+        self._hand_last_palm: np.ndarray | None = None
 
         self._position_filter = utils.TimeAwareLowPassFilter(
             cutoff_hz=self.cfg.CARTESIAN_POS_FILTER_CUTOFF_HZ,
@@ -762,6 +1125,8 @@ class RealManTeleop:
             raise TypeError("RealMan backend does not expose the vendor SDK arm object.")
         self._raw_arm = raw_arm
         self._realman_api = getattr(self.backend.robot, "_api", None)
+        self._remote_ik_solver: RealManRemoteIkSolver | None = None
+        self._last_remote_ik_status = 0
         self._state_push_callback = None
         self._state_push_active = False
         self._state_push_received = threading.Event()
@@ -777,6 +1142,11 @@ class RealManTeleop:
         joint_speed_limits = np.full(
             self.dof,
             self.cfg.REALMAN_MAX_JOINT_SPEED,
+            dtype=float,
+        )
+        joint_acceleration_limits = np.full(
+            self.dof,
+            self.cfg.REALMAN_MAX_JOINT_ACCELERATION,
             dtype=float,
         )
         linear_speed_limit = float(self.cfg.REALMAN_MAX_LINEAR_SPEED)
@@ -799,6 +1169,27 @@ class RealManTeleop:
                 )
         self._joint_speed_limits = joint_speed_limits
 
+        if self.control_mode == "joint" and self.cfg.REALMAN_QP_IK_ENABLE:
+            if RealManRemoteIkSolver.is_available(raw_arm, self._realman_api):
+                self._remote_ik_solver = RealManRemoteIkSolver(
+                    raw_arm,
+                    self._realman_api,
+                    dof=self.dof,
+                    period_s=1.0 / self.cfg.REALMAN_CTRL_RATE,
+                    initial_joints_radians=self._joints,
+                    joint_acceleration_limits_radians=(
+                        joint_acceleration_limits
+                    ),
+                    dq_weight=self.cfg.REALMAN_QP_DQ_WEIGHT,
+                    limit_holdon=self.cfg.REALMAN_QP_LIMIT_HOLDON,
+                    elbow_margin_degrees=self.cfg.REALMAN_QP_ELBOW_MARGIN_DEG,
+                )
+            else:
+                utils.logger.warning(
+                    "RealMan teleoperation QP solver is unavailable in this SDK; "
+                    "falling back to one-shot inverse kinematics."
+                )
+
         self.canfd = CanfdCommandLoop(
             raw_arm,
             control_mode=self.control_mode,
@@ -810,13 +1201,23 @@ class RealManTeleop:
             trajectory_mode=self.cfg.REALMAN_CANFD_TRAJECTORY_MODE,
             radio=self.cfg.REALMAN_CANFD_RADIO,
             joint_speed_limits=joint_speed_limits,
+            joint_acceleration_limits=joint_acceleration_limits,
             linear_speed_limit=linear_speed_limit,
+            linear_acceleration_limit=(
+                self.cfg.REALMAN_MAX_LINEAR_ACCELERATION
+            ),
             angular_speed_limit=self.cfg.REALMAN_MAX_ANGULAR_SPEED,
+            angular_acceleration_limit=(
+                self.cfg.REALMAN_MAX_ANGULAR_ACCELERATION
+            ),
             heartbeat_timeout=self.cfg.REALMAN_CANFD_HEARTBEAT_TIMEOUT,
         )
         if self.control_mode == "joint":
             self.canfd.set_joint_target(self._last_joint_target)
-            self.canfd.set_joint_target_resolver(self._resolve_joint_target)
+            self.canfd.set_joint_target_resolver(
+                self._resolve_joint_target,
+                continuous=self._remote_ik_solver is not None,
+            )
         else:
             self.canfd.set_tcp_target(self._tool_tcp_to_realman_pose(self._last_tcp_target))
         if not self.cfg.REALMAN_REALTIME_STATE_PUSH:
@@ -840,7 +1241,9 @@ class RealManTeleop:
             )
         utils.logger.info(
             f"RealMan teleop ready - DoF:{self.dof}, mode:{self.control_mode}, "
+            f"tracking:{self.tracking_mode}, tool:{self.tcp_tool}, "
             f"CAN-FD:{self.cfg.REALMAN_CTRL_RATE} Hz, "
+            f"IK:{'QP continuous' if self._remote_ik_solver else 'legacy'}, "
             f"sensors:{sensor_description}"
         )
 
@@ -878,6 +1281,18 @@ class RealManTeleop:
         right = controller_data[1]
         return self._vr_pose_to_robot_se3(right["Position"], right["Rotation"])
 
+    def _extract_hand_se3(self, right_hand: dict) -> SE3Container:
+        wrist_pose = right_hand.get("wrist_pose")
+        if wrist_pose is not None:
+            return self._vr_pose_to_robot_se3(
+                wrist_pose["position"],
+                wrist_pose["rotation"],
+            )
+        return self._vr_pose_to_robot_se3(
+            right_hand["bones"][0],
+            np.array([0.0, 0.0, 0.0, 1.0]),
+        )
+
     def _tool_tcp_to_realman_pose(self, tool_tcp_pose: np.ndarray) -> np.ndarray:
         robot_tcp_pose = np.asarray(tool_tcp_pose, dtype=float) @ self.inv_tcp_transform
         pose = SE3Container.from_homogeneous_matrix(robot_tcp_pose)
@@ -893,6 +1308,7 @@ class RealManTeleop:
         measured_tcp: np.ndarray,
         measured_joints: np.ndarray,
     ) -> None:
+        self._wrist_joint_bias = 0.0
         self._controller_reference = self._extract_controller_se3(controller_data)
         self._robot_reference = SE3Container.from_homogeneous_matrix(measured_tcp)
         self._position_filter.reset()
@@ -907,17 +1323,121 @@ class RealManTeleop:
             dtype=float,
         ).copy()
 
+    def _set_hand_reference(
+        self,
+        hand_pose: SE3Container,
+        measured_tcp: np.ndarray,
+        measured_joints: np.ndarray,
+    ) -> None:
+        self._controller_reference = hand_pose
+        self._robot_reference = SE3Container.from_homogeneous_matrix(measured_tcp)
+        self._position_filter.reset()
+        self._rotation_filter.reset()
+        self._seed_joint_filter(measured_joints)
+        self._last_joint_target = np.asarray(measured_joints, dtype=float).copy()
+        self._last_tcp_target = np.asarray(measured_tcp, dtype=float).copy()
+        self._hand_initialized = True
+
+    def _request_reset(self) -> None:
+        """Return to the startup pose through the active CAN-FD stream."""
+
+        # Cancel any in-flight IK result before publishing the reset target.
+        # Keeping reset inside this command stream avoids concurrent access to
+        # the vendor SDK from the VR thread.
+        self.canfd.hold_current_setpoint()
+        if self.control_mode == "joint":
+            self.canfd.set_joint_target(self.initial_joint)
+            self._last_joint_target = self.initial_joint.copy()
+        else:
+            self.canfd.set_tcp_target(
+                self._tool_tcp_to_realman_pose(self._initial_tcp_pose)
+            )
+        self._last_tcp_target = self._initial_tcp_pose.copy()
+        self._position_filter.reset()
+        self._rotation_filter.reset()
+        self._seed_joint_filter(self.initial_joint)
+        self._requires_reference = True
+        self._grip_active = False
+        self._reset_in_progress = True
+        self._reset_requires_grip_release = True
+        self._action_timestamp_ns = time.monotonic_ns()
+        utils.logger.info("RealMan reset requested; returning to the startup pose.")
+
+    def _disable_hand_tool(self, reason: str) -> None:
+        """Permanently downgrade the active BrainCo tool for this run."""
+        close = getattr(self.hand, "close", None)
+        if callable(close):
+            close()
+        self.hand = None
+        self.backend.hand = None
+        self.tcp_tool = "None"
+        self.backend.tcp_tool = "None"
+        self.cfg.TCP_TOOL = "None"
+        utils.logger.warning("%s; falling back to TCP_TOOL='None'.", reason)
+
+    def _process_brainco_joystick(self, right: dict) -> None:
+        """Edge-trigger BrainCo grab/release and advance staged motion."""
+        if self.hand is None or self.tcp_tool != "Hand":
+            self._hand_joystick_motion = None
+            return
+
+        joystick = right.get("Joystick", (0.0, 0.0))
+        joystick_y = float(joystick[1])
+        if joystick_y > self._hand_joystick_threshold:
+            motion = "grab"
+        elif joystick_y < -self._hand_joystick_threshold:
+            motion = "release"
+        else:
+            motion = None
+
+        try:
+            if motion is not None and motion != self._hand_joystick_motion:
+                self.hand.request_motion(motion)
+                utils.logger.info(
+                    "BrainCo hand motion: %s (right joystick %s).",
+                    motion,
+                    "forward" if motion == "grab" else "backward",
+                )
+            else:
+                advance = getattr(self.hand, "advance_motion", None)
+                if callable(advance):
+                    advance()
+        except Exception as exc:
+            self._disable_hand_tool(f"BrainCo hand command failed ({exc})")
+        self._hand_joystick_motion = motion
+
+    def _update_wrist_joint_bias(self, right: dict) -> None:
+        """Accumulate right-stick X motion for the robot's final wrist joint."""
+        joystick_x = float(right.get("Joystick", (0.0, 0.0))[0])
+        direction = (joystick_x > 0.8) - (joystick_x < -0.8)
+        self._wrist_joint_bias += float(direction) * 0.01
+
+    def _apply_wrist_roll_to_tcp(self, tcp_target: np.ndarray) -> np.ndarray:
+        """Represent final-joint bias as local tool-axis roll in TCP mode."""
+        target = np.asarray(tcp_target, dtype=float).copy()
+        rotation_increment, _ = cv2.Rodrigues(
+            np.asarray([0.0, 0.0, self._wrist_joint_bias], dtype=float)
+        )
+        target[:3, :3] = target[:3, :3] @ rotation_increment
+        return target
+
     def _target_from_controller(self, controller: SE3Container, dt: float) -> np.ndarray:
         controller_matrix = controller.homogeneous_matrix
         translation_delta = controller_matrix[:3, 3] - self._controller_reference.translation
+        # Both orientations have already been converted from Unity into
+        # RealMan coordinates. Their spatial difference is therefore a
+        # rotation expressed directly in the RealMan base frame.
         rotation_delta = (
-            self._controller_reference.rotation_matrix.T
-            @ controller_matrix[:3, :3]
+            controller_matrix[:3, :3]
+            @ self._controller_reference.rotation_matrix.T
         )
 
         translation_delta = self._position_filter.update(translation_delta, dt)
         rotation_vector, _ = cv2.Rodrigues(rotation_delta)
-        rotation_vector = self._rotation_filter.update(rotation_vector.reshape(3), dt)
+        rotation_vector = self._rotation_filter.update(
+            rotation_vector.reshape(3),
+            dt,
+        )
 
         translation_scale = 0.3 if self._fine_mode else 1.0
         rotation_scale = 0.4 if self._fine_mode else 1.0
@@ -928,9 +1448,9 @@ class RealManTeleop:
         if self.cfg.FREEZE_ROTATION:
             target_rotation = self._robot_reference.rotation_matrix
         else:
-            # rotation_delta is expressed in the controller reference's local
-            # frame, so compose it on the right of the robot reference.
-            target_rotation = self._robot_reference.rotation_matrix @ rotation_delta
+            # Apply the controller's base-frame rotation directly. No Euler
+            # axis permutation or RealMan-specific sign correction is needed.
+            target_rotation = rotation_delta @ self._robot_reference.rotation_matrix
         return SE3Container.from_rotation_matrix_and_translation(
             target_rotation,
             target_translation,
@@ -967,20 +1487,49 @@ class RealManTeleop:
         tcp_target: np.ndarray,
         dt: float,
     ) -> np.ndarray | None:
-        """Run controller IK on the same thread that owns CAN-FD SDK calls."""
+        """Run IK on the same fixed-rate thread that owns CAN-FD SDK calls."""
 
         snapshot = self.state_snapshot()
-        joint_target = self.backend.solve_tcp_ik(tcp_target, snapshot.joints)
-        if joint_target is None:
-            utils.logger.warning(
-                "RealMan IK failed; keeping the previous CAN-FD target."
+        if self._remote_ik_solver is not None:
+            # VR targets describe the configured tool TCP. RealMan's QP matrix
+            # describes the controller/flange TCP, matching the legacy backend
+            # IK boundary and preserving a non-identity TCP_TRANSFORM.
+            robot_tcp_target = self.backend.to_robot_tcp_pose(tcp_target)
+            joint_target = self._remote_ik_solver.solve(
+                robot_tcp_target,
+                snapshot.joints,
             )
+            solver_status = self._remote_ik_solver.last_status
+        else:
+            joint_target = self.backend.solve_tcp_ik(tcp_target, snapshot.joints)
+            solver_status = 0 if joint_target is not None else -1
+        if joint_target is None:
+            if solver_status != self._last_remote_ik_status:
+                utils.logger.warning(
+                    "RealMan IK failed with status "
+                    f"{solver_status}; keeping the previous CAN-FD target."
+                )
+            self._last_remote_ik_status = solver_status
             return None
+        self._last_remote_ik_status = 0
 
         with self._control_lock:
             if self._input_stale or not self._grip_active:
                 return None
             joint_target = np.asarray(joint_target, dtype=float)
+            unadjusted_last_joint = float(joint_target[-1])
+            joint_target[-1] += self._wrist_joint_bias
+            lower = getattr(self.backend.robot, "_joint_lower_limits", None)
+            upper = getattr(self.backend.robot, "_joint_upper_limits", None)
+            if lower is not None and upper is not None:
+                joint_target[-1] = np.clip(
+                    joint_target[-1],
+                    np.asarray(lower, dtype=float)[-1],
+                    np.asarray(upper, dtype=float)[-1],
+                )
+                self._wrist_joint_bias = (
+                    float(joint_target[-1]) - unadjusted_last_joint
+                )
             if not self._joint_target_is_safe(joint_target, tcp_target):
                 utils.logger.warning(
                     "Unsafe RealMan target rejected; holding position."
@@ -1014,6 +1563,45 @@ class RealManTeleop:
             right = controller_data[1]
             controller = self._extract_controller_se3(controller_data)
 
+            reset_pressed = (
+                bool(right.get("Joystick_Press", False))
+                and float(right.get("IndexTrigger", 0.0))
+                >= self.cfg.CONTROLLER_RESET_TRIGGER_THRESHOLD
+            )
+            if reset_pressed:
+                if not self._controller_reset_held:
+                    self._request_reset()
+                self._controller_reset_held = True
+                return False
+            self._controller_reset_held = False
+
+            self._process_brainco_joystick(right)
+
+            if self._reset_in_progress:
+                self._set_reference(
+                    controller_data,
+                    snapshot.tcp_pose,
+                    snapshot.joints,
+                )
+                if self.canfd.target_reached():
+                    self._reset_in_progress = False
+                    utils.logger.info("RealMan reset motion complete.")
+                return False
+
+            # Do not let a trigger still held after reset immediately replace
+            # the reset target. A fresh grip starts from a fresh reference.
+            if self._reset_requires_grip_release:
+                self._set_reference(
+                    controller_data,
+                    snapshot.tcp_pose,
+                    snapshot.joints,
+                )
+                self._requires_reference = False
+                self._grip_active = False
+                if not right["GripTrigger"]:
+                    self._reset_requires_grip_release = False
+                return False
+
             requested_fine_mode = fine_mode_status == "ON"
             if requested_fine_mode != self._fine_mode:
                 self._fine_mode = requested_fine_mode
@@ -1037,12 +1625,87 @@ class RealManTeleop:
                 return False
 
             self._grip_active = True
+            self._update_wrist_joint_bias(right)
             tcp_target = self._target_from_controller(controller, dt)
             if self.control_mode == "joint":
                 self.canfd.request_joint_target(tcp_target, dt)
             else:
+                tcp_target = self._apply_wrist_roll_to_tcp(tcp_target)
                 self.canfd.set_tcp_target(self._tool_tcp_to_realman_pose(tcp_target))
                 self._last_tcp_target = tcp_target
+            self._action_timestamp_ns = time.monotonic_ns()
+            return True
+
+    def process_hand(self, hand_data: dict, dt: float) -> bool:
+        """Consume one OpenXR right-hand packet for wrist and Revo2 control."""
+        right_hand = hand_data.get("R")
+        if right_hand is None:
+            return False
+        bones = right_hand.get("bones")
+        if bones is None or len(bones) != 26:
+            return False
+        if np.linalg.norm(np.asarray(bones[10], dtype=float)) < 1e-4:
+            return False
+
+        snapshot = self.state_snapshot()
+        state_age = (time.monotonic_ns() - snapshot.state_timestamp_ns) / 1e9
+        if state_age > self.sensor_stale_after_s:
+            self.mark_input_stale(
+                f"robot state is stale ({state_age * 1000.0:.0f} ms)"
+            )
+            return False
+
+        hand_pose = self._extract_hand_se3(right_hand)
+        if self._hand_last_palm is not None:
+            jump = float(
+                np.linalg.norm(hand_pose.translation - self._hand_last_palm)
+            )
+            if jump > self.cfg.HAND_PALM_JUMP_THRESHOLD:
+                utils.logger.warning(
+                    "Hand wrist jump %.3fm > %.3fm; holding RealMan target.",
+                    jump,
+                    self.cfg.HAND_PALM_JUMP_THRESHOLD,
+                )
+                self._hand_initialized = False
+                self._hand_last_palm = None
+                self.canfd.hold_current_setpoint()
+                return False
+        self._hand_last_palm = hand_pose.translation.copy()
+
+        if self.hand is not None:
+            try:
+                self.hand.follow_openxr_hand(bones)
+            except ValueError as exc:
+                utils.logger.debug("Ignoring invalid OpenXR hand frame: %s", exc)
+            except Exception as exc:
+                self._disable_hand_tool(f"BrainCo hand command failed ({exc})")
+
+        with self._control_lock:
+            if (
+                not self._hand_initialized
+                or self._requires_reference
+                or self._input_stale
+            ):
+                self._set_hand_reference(
+                    hand_pose,
+                    snapshot.tcp_pose,
+                    snapshot.joints,
+                )
+                self._requires_reference = False
+                self._input_stale = False
+                self._grip_active = True
+                return False
+
+            self._grip_active = True
+            tcp_target = self._target_from_controller(hand_pose, dt)
+            if self.control_mode == "joint":
+                self.canfd.request_joint_target(tcp_target, dt)
+            else:
+                self.canfd.set_tcp_target(
+                    self._tool_tcp_to_realman_pose(tcp_target)
+                )
+                self._last_tcp_target = tcp_target
+            self._action_timestamp_ns = time.monotonic_ns()
             return True
 
     def mark_input_stale(self, reason: str = "VR input timed out") -> None:
@@ -1054,6 +1717,8 @@ class RealManTeleop:
             self._input_stale = True
             self._requires_reference = True
             self._grip_active = False
+            self._hand_initialized = False
+            self._hand_last_palm = None
 
     def _refresh_sensors(self) -> None:
         state_error = ""
@@ -1397,6 +2062,29 @@ class RealManTeleop:
             input_stale=input_stale,
         )
 
+    def recording_snapshot(
+        self,
+    ) -> tuple[RealManStateSnapshot, np.ndarray, np.ndarray, int]:
+        """Copy cached measured state and the latest teleoperation targets."""
+
+        state = self.state_snapshot()
+        with self._control_lock:
+            if self.control_mode == "joint":
+                action_joints = self._last_joint_target.copy()
+            else:
+                # Direct Cartesian CAN-FD has no host-side joint target. The
+                # measured joints provide a replayable joint demonstration
+                # when DATA_TYPE is qpos/both; DATA_TYPE=tcp records the actual
+                # Cartesian command below.
+                action_joints = state.joints.copy()
+            action_tcp = self._last_tcp_target.copy()
+            action_timestamp_ns = self._action_timestamp_ns
+        return state, action_joints, action_tcp, action_timestamp_ns
+
+    def reset_active(self) -> bool:
+        with self._control_lock:
+            return self._reset_in_progress
+
     def close(self) -> None:
         with self._lifecycle_lock:
             if self._closed:
@@ -1474,6 +2162,327 @@ def _visualizer_images(images: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return previews
 
 
+class RealManEpisodeRecorder:
+    """Record cached RealMan state and camera frames without touching CAN-FD."""
+
+    def __init__(
+        self,
+        cfg: Config,
+        teleop: RealManTeleop,
+        camera_manager,
+        *,
+        dataset: DatasetRecorder | None = None,
+        background_errors: list[str] | None = None,
+    ) -> None:
+        self.cfg = cfg
+        self.teleop = teleop
+        self.camera_manager = camera_manager
+        self.background_errors = background_errors
+        self.dataset = (
+            dataset
+            if dataset is not None
+            else DatasetRecorder(
+                camera_manager.camera_num,
+                robot_dof=teleop.dof,
+                robot_type=getattr(
+                    teleop.backend,
+                    "dataset_robot_type",
+                    teleop.backend.name,
+                ),
+                force_collect=cfg.FORCE_COLLECT,
+                torque_collect=cfg.TORQUE_COLLECT,
+                gripper=False,
+                config=cfg,
+            )
+        )
+        self.pause_event = threading.Event()
+        self._dataset_lock = threading.Lock()
+        self._close_lock = threading.Lock()
+        self._closed = False
+        self._last_state_quaternion: np.ndarray | None = None
+        self._last_action_quaternion: np.ndarray | None = None
+
+    @staticmethod
+    def _pose_vector(
+        tcp_pose: np.ndarray,
+        previous_quaternion: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        pose = np.asarray(tcp_pose, dtype=float)
+        quaternion = utils.quat_cal(
+            pose[:3, :3],
+            previous_quaternion,
+        )
+        vector = np.concatenate(
+            [quaternion, pose[:3, 3]]
+        ).astype(np.float32)
+        return vector, quaternion
+
+    @staticmethod
+    def _delta_tcp_action(
+        measured_tcp: np.ndarray,
+        target_tcp: np.ndarray,
+    ) -> np.ndarray:
+        delta_translation = target_tcp[:3, 3] - measured_tcp[:3, 3]
+        delta_rotation = target_tcp[:3, :3] @ measured_tcp[:3, :3].T
+        delta_rotvec, _ = cv2.Rodrigues(delta_rotation)
+        return np.concatenate(
+            [delta_translation, delta_rotvec.reshape(3)]
+        ).astype(np.float32)
+
+    def _state_and_action(
+        self,
+        robot: RealManStateSnapshot,
+        action_joints: np.ndarray,
+        action_tcp: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        state_tcp, self._last_state_quaternion = self._pose_vector(
+            robot.tcp_pose,
+            self._last_state_quaternion,
+        )
+        if self.cfg.DATA_TYPE == "tcp":
+            action, self._last_action_quaternion = self._pose_vector(
+                action_tcp,
+                self._last_action_quaternion,
+            )
+            return state_tcp, action, state_tcp
+        if self.cfg.DATA_TYPE == "delta_tcp":
+            action = self._delta_tcp_action(robot.tcp_pose, action_tcp)
+            return robot.joints.astype(np.float32), action, state_tcp
+        return (
+            robot.joints.astype(np.float32),
+            np.asarray(action_joints, dtype=np.float32),
+            state_tcp,
+        )
+
+    def collect_once(self) -> bool:
+        """Collect one configured-rate frame when an episode is active."""
+
+        if self.pause_event.is_set():
+            return False
+        with self.camera_manager._lock:
+            if not self.camera_manager.data_collecting_state:
+                return False
+            images = {
+                name: np.asarray(image).copy()
+                for name, image in self.camera_manager.camera_images.items()
+            }
+            image_timestamps = dict(
+                getattr(
+                    self.camera_manager,
+                    "camera_image_timestamps_ns",
+                    {},
+                )
+            )
+            depth_images = (
+                {
+                    name: np.asarray(depth).copy()
+                    for name, depth in self.camera_manager.depth_images.items()
+                }
+                if self.cfg.DEPTH_INFO_ENABLE
+                else None
+            )
+            vr_input_timestamp_ns = int(
+                getattr(self.camera_manager, "vr_input_timestamp_ns", 0)
+            )
+
+        if not (
+            self.camera_manager.is_movement_exist()
+            or self.teleop.reset_active()
+        ):
+            return False
+
+        collect_timestamp_ns = time.monotonic_ns()
+        robot, action_joints, action_tcp, action_timestamp_ns = (
+            self.teleop.recording_snapshot()
+        )
+        state, action, tcp_vector = self._state_and_action(
+            robot,
+            action_joints,
+            action_tcp,
+        )
+        extra = {
+            "collect_timestamp_ns": np.array(
+                collect_timestamp_ns,
+                dtype=np.int64,
+            ),
+            "robot_state_timestamp_ns": np.array(
+                robot.state_timestamp_ns,
+                dtype=np.int64,
+            ),
+            "robot_action_timestamp_ns": np.array(
+                action_timestamp_ns,
+                dtype=np.int64,
+            ),
+            "vr_input_timestamp_ns": np.array(
+                vr_input_timestamp_ns,
+                dtype=np.int64,
+            ),
+            "tactile_timestamp_ns": np.array(0, dtype=np.int64),
+            "camera_timestamps_ns": image_timestamps,
+            "tcp_pose": tcp_vector,
+        }
+        wrench = (
+            robot.wrench
+            if self.cfg.FORCE_COLLECT or self.cfg.TORQUE_COLLECT
+            else None
+        )
+        with self._dataset_lock:
+            if self.pause_event.is_set():
+                return False
+            self.dataset.data_collection(
+                state,
+                action,
+                images,
+                None,
+                wrench,
+                depth_images,
+                extra,
+            )
+        return True
+
+    def process_pending_once(self) -> bool:
+        """Handle one export or rollback request from VR/the visualizer."""
+
+        with self.camera_manager._lock:
+            rollback = bool(self.camera_manager.data_rollback_state)
+            export = bool(self.camera_manager.data_export_state)
+        if not rollback and not export:
+            return False
+
+        self.pause_event.set()
+        try:
+            with self._dataset_lock:
+                if rollback:
+                    removed = self.dataset.rollback_last_episode()
+                    if removed:
+                        utils.logger.info(
+                            "Rollback complete. Next episode: "
+                            f"{self.dataset.recorded_episodes}"
+                        )
+                    else:
+                        utils.logger.warning(
+                            "Rollback requested, but no episode was removed."
+                        )
+                elif self.dataset.collect_step:
+                    self.dataset.data_export(self.camera_manager)
+                    self.dataset._reset_data_dict()
+                    utils.logger.info(
+                        "Episode "
+                        f"{self.dataset.recorded_episodes - 1} exported successfully"
+                    )
+                else:
+                    utils.logger.warning("No data to export.")
+            return True
+        finally:
+            with self.camera_manager._lock:
+                if rollback:
+                    self.camera_manager.data_rollback_state = False
+                if export:
+                    self.camera_manager.data_export_state = False
+            self.pause_event.clear()
+
+    def handle_visualizer_commands(self, visualizer_handle) -> None:
+        if visualizer_handle is None:
+            return
+        for command in visualizer_handle.drain_commands():
+            name = command.get("command")
+            if name == "rollback_last_episode":
+                with self.camera_manager._lock:
+                    self.camera_manager.data_collecting_state = False
+                    self.camera_manager.data_export_state = False
+                    self.camera_manager.data_rollback_state = True
+                utils.logger.info("Rollback requested from visualizer.")
+
+    def recording_status(self) -> dict[str, object]:
+        with self.camera_manager._lock:
+            collecting = bool(self.camera_manager.data_collecting_state)
+        with self._dataset_lock:
+            return self.dataset.recording_status(collecting=collecting)
+
+    def _report_background_failure(
+        self,
+        label: str,
+        exc: Exception,
+        stop_event: threading.Event,
+    ) -> None:
+        message = f"RealMan {label} failed: {exc}"
+        utils.logger.exception(message)
+        if self.background_errors is not None:
+            self.background_errors.append(message)
+        stop_event.set()
+
+    def _collect_loop(self, stop_event: threading.Event) -> None:
+        period_s = 1.0 / self.cfg.COLLECT_RATE
+        next_tick = time.monotonic()
+        try:
+            while not stop_event.is_set():
+                self.collect_once()
+                next_tick += period_s
+                remaining = next_tick - time.monotonic()
+                if remaining > 0.0:
+                    stop_event.wait(remaining)
+                else:
+                    next_tick = time.monotonic()
+        except Exception as exc:
+            self._report_background_failure("dataset collection", exc, stop_event)
+
+    def _export_loop(self, stop_event: threading.Event) -> None:
+        try:
+            while not stop_event.is_set():
+                self.process_pending_once()
+                stop_event.wait(0.05)
+        except Exception as exc:
+            self._report_background_failure("dataset export", exc, stop_event)
+        finally:
+            self.close()
+
+    def start(self, stop_event: threading.Event) -> list[threading.Thread]:
+        threads = [
+            threading.Thread(
+                target=self._collect_loop,
+                args=(stop_event,),
+                name="realman-dataset-collector",
+                daemon=True,
+            ),
+            threading.Thread(
+                target=self._export_loop,
+                args=(stop_event,),
+                name="realman-dataset-exporter",
+                daemon=True,
+            ),
+        ]
+        for thread in threads:
+            thread.start()
+        return threads
+
+    def close(self) -> None:
+        with self._close_lock:
+            if self._closed:
+                return
+            self.pause_event.set()
+            try:
+                with self.camera_manager._lock:
+                    rollback = bool(
+                        self.camera_manager.data_rollback_state
+                    )
+                    self.camera_manager.data_collecting_state = False
+                    self.camera_manager.data_export_state = False
+                    self.camera_manager.data_rollback_state = False
+                with self._dataset_lock:
+                    if rollback:
+                        self.dataset.rollback_last_episode()
+                    elif self.dataset.collect_step:
+                        utils.logger.info(
+                            "Saving the active RealMan episode before exit."
+                        )
+                        self.dataset.data_export(self.camera_manager)
+                        self.dataset._reset_data_dict()
+                    self.dataset.close()
+                self._closed = True
+            finally:
+                self.pause_event.clear()
+
+
 def visualizer_publish_loop(
     visualizer_handle,
     teleop: RealManTeleop,
@@ -1481,6 +2490,7 @@ def visualizer_publish_loop(
     viz_cfg: VisualizerConfig,
     stop_event: threading.Event,
     background_errors: list[str] | None = None,
+    recorder: RealManEpisodeRecorder | None = None,
 ) -> None:
     period_s = 1.0 / viz_cfg.HZ
     force_frame = ("sensor", "work", "tool")[
@@ -1560,7 +2570,7 @@ def visualizer_publish_loop(
                 f"{teleop.control_mode} CAN-FD {achieved} "
                 f"(target {canfd.target_hz:g} Hz)\n"
                 f"max gap {canfd.max_gap_ms:.2f} ms, "
-                f"SDK call {canfd.max_sdk_call_ms:.2f} ms, "
+                f"control step {canfd.max_sdk_call_ms:.2f} ms, "
                 f">10 ms violations "
                 f"{canfd.high_follow_gap_violations + canfd.sdk_call_overruns}\n"
                 f"state age {state_age_s * 1000.0:.0f} ms, "
@@ -1610,6 +2620,11 @@ def visualizer_publish_loop(
                         f"RealMan robot force ({force_frame} frame)"
                     ),
                     "status_extra": status,
+                    **(
+                        {"dataset": recorder.recording_status()}
+                        if recorder is not None
+                        else {}
+                    ),
                     "connected": not errors,
                     "error": " | ".join(errors),
                 }
@@ -1629,6 +2644,7 @@ def main() -> None:
     stop_event = threading.Event()
     camera_manager = None
     teleop: RealManTeleop | None = None
+    recorder: RealManEpisodeRecorder | None = None
     visualizer_handle = None
     worker_threads: list[threading.Thread] = []
     background_errors: list[str] = []
@@ -1645,16 +2661,18 @@ def main() -> None:
         camera_manager = _create_camera_manager(cfg)
         initial_data = camera_manager.test_connection()
         teleop = RealManTeleop(initial_data, cfg=cfg)
+        # Dataset discovery/import can be expensive. Finish it before the
+        # high-follow sender starts so it cannot steal time from CAN-FD's
+        # strict 10 ms packet deadline.
+        recorder = RealManEpisodeRecorder(
+            cfg,
+            teleop,
+            camera_manager,
+            background_errors=background_errors,
+        )
         camera_manager.start_comms_threads()
         worker_threads.extend(teleop.start(stop_event))
-        timing = teleop.canfd.wait_until_healthy(stop_event)
-        verified_hz = timing.achieved_hz
-        if verified_hz is None:
-            raise RuntimeError("CAN-FD timing verification returned no measured rate.")
-        utils.logger.info(
-            f"RealMan CAN-FD timing verified at {verified_hz:.1f} Hz; "
-            "VR motion input enabled."
-        )
+        worker_threads.extend(recorder.start(stop_event))
 
         if viz_cfg.ENABLED:
             from visualizer import start_visualizer
@@ -1665,7 +2683,8 @@ def main() -> None:
                 title="RealMan Teleop Visualizer",
                 force_panel_range=viz_cfg.FORCE_PANEL_RANGE,
                 camera_num=camera_manager.camera_num,
-                show_rollback_button=False,
+                show_rollback_button=True,
+                show_record_button=False,
             )
             visualizer_thread = threading.Thread(
                 target=visualizer_publish_loop,
@@ -1676,6 +2695,7 @@ def main() -> None:
                     viz_cfg,
                     stop_event,
                     background_errors,
+                    recorder,
                 ),
                 name="realman-visualizer-publisher",
                 daemon=True,
@@ -1683,9 +2703,26 @@ def main() -> None:
             visualizer_thread.start()
             worker_threads.append(visualizer_thread)
 
+        # Starting worker threads and, especially, spawning the visualizer can
+        # briefly preempt the CAN-FD sender. Keep the fail-fast watchdog in its
+        # startup probation state until every background service is running,
+        # then require a fresh clean window under the final system load.
+        timing = teleop.canfd.wait_until_healthy(stop_event)
+        verified_hz = timing.achieved_hz
+        if verified_hz is None:
+            raise RuntimeError(
+                "CAN-FD timing verification returned no measured rate."
+            )
+        utils.logger.info(
+            f"RealMan CAN-FD timing verified at {verified_hz:.1f} Hz; "
+            "VR motion input enabled."
+        )
+
         previous_input_timestamp_ns = 0
         previous_control_time = time.monotonic()
         while not stop_event.is_set():
+            recorder.handle_visualizer_commands(visualizer_handle)
+
             heartbeat_error = teleop.canfd.heartbeat_error()
             if heartbeat_error:
                 fatal_error = heartbeat_error
@@ -1706,24 +2743,31 @@ def main() -> None:
 
             with camera_manager._lock:
                 controller_data = camera_manager.data
+                hand_data = (
+                    dict(camera_manager.hand_data)
+                    if camera_manager.hand_data
+                    else None
+                )
                 fine_mode = camera_manager.fine_mode
                 input_timestamp_ns = camera_manager.vr_input_timestamp_ns
 
-            if (
-                controller_data is not None
-                and input_timestamp_ns > previous_input_timestamp_ns
-            ):
+            new_input = input_timestamp_ns > previous_input_timestamp_ns
+            if cfg.TRACKING_MODE == "hand" and hand_data is not None and new_input:
+                now = time.monotonic()
+                dt = min(max(now - previous_control_time, 1e-4), 0.05)
+                previous_control_time = now
+                teleop.process_hand(hand_data, dt)
+                previous_input_timestamp_ns = input_timestamp_ns
+            elif cfg.TRACKING_MODE == "controller" and controller_data is not None and new_input:
                 now = time.monotonic()
                 dt = min(max(now - previous_control_time, 1e-4), 0.05)
                 previous_control_time = now
                 teleop.process_controller(controller_data, fine_mode, dt)
                 previous_input_timestamp_ns = input_timestamp_ns
-            elif (
-                controller_data is None
-                and input_timestamp_ns > previous_input_timestamp_ns
-            ):
+            elif new_input:
+                expected = "hand" if cfg.TRACKING_MODE == "hand" else "controller"
                 teleop.mark_input_stale(
-                    "Received non-controller VR input in controller-only mode"
+                    f"Received non-{expected} VR input in {expected} tracking mode"
                 )
                 previous_control_time = time.monotonic()
                 previous_input_timestamp_ns = input_timestamp_ns
@@ -1776,6 +2820,13 @@ def main() -> None:
                 utils.logger.warning(
                     f"Error closing RealMan visualizer: {exc}"
                 )
+
+        if recorder is not None:
+            try:
+                recorder.close()
+            except Exception as exc:
+                fatal_error = fatal_error or f"Error closing dataset: {exc}"
+                utils.logger.error(f"Error closing RealMan dataset: {exc}")
 
         if teleop is not None:
             live_workers = teleop.live_sdk_workers()

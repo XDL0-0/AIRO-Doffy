@@ -308,6 +308,7 @@ class TeleopDashboard:
         force_panel_range: float = 5.0,
         camera_num: int = 1,
         show_rollback_button: bool = True,
+        show_record_button: bool = False,
     ) -> None:
         self.data_queue = data_queue
         self.command_queue = command_queue
@@ -316,6 +317,7 @@ class TeleopDashboard:
         self.camera_count = max(0, int(camera_num))
         self.camera_slots = max(1, self.camera_count)
         self.show_rollback_button = show_rollback_button
+        self.show_record_button = show_record_button
         self.interval_ms = max(10, int(1000 / hz))
         self.latest = TeleopSample(timestamp=time.monotonic(), wrench=np.zeros(6))
         self.times: deque[float] = deque(maxlen=max(10, int(window_s * hz * 2)))
@@ -430,6 +432,19 @@ class TeleopDashboard:
             fontweight="bold",
             color="#ffd94d",
         )
+        self.record_button_ax = self.status_ax.inset_axes([0.38, 0.12, 0.27, 0.24])
+        self.record_button = Button(
+            self.record_button_ax,
+            "Start record",
+            color="#234936",
+            hovercolor="#326b4d",
+        )
+        self.record_button.label.set_color("#e8f1ff")
+        self.record_button.label.set_fontsize(9)
+        self.record_button.on_clicked(self._request_record_toggle)
+        if not self.show_record_button:
+            self.record_button_ax.set_visible(False)
+
         self.rollback_button_ax = self.status_ax.inset_axes([0.68, 0.12, 0.28, 0.24])
         self.rollback_button = Button(
             self.rollback_button_ax,
@@ -568,6 +583,15 @@ class TeleopDashboard:
         except queue.Full:
             self.rollback_button.label.set_text("Queue full")
 
+    def _request_record_toggle(self, _event) -> None:
+        try:
+            self.command_queue.put_nowait(
+                {"command": "toggle_recording", "timestamp": time.monotonic()}
+            )
+            self.record_button.label.set_text("Queued")
+        except queue.Full:
+            self.record_button.label.set_text("Queue full")
+
     def _update(self, _frame):
         self._read_latest()
         sample = self.latest
@@ -633,9 +657,12 @@ class TeleopDashboard:
         if sample.dataset is None:
             self.dataset_text.set_text("")
             self.rollback_button_ax.set_visible(False)
+            self.record_button_ax.set_visible(False)
             return
         if self.show_rollback_button:
             self.rollback_button_ax.set_visible(True)
+        if self.show_record_button:
+            self.record_button_ax.set_visible(True)
         status = sample.dataset or {}
         recorded = int(status.get("recorded_episodes", 0))
         current_frames = int(status.get("current_episode_frames", 0))
@@ -648,7 +675,12 @@ class TeleopDashboard:
             f"eps {recorded:04d}  cur {current_frames:04d}\n"
             f"last {last_text}"
         )
+        self.record_button.label.set_text(
+            "Save episode" if status.get("collecting") else "Start record"
+        )
         self.rollback_button.label.set_text("Undo episode")
+        if not self.show_record_button:
+            self.record_button_ax.set_visible(False)
         if not self.show_rollback_button:
             self.rollback_button_ax.set_visible(False)
         elif recorded <= 0 and current_frames <= 0:
@@ -738,6 +770,7 @@ def _run_visualizer(
     force_panel_range: float,
     camera_num: int,
     show_rollback_button: bool,
+    show_record_button: bool,
 ) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     if matplotlib.get_backend().lower() == "agg":
@@ -752,6 +785,7 @@ def _run_visualizer(
         force_panel_range=force_panel_range,
         camera_num=camera_num,
         show_rollback_button=show_rollback_button,
+        show_record_button=show_record_button,
     )
     dashboard.start()
 
@@ -765,6 +799,7 @@ def start_visualizer(
     force_panel_range: float | None = None,
     camera_num: int = 1,
     show_rollback_button: bool = True,
+    show_record_button: bool = False,
 ) -> VisualizerHandle:
     cfg = VisualizerConfig()
     # Kept for compatibility with older callers; real wrench filtering happens
@@ -792,6 +827,7 @@ def start_visualizer(
             force_panel_range,
             camera_num,
             show_rollback_button,
+            show_record_button,
         ),
         daemon=True,
     )

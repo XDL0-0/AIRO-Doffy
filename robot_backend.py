@@ -127,12 +127,14 @@ class RobotBackend:
 
     def __init__(self, cfg) -> None:
         self.cfg = cfg
+        self.tcp_tool = cfg.TCP_TOOL
         self.tcp_transform = np.asarray(cfg.TCP_TRANSFORM, dtype=float)
         self.inv_tcp_transform = np.linalg.inv(self.tcp_transform)
         self.dof = 0
         self.robot = None
         self.ik_solver = None
         self.gripper = NullGripper(cfg.GRIPPER_MAX)
+        self.hand = None
 
     @property
     def dataset_robot_type(self) -> str:
@@ -205,7 +207,15 @@ class RobotBackend:
     def stop_freedrive(self) -> None:
         raise NotImplementedError(f"{self.name} does not support freedrive through this backend.")
 
+    def set_freedrive_sensitivity(self, grade: int) -> None:
+        raise NotImplementedError(
+            f"{self.name} does not support freedrive sensitivity through this backend."
+        )
+
     def cleanup(self) -> None:
+        close_hand = getattr(self.hand, "close", None)
+        if callable(close_hand):
+            close_hand()
         close = getattr(self.gripper, "close", None)
         if callable(close):
             close()
@@ -339,10 +349,56 @@ class URPositionBackend(PositionManipulatorBackend):
 class RealManBackend(PositionManipulatorBackend):
     """RealMan backend with bounded retries for transient SDK read timeouts."""
 
+    supports_freedrive = True
+
     def __init__(self, cfg, robot) -> None:
         super().__init__(cfg, robot, "realman", NullGripper(cfg.GRIPPER_MAX))
         self._read_retries = int(getattr(cfg, "REALMAN_READ_RETRIES", 3))
         self._retry_delay = float(getattr(cfg, "REALMAN_RETRY_DELAY", 0.05))
+        if self.tcp_tool == "Hand":
+            self._connect_brainco_hand()
+
+    def _connect_brainco_hand(self) -> None:
+        """Recognize and connect a six-DoF BrainCo hand through RM_ARM+."""
+        from brainco_hand import BrainCoHandDriver
+
+        arm = getattr(self.robot, "robot", None)
+        try:
+            if arm is None:
+                raise RuntimeError("RealMan wrapper does not expose its SDK arm object.")
+            self.hand = BrainCoHandDriver(
+                arm,
+                baudrate=self.cfg.BRAINCO_HAND_BAUDRATE,
+                read_retries=self.cfg.BRAINCO_HAND_READ_RETRIES,
+                retry_delay=self.cfg.BRAINCO_HAND_RETRY_DELAY,
+                mode_settle_delay=self.cfg.BRAINCO_HAND_MODE_SETTLE_DELAY,
+                max_send_hz=self.cfg.BRAINCO_HAND_MAX_SEND_HZ,
+                filter_cutoff_hz=self.cfg.BRAINCO_HAND_FILTER_CUTOFF_HZ,
+                dead_zone=self.cfg.BRAINCO_HAND_DEAD_ZONE,
+                thumb_rotate_progress_range=(
+                    self.cfg.BRAINCO_THUMB_ROTATE_PROGRESS_RANGE
+                ),
+            )
+        except Exception as exc:
+            self.hand = None
+            self.tcp_tool = "None"
+            self.cfg.TCP_TOOL = "None"
+            self.cfg.GRIPPER = False
+            utils.logger.warning(
+                "TCP_TOOL='Hand' is unavailable (%s); falling back to "
+                "TCP_TOOL='None'.",
+                exc,
+            )
+            return
+
+        utils.logger.info(
+            "BrainCo six-DoF hand recognized through RealMan RM_ARM+ "
+            "(limits=%s..%s, dead-zone=%.3f, filter=%.1f Hz).",
+            self.hand.lower.tolist(),
+            self.hand.upper.tolist(),
+            self.cfg.BRAINCO_HAND_DEAD_ZONE,
+            self.cfg.BRAINCO_HAND_FILTER_CUTOFF_HZ,
+        )
 
     def _read_with_retry(self, method_name: str, read):
         for attempt in range(1, self._read_retries + 1):
@@ -372,6 +428,33 @@ class RealManBackend(PositionManipulatorBackend):
             self.robot.get_tcp_pose,
         )
         return self.to_tool_tcp_pose(np.asarray(tcp_pose, dtype=float))
+
+    def get_tcp_force(self) -> np.ndarray | None:
+        return self._read_with_retry("rm_get_force_data", super().get_tcp_force)
+
+    def start_freedrive(self) -> None:
+        self.robot.start_freedrive()
+
+    def stop_freedrive(self) -> None:
+        self.robot.stop_freedrive()
+
+    def set_freedrive_sensitivity(self, grade: int) -> None:
+        grade = int(grade)
+        if not 0 <= grade <= 100:
+            raise ValueError("RealMan freedrive sensitivity must be between 0 and 100.")
+        arm = getattr(self.robot, "robot", None)
+        setter = getattr(arm, "rm_set_drag_teach_sensitivity", None)
+        if not callable(setter):
+            raise RuntimeError(
+                "The installed RealMan SDK does not expose "
+                "rm_set_drag_teach_sensitivity()."
+            )
+        result = int(setter(grade))
+        if result != 0:
+            raise RuntimeError(
+                "rm_set_drag_teach_sensitivity failed with RealMan error code "
+                f"{result}."
+            )
 
     def cleanup(self) -> None:
         try:
@@ -495,11 +578,20 @@ def _ur_config_and_ik(robot_type: str, robot_cls):
 
 def make_robot_backend(cfg) -> RobotBackend:
     robot_type = cfg.ROBOT_TYPE.lower()
-    robot_ip = cfg.ROBOT_IP or cfg.UR_IP
+    robot_ip = cfg.ROBOT_IP
+    if robot_ip is None and robot_type in {"ur3e", "ur5e"}:
+        robot_ip = cfg.UR_IP
+    if robot_ip is None:
+        raise ValueError(
+            f"ROBOT_IP must be configured when ROBOT_TYPE='{cfg.ROBOT_TYPE}'."
+        )
 
     if robot_type in {"ur3e", "ur5e"}:
-        gripper = FastRobotiq2F85(cfg.UR_IP)
-        gripper.open()
+        if cfg.GRIPPER:
+            gripper = FastRobotiq2F85(robot_ip)
+            gripper.open()
+        else:
+            gripper = NullGripper(cfg.GRIPPER_MAX)
         if cfg.TORQUE_MODE:
             from airo_robots.manipulators.hardware.ur_rtde_torque import URrtdeTorque
 

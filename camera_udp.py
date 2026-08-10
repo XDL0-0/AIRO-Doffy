@@ -299,17 +299,22 @@ class CameraUDPManager:
         MAX_RETRIES = 10
         while self.running:
             try:
-                img = camera.get_rgb_image()
+                camera.grab_images()
+                img = camera.retrieve_rgb_image()
+                if img.dtype != np.uint8:
+                    img = np.clip(img * 255, 0, 255).astype(np.uint8)
                 depth = None
                 if self.depth_mode:
                     try:
-                        depth = camera._retrieve_depth_map()
+                        depth = camera.retrieve_depth_map()
                     except (RuntimeError, AttributeError):
                         pass
                 with self._lock:
                     capture_ts_ns = time.monotonic_ns()
                     self.camera_data[f"camera_{idx}"] = img
                     self.camera_data_timestamps_ns[f"camera_{idx}"] = capture_ts_ns
+                    self.camera_images[f"camera_{idx}"] = img
+                    self.camera_image_timestamps_ns[f"camera_{idx}"] = capture_ts_ns
                     if depth is not None:
                         self.depth_images[f"camera_{idx}"] = depth
                         self.depth_timestamps_ns[f"camera_{idx}"] = capture_ts_ns
@@ -340,16 +345,10 @@ class CameraUDPManager:
             try:
                 with self._lock:
                     raw = self.camera_data.get(f"camera_{idx}")
-                    frame_ts_ns = self.camera_data_timestamps_ns.get(
-                        f"camera_{idx}", 0
-                    )
                 if raw is None:
                     time.sleep(1 / STREAM_FPS)
                     continue
-                frame_bgr, frame_rgb = self.data_process(raw, idx)
-                with self._lock:
-                    self.camera_images[f"camera_{idx}"] = frame_rgb
-                    self.camera_image_timestamps_ns[f"camera_{idx}"] = frame_ts_ns
+                frame_bgr, _ = self.data_process(raw, idx)
                 n_chunks = self.send_hd_frame(socket, frame_bgr, cam_idx=idx)
                 stats_frames += 1
                 stats_chunks += n_chunks
@@ -450,7 +449,9 @@ class CameraUDPManager:
         camera_list: Dict[str, Realsense],
     ) -> None:
         for i in range(self.camera_num):
-            image = camera_list[f"camera_{i}"].get_rgb_image()
+            camera = camera_list[f"camera_{i}"]
+            camera.grab_images()
+            image = camera.retrieve_rgb_image()
             frame_bgr, _ = self.data_process(image, i)
             self.send_hd_frame(socket_list[f"socket_{i}"], frame_bgr, cam_idx=i)
 
