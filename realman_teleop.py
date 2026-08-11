@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from ctypes import c_float
 from dataclasses import dataclass
+import json
+import socket
 import threading
 import time
 from typing import Any, Callable
@@ -36,6 +38,41 @@ from visualizer_config import VisualizerConfig
 
 
 _UNCLOSED_REALMAN_TELEOPS: list["RealManTeleop"] = []
+
+
+def pack_quest_tcp_state_packet(tcp_pose: np.ndarray, wrench: np.ndarray, tcp_display_axes: np.ndarray) -> bytes:
+    """Encode one RealMan TCP state for Quest ``TCPPoseReceiver``.
+
+    Position and rotation are converted from RealMan base frame (X forward,
+    Y left, Z up) into the Unity world frame (X right, Y up, Z forward)
+    so that they line up correctly after the user's calibration.
+
+    Force ``[Fx, Fy, Fz]`` is in newtons; torque is not currently sent.
+    """
+
+    pose = np.asarray(tcp_pose, dtype=float)
+    values = np.asarray(wrench, dtype=float)
+    if pose.shape != (4, 4) or not np.all(np.isfinite(pose)):
+        raise ValueError("Quest TCP state packets require a finite 4x4 TCP pose.")
+    if values.shape != (6,) or not np.all(np.isfinite(values)):
+        raise ValueError("Quest TCP state packets require six finite wrench values.")
+
+    to_unity = np.asarray(tcp_display_axes, dtype=float)
+
+    position_unity = to_unity @ pose[:3, 3]
+    rotation_unity = to_unity @ pose[:3, :3] @ to_unity.T
+    force_unity = to_unity @ values[:3]
+
+    quaternion_xyzw = utils.quat_cal(rotation_unity)
+    quaternion_wxyz = quaternion_xyzw[[3, 0, 1, 2]]
+    message = {
+        "rightTCP": {
+            "position": position_unity.tolist(),
+            "rotation": quaternion_wxyz.tolist(),
+            "force": force_unity.tolist(),
+        }
+    }
+    return json.dumps(message).encode("utf-8")
 
 
 @dataclass(frozen=True)
@@ -71,6 +108,98 @@ class RealManStateSnapshot:
     state_error: str
     force_error: str
     input_stale: bool
+
+
+class QuestTcpStateSender:
+    """Publish cached RealMan TCP pose and force to Quest at a fixed rate."""
+
+    def __init__(
+        self,
+        teleop: "RealManTeleop",
+        *,
+        quest_ip: str,
+        port: int,
+        send_rate_hz: float,
+        socket_factory: Callable[..., socket.socket] = socket.socket,
+    ) -> None:
+        if not str(quest_ip).strip():
+            raise ValueError("quest_ip cannot be empty.")
+        if not 1 <= int(port) <= 65535:
+            raise ValueError("Quest TCP state port must be between 1 and 65535.")
+        if float(send_rate_hz) <= 0.0:
+            raise ValueError("Quest TCP state send rate must be positive.")
+
+        self.teleop = teleop
+        self.destination = (str(quest_ip), int(port))
+        self.period_s = 1.0 / float(send_rate_hz)
+        self._socket_factory = socket_factory
+
+    def run(
+        self,
+        stop_event: threading.Event,
+        background_errors: list[str] | None = None,
+    ) -> None:
+        """Send the latest fresh TCP state until the stop event is set."""
+
+        udp_socket = None
+        next_send = time.monotonic()
+        skipped_reason = ""
+        try:
+            udp_socket = self._socket_factory(socket.AF_INET, socket.SOCK_DGRAM)
+            utils.logger.info(
+                "Quest TCP state transfer enabled: %s:%d at %.1f Hz.",
+                self.destination[0],
+                self.destination[1],
+                1.0 / self.period_s,
+            )
+            while not stop_event.is_set():
+                snapshot = self.teleop.state_snapshot()
+                force_age_s = max(
+                    0.0,
+                    (time.monotonic_ns() - snapshot.force_timestamp_ns) / 1e9,
+                )
+                state_age_s = max(
+                    0.0,
+                    (time.monotonic_ns() - snapshot.state_timestamp_ns) / 1e9,
+                )
+                reason = snapshot.state_error or snapshot.force_error
+                if not reason and state_age_s > self.teleop.sensor_stale_after_s:
+                    reason = f"TCP pose is stale ({state_age_s * 1000.0:.0f} ms)"
+                if not reason and force_age_s > self.teleop.sensor_stale_after_s:
+                    reason = f"force is stale ({force_age_s * 1000.0:.0f} ms)"
+
+                if reason:
+                    if reason != skipped_reason:
+                        utils.logger.warning(
+                            "Quest TCP state transfer paused: %s.",
+                            reason,
+                        )
+                    skipped_reason = reason
+                else:
+                    if skipped_reason:
+                        utils.logger.info("Quest TCP state transfer resumed.")
+                    skipped_reason = ""
+                    packet = pack_quest_tcp_state_packet(
+                        snapshot.tcp_pose,
+                        snapshot.wrench,
+                        self.teleop.cfg.TCP_DISPLAY_AXES,
+                    )
+                    udp_socket.sendto(packet, self.destination)
+
+                next_send += self.period_s
+                now = time.monotonic()
+                if next_send < now:
+                    next_send = now
+                stop_event.wait(next_send - now)
+        except Exception as exc:
+            message = f"Quest TCP state sender failed: {exc}"
+            utils.logger.exception(message)
+            if background_errors is not None:
+                background_errors.append(message)
+            stop_event.set()
+        finally:
+            if udp_socket is not None:
+                udp_socket.close()
 
 
 class RealManRemoteIkSolver:
@@ -2645,6 +2774,7 @@ def main() -> None:
     camera_manager = None
     teleop: RealManTeleop | None = None
     recorder: RealManEpisodeRecorder | None = None
+    tcp_state_sender: QuestTcpStateSender | None = None
     visualizer_handle = None
     worker_threads: list[threading.Thread] = []
     background_errors: list[str] = []
@@ -2672,6 +2802,21 @@ def main() -> None:
         )
         camera_manager.start_comms_threads()
         worker_threads.extend(teleop.start(stop_event))
+        if cfg.FORCE_ENABLE:
+            tcp_state_sender = QuestTcpStateSender(
+                teleop,
+                quest_ip=cfg.VR_IP,
+                port=cfg.FORCE_PORT,
+                send_rate_hz=cfg.FORCE_SEND_RATE,
+            )
+            tcp_state_thread = threading.Thread(
+                target=tcp_state_sender.run,
+                args=(stop_event, background_errors),
+                name="quest-tcp-state-sender",
+                daemon=True,
+            )
+            tcp_state_thread.start()
+            worker_threads.append(tcp_state_thread)
         worker_threads.extend(recorder.start(stop_event))
 
         if viz_cfg.ENABLED:
