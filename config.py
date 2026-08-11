@@ -8,8 +8,8 @@ class Config:
     # PC_IP: str = "10.10.131.162"
     # VR_IP: str = "10.10.130.155"
 
-    PC_IP: str = "10.135.223.48"
-    VR_IP: str = "10.135.223.229"
+    PC_IP: str = "192.168.43.198"
+    VR_IP: str = "192.168.43.89"
     # ── Robot ──────────────────────────────────────────────────────────────
     # Supported: "ur3e", "ur5e", "realman".
     ROBOT_TYPE: str = "realman"
@@ -191,6 +191,16 @@ class Config:
     FORCE_MOVING_AVERAGE_WINDOW: int = 8
     FORCE_LOW_PASS_ALPHA: float = 0.15
     GRAVITY_CALIB_SAMPLES: int = 200
+    # Stream RealMan TCP position, [w,x,y,z] rotation, and [Fx,Fy,Fz] as JSON
+    # to the Quest TCPPoseReceiver. This is the main combined state port.
+    FORCE_ENABLE: bool = True
+    FORCE_PORT: int = 8012
+    FORCE_SEND_RATE: float = 30.0
+    # RealMan 基座 → Unity 显示: (X前,Y左,Z上) → (X右,Y前,Z上)
+    # 独立于 VR_TO_ROBOT_AXES, 使 RGB=XYZ 校准时 TCP 显示即对齐.
+    TCP_DISPLAY_AXES: np.ndarray = field(
+        default_factory=lambda: np.array([[0, -1, 0], [0, 0, 1], [1, 0, 0]], dtype=float)
+    )
 
     # ── Inference ─────────────────────────────────────────────────────────
     INFERENCE_FPS: int = 10
@@ -449,6 +459,10 @@ class Config:
             raise ValueError("GRAVITY_COMP_FILTER_ALPHA must be between 0 and 1.")
         if not 0.0 <= self.FORCE_LOW_PASS_ALPHA <= 1.0:
             raise ValueError("FORCE_LOW_PASS_ALPHA must be between 0 and 1.")
+        if not 1 <= self.FORCE_PORT <= 65535:
+            raise ValueError("FORCE_PORT must be between 1 and 65535.")
+        if self.FORCE_SEND_RATE <= 0.0:
+            raise ValueError("FORCE_SEND_RATE must be positive.")
         if np.any(self.TCP_POSE):
             self.TCP_TRANSFORM = SE3Container.from_rotation_vector_and_translation(
                 self.TCP_POSE[3:6], self.TCP_POSE[0:3]
