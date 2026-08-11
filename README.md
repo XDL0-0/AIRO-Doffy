@@ -123,6 +123,10 @@ The system uses `config.py` as its central configuration. Key settings:
 | `GRAVITY_COMP_FILTER_ALPHA` | Low-pass alpha used inside gravity compensation | `0.15` |
 | `FORCE_MOVING_AVERAGE_WINDOW` | Moving-average window applied to 6D wrench readings | `8` |
 | `FORCE_LOW_PASS_ALPHA` | Final wrench low-pass alpha after moving average/deadband | `0.15` |
+| `FORCE_ENABLE` | Stream combined RealMan TCP pose and force JSON to Quest | `True` |
+| `FORCE_PORT` | Quest `TCPPoseReceiver` main UDP port | `8012` |
+| `FORCE_SEND_RATE` | RealMan TCP-state packet rate in Hz | `30.0` |
+| `TCP_DISPLAY_AXES` | Map RealMan base-frame position, rotation, and force into Unity display axes | RealMan `(X forward, Y left, Z up)` to Unity `(X right, Y up, Z forward)` |
 | `TACTILE_ENABLE` | Start tactile hardware when VR transfer or visualizer needs it | `False` |
 | `TACTILE_READER` | Tactile reader backend (`ble4` / `serial`) | `ble4` |
 | `TACTILE_SHAPE` | Stored tactile sample shape | `(4, 3)` |
@@ -170,6 +174,14 @@ state/action, timestamps, and optional force/torque fields are collected outside
 the deadline thread.
 Set `FORCE_COLLECT=True` and/or `TORQUE_COLLECT=True` to save the integrated
 sensor readings.
+Set `FORCE_ENABLE=True` to stream the measured RealMan TCP pose and latest
+filtered force to `(VR_IP, FORCE_PORT)` at `FORCE_SEND_RATE`. Each UTF-8 JSON
+datagram has one `rightTCP` object with `position` in metres, `rotation` in
+`[w,x,y,z]` quaternion order, and `force` as `[Fx,Fy,Fz]` in newtons. Port 8012
+is the main `TCPPoseReceiver` port; a separate force-only receiver is not used.
+`TCP_DISPLAY_AXES` applies the same RealMan-to-Unity basis change to position,
+orientation, and force so the streamed TCP state stays aligned with the Quest
+scene after calibration.
 
 With `TCP_TOOL="Hand"`, controller tracking also enables the BrainCo Revo2
 presets: push the right joystick forward to run the staged **grab** motion and

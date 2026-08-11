@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 import unittest
@@ -17,6 +18,8 @@ from realman_teleop import (
     RealManEpisodeRecorder,
     RealManTeleop,
     RealManRemoteIkSolver,
+    QuestTcpStateSender,
+    pack_quest_tcp_state_packet,
     visualizer_publish_loop,
 )
 from visualizer_config import VisualizerConfig
@@ -1734,6 +1737,90 @@ class DatasetRecorderLifecycleTest(unittest.TestCase):
 
 
 class ConfigRuntimeDefaultsTest(unittest.TestCase):
+    def test_quest_tcp_state_packet_matches_receiver_protocol(self) -> None:
+        tcp_pose = np.eye(4)
+        tcp_pose[:3, :3] = Rotation.from_euler("z", 90.0, degrees=True).as_matrix()
+        tcp_pose[:3, 3] = [0.4, -0.2, 0.3]
+
+        packet = pack_quest_tcp_state_packet(
+            tcp_pose,
+            np.array([1.0, 0.5, -0.25, 0.1, -0.2, 0.0]),
+            np.eye(3),
+        )
+
+        message = json.loads(packet.decode("utf-8"))
+        self.assertEqual(set(message), {"rightTCP"})
+        np.testing.assert_allclose(
+            message["rightTCP"]["position"],
+            [0.4, -0.2, 0.3],
+        )
+        np.testing.assert_allclose(
+            message["rightTCP"]["rotation"],
+            [np.sqrt(0.5), 0.0, 0.0, np.sqrt(0.5)],
+        )
+        np.testing.assert_allclose(
+            message["rightTCP"]["force"],
+            [1.0, 0.5, -0.25],
+        )
+
+    def test_quest_tcp_state_sender_sends_cached_state_and_closes_socket(self) -> None:
+        stop_event = threading.Event()
+
+        class FakeSocket:
+            def __init__(self) -> None:
+                self.packets: list[tuple[bytes, tuple[str, int]]] = []
+                self.closed = False
+
+            def sendto(self, packet, destination) -> None:
+                self.packets.append((packet, destination))
+                stop_event.set()
+
+            def close(self) -> None:
+                self.closed = True
+
+        fake_socket = FakeSocket()
+        arm = FakeRealManArm()
+        teleop = RealManTeleop(
+            controller_data(),
+            cfg=realman_config(
+                FORCE_MOVING_AVERAGE_WINDOW=1,
+                FORCE_LOW_PASS_ALPHA=1.0,
+            ),
+            backend=FakeRealManBackend(arm),
+        )
+        sender = QuestTcpStateSender(
+            teleop,
+            quest_ip="10.135.223.229",
+            port=8012,
+            send_rate_hz=30.0,
+            socket_factory=lambda *_args: fake_socket,
+        )
+        try:
+            sender.run(stop_event)
+        finally:
+            teleop.close()
+
+        self.assertTrue(fake_socket.closed)
+        self.assertEqual(len(fake_socket.packets), 1)
+        packet, destination = fake_socket.packets[0]
+        self.assertEqual(destination, ("10.135.223.229", 8012))
+        message = json.loads(packet.decode("utf-8"))
+        np.testing.assert_allclose(
+            message["rightTCP"]["position"],
+            [0.0, 0.3, 0.4],
+        )
+        np.testing.assert_allclose(
+            message["rightTCP"]["rotation"],
+            [1.0, 0.0, 0.0, 0.0],
+        )
+        np.testing.assert_allclose(message["rightTCP"]["force"], [-2.0, 3.0, 1.0])
+
+    def test_force_transfer_config_validation(self) -> None:
+        with self.assertRaisesRegex(ValueError, "FORCE_PORT"):
+            realman_config(FORCE_PORT=0)
+        with self.assertRaisesRegex(ValueError, "FORCE_SEND_RATE"):
+            realman_config(FORCE_SEND_RATE=0.0)
+
     def test_runtime_ur_defaults_use_ur_axes_joints_and_ip_fallback(self) -> None:
         cfg = Config(
             ROBOT_TYPE="ur3e",
