@@ -38,7 +38,6 @@ class VRDataReceiver:
         self._lock = threading.Lock()
         self.data: list[dict] | None = None
         self.hand_data: Dict[str, dict] = {}  # {"L": {...}, "R": {...}}
-        self.fine_mode: str | None = None
         self.current_mode: str | None = None  # "controller" or "hand"
         self.data_collecting_state = False
         self.data_export_state = False
