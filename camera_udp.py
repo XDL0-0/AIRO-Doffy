@@ -50,7 +50,6 @@ class CameraUDPManager:
         self._lock = threading.Lock()
         self.data: list[dict] | None = None
         self.hand_data: Dict[str, dict] = {}   # {"L": {...}, "R": {...}}
-        self.fine_mode: str | None = None
         self.data_collecting_state = False
         self.data_export_state = False
         self.data_rollback_state = False
@@ -278,10 +277,6 @@ class CameraUDPManager:
                     utils.logger.warning(
                         f"Invalid camera index {cam_idx}, total={self.camera_num}"
                     )
-            else:
-                with self._lock:
-                    self.fine_mode = value
-
     # ── Movement detection ────────────────────────────────────────────────
 
     def is_movement_exist(self) -> bool:
