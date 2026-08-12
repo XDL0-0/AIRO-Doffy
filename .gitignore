@@ -27,7 +27,7 @@ datasets/**
 torque_log.npz
 eval_results/
 policies/
-eval_dataset/
+eval_dataset_plots/
 upload_to_github.sh
 
 # Cache files and directories
