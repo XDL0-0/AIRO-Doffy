@@ -1,5 +1,8 @@
 # VR Teleoperation for Robot Manipulators
 
+> **Version**: This repository is compatible with the VR app **v0.6.0**.  
+> **VR App**: The APK and Unity project files are maintained at **[AIRO-DOFFY-APP](https://github.com/XDL0-0/AIRO-DOFFY-APP)**.
+
 A high-performance codebase for controlling robot manipulators (UR3e, UR5e, RealMan, or compatible backends) using VR controllers or hand tracking via UDP. It features camera streaming to the VR headset via **HD chunked UDP** or **WebRTC** (aiortc), low-latency robot control, tactile sensing integration, dataset recording (HDF5 & LeRobot formats), and policy inference evaluation.
 
 ## Key Features
@@ -22,7 +25,7 @@ A high-performance codebase for controlling robot manipulators (UR3e, UR5e, Real
 - **Python 3.10+** (Recommended: Conda environment `airo-mono`)
 - **Robot**: Compatible robot backend, such as UR3e/UR5e with RTDE enabled or RealMan over its network API.
 - **Cameras**: Intel RealSense Cameras.
-- **VR Setup**: VR headset running the compatible Unity app with `DualControllerSender` / `HandTrackingSender` + `UdpSocketMultiHD` receiver.
+- **VR Setup**: VR headset running the compatible Unity app (v0.6.0) with `DualControllerSender` / `HandTrackingSender` + `UdpSocketMultiHD` receiver. APK and project files: [AIRO-DOFFY-APP](https://github.com/XDL0-0/AIRO-DOFFY-APP).
 
 ### 2. Dependencies
 Install the required Python packages:
