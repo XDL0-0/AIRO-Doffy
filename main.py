@@ -471,12 +471,11 @@ def main() -> None:
 
             with cu_manager._lock:
                 data = cu_manager.data
-                fine = cu_manager.fine_mode
                 hand = dict(cu_manager.hand_data) if cu_manager.hand_data else None
             if data is not None or hand is not None:
                 reset_before = teleop.reset_sign
                 controller_reset = controller_reset_requested(data)
-                teleop.step(data, fine, dt, hand_data=hand)
+                teleop.step(data, dt, hand_data=hand)
                 reset_requested = controller_reset or (
                     teleop.reset_sign and not reset_before
                 )

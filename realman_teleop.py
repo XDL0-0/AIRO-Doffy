@@ -1215,7 +1215,6 @@ class RealManTeleop:
         self._force_error = ""
 
         self._control_lock = threading.Lock()
-        self._fine_mode = False
         self._input_stale = False
         self._requires_reference = True
         self._grip_active = False
@@ -1568,10 +1567,7 @@ class RealManTeleop:
             dt,
         )
 
-        translation_scale = 0.3 if self._fine_mode else 1.0
-        rotation_scale = 0.4 if self._fine_mode else 1.0
-        translation_delta *= translation_scale
-        rotation_delta, _ = cv2.Rodrigues(rotation_vector * rotation_scale)
+        rotation_delta, _ = cv2.Rodrigues(rotation_vector)
 
         target_translation = self._robot_reference.translation + translation_delta
         if self.cfg.FREEZE_ROTATION:
@@ -1674,7 +1670,6 @@ class RealManTeleop:
     def process_controller(
         self,
         controller_data: list[dict],
-        fine_mode_status: str | None,
         dt: float,
     ) -> bool:
         """Consume one new VR packet and publish a new safe CAN-FD target."""
@@ -1730,14 +1725,6 @@ class RealManTeleop:
                 if not right["GripTrigger"]:
                     self._reset_requires_grip_release = False
                 return False
-
-            requested_fine_mode = fine_mode_status == "ON"
-            if requested_fine_mode != self._fine_mode:
-                self._fine_mode = requested_fine_mode
-                self._set_reference(controller_data, snapshot.tcp_pose, snapshot.joints)
-                utils.logger.info(
-                    f"RealMan fine control mode: {'ON' if self._fine_mode else 'OFF'}"
-                )
 
             if self._requires_reference or self._input_stale:
                 self._set_reference(controller_data, snapshot.tcp_pose, snapshot.joints)
@@ -2893,7 +2880,6 @@ def main() -> None:
                     if camera_manager.hand_data
                     else None
                 )
-                fine_mode = camera_manager.fine_mode
                 input_timestamp_ns = camera_manager.vr_input_timestamp_ns
 
             new_input = input_timestamp_ns > previous_input_timestamp_ns
@@ -2907,7 +2893,7 @@ def main() -> None:
                 now = time.monotonic()
                 dt = min(max(now - previous_control_time, 1e-4), 0.05)
                 previous_control_time = now
-                teleop.process_controller(controller_data, fine_mode, dt)
+                teleop.process_controller(controller_data, dt)
                 previous_input_timestamp_ns = input_timestamp_ns
             elif new_input:
                 expected = "hand" if cfg.TRACKING_MODE == "hand" else "controller"

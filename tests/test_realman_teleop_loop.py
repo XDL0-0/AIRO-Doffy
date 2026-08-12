@@ -803,11 +803,10 @@ class RealManTeleopTest(unittest.TestCase):
             backend=FakeRealManBackend(FakeRealManArm()),
         )
         try:
-            teleop.process_controller(controller_data(), None, 0.01)
+            teleop.process_controller(controller_data(), 0.01)
             self.assertTrue(
                 teleop.process_controller(
                     controller_data(grip=True, joystick_x=1.0),
-                    None,
                     0.01,
                 )
             )
@@ -830,11 +829,10 @@ class RealManTeleopTest(unittest.TestCase):
             backend=FakeRealManBackend(arm),
         )
         try:
-            teleop.process_controller(controller_data(), None, 0.01)
+            teleop.process_controller(controller_data(), 0.01)
             self.assertTrue(
                 teleop.process_controller(
                     controller_data(grip=True, joystick_x=-1.0),
-                    None,
                     0.01,
                 )
             )
@@ -870,14 +868,14 @@ class RealManTeleopTest(unittest.TestCase):
         )
         try:
             teleop.process_controller(
-                controller_data(joystick_y=1.0), None, 0.01
+                controller_data(joystick_y=1.0), 0.01
             )
             teleop.process_controller(
-                controller_data(joystick_y=1.0), None, 0.01
+                controller_data(joystick_y=1.0), 0.01
             )
-            teleop.process_controller(controller_data(), None, 0.01)
+            teleop.process_controller(controller_data(), 0.01)
             teleop.process_controller(
-                controller_data(joystick_y=-1.0), None, 0.01
+                controller_data(joystick_y=-1.0), 0.01
             )
 
             self.assertEqual(backend.hand.motions, ["grab", "release"])
@@ -1134,7 +1132,7 @@ class RealManTeleopTest(unittest.TestCase):
             reset_data[1]["Joystick_Press"] = 1
 
             self.assertFalse(
-                teleop.process_controller(reset_data, None, 0.01)
+                teleop.process_controller(reset_data, 0.01)
             )
             self.assertTrue(teleop._reset_in_progress)
             self.assertTrue(teleop._reset_requires_grip_release)
@@ -1148,7 +1146,7 @@ class RealManTeleopTest(unittest.TestCase):
             # Holding the combination is edge-triggered and does not replace
             # the reset command with controller motion.
             self.assertFalse(
-                teleop.process_controller(reset_data, None, 0.01)
+                teleop.process_controller(reset_data, 0.01)
             )
             np.testing.assert_allclose(teleop.canfd._target, first_target)
         finally:
@@ -1167,7 +1165,7 @@ class RealManTeleopTest(unittest.TestCase):
             reset_data[1]["Joystick_Press"] = 1
 
             self.assertFalse(
-                teleop.process_controller(reset_data, None, 0.01)
+                teleop.process_controller(reset_data, 0.01)
             )
             np.testing.assert_allclose(
                 teleop.canfd._target,
@@ -1438,11 +1436,10 @@ class RealManTeleopTest(unittest.TestCase):
         cfg = realman_config(TELEOP_COMMAND_MODE="joint")
         teleop = RealManTeleop(controller_data(), cfg=cfg, backend=backend)
 
-        self.assertFalse(teleop.process_controller(controller_data(), None, 0.01))
+        self.assertFalse(teleop.process_controller(controller_data(), 0.01))
         self.assertTrue(
             teleop.process_controller(
                 controller_data(x=0.01, grip=True),
-                None,
                 0.01,
             )
         )
@@ -1464,11 +1461,10 @@ class RealManTeleopTest(unittest.TestCase):
         cfg = realman_config(TELEOP_COMMAND_MODE="tcp")
         teleop = RealManTeleop(controller_data(), cfg=cfg, backend=backend)
 
-        teleop.process_controller(controller_data(), None, 0.01)
+        teleop.process_controller(controller_data(), 0.01)
         self.assertTrue(
             teleop.process_controller(
                 controller_data(x=0.01, grip=True),
-                None,
                 0.01,
             )
         )

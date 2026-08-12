@@ -80,7 +80,6 @@ class RobotTeleop:
             dtype=float,
         )
         self.joint_threshold = self._joint_threshold_for_dof(cfg.MOVE_THRESHOLD)
-        self.fine_mode = False
         self.last_quat: np.ndarray | None = None
         self.last_action_quat: np.ndarray | None = None
         self.last_tcp_quat: np.ndarray | None = None
@@ -482,16 +481,6 @@ class RobotTeleop:
         pitch, yaw, roll = rotation_vector_vr
         return np.array([roll, pitch, yaw])
 
-    def _update_fine_mode(self, controller_data: list[dict], mode_status: str | None) -> None:
-        if mode_status == "ON" and not self.fine_mode:
-            utils.logger.info("Fine Control Mode: ON")
-            self.fine_mode = True
-            self._set_reference(controller_data)
-        elif mode_status == "OFF" and self.fine_mode:
-            utils.logger.info("Fine Control Mode: OFF")
-            self.fine_mode = False
-            self._set_reference(controller_data)
-
     # ── Sensor capture ────────────────────────────────────────────────────
 
     def capture_joint_pose(self) -> np.ndarray:
@@ -666,16 +655,10 @@ class RobotTeleop:
         rotation_diff = reference.rotation_matrix.T @ se3_mat[:3, :3]
         translation_diff = self.pos_filter.update(translation_diff, dt)
 
-        if self.fine_mode:
-            alpha_t, alpha_r = 0.3, 0.4
-        else:
-            alpha_t, alpha_r = 1.0, 1.0
-
         rvec, _ = cv2.Rodrigues(rotation_diff)
         rvec = self._remap_controller_rotation_vector(rvec.flatten())
-        rvec = self.rot_filter.update(rvec, dt) * alpha_r
+        rvec = self.rot_filter.update(rvec, dt)
         rotation_diff, _ = cv2.Rodrigues(rvec)
-        translation_diff *= alpha_t
 
         target_translation = self.SE3_tcp_pose_in_base_frame_std.translation + translation_diff
         if self.freeze_rotation:
@@ -877,7 +860,6 @@ class RobotTeleop:
     def step(
         self,
         controller_data: list[dict] | None,
-        fine_mode_status: str | None,
         dt: float = 0.01,
         hand_data: dict | None = None,
     ) -> None:
@@ -937,8 +919,6 @@ class RobotTeleop:
 
         if controller_data is None:
             return
-
-        self._update_fine_mode(controller_data, fine_mode_status)
 
         if self.gripper_enabled:
             x = -controller_data[1]["Joystick"][1]
