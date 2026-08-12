@@ -26,11 +26,8 @@ datasets/**
 *.hdf5
 torque_log.npz
 eval_results/
-policies/*
-!policies/__init__.py
-!policies/forceflowpp/
-!policies/forceflowpp/**/
-!policies/forceflowpp/**/*.py
+policies/
+eval_dataset/
 upload_to_github.sh
 
 # Cache files and directories
