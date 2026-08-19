@@ -30,6 +30,10 @@ class Config:
     REALMAN_CANFD_HEARTBEAT_TIMEOUT: float = 0.05
     REALMAN_SENSOR_RATE: float = 30.0
     REALMAN_VR_TIMEOUT: float = 0.25
+    # Speed of the reset/home motion (rad/s): teach collect moving to the
+    # initial pose and teleop reset to the startup pose. Position backends only;
+    # torque mode (URTorqueBackend) has no speed parameter on its reset.
+    RESET_JOINT_SPEED: float = 1.0
     REALMAN_MAX_JOINT_SPEED = 0.5
     REALMAN_MAX_JOINT_ACCELERATION = 1.0
 
@@ -49,6 +53,12 @@ class Config:
     # Keep the 7-DoF J4 (or 6-DoF J3) elbow on its initial side of zero.
     # RealMan warns that a fully straight 0-degree elbow can oscillate.
     REALMAN_QP_ELBOW_MARGIN_DEG: float = 3.0
+    # Abstract Kinematic Mapping for vertically mounted RM75 VR upper-body
+    # teleoperation. False preserves the original RealMan path exactly.
+    WRM_enable: bool = False
+    # Maximum reference-relative TCP height change driven by WRM elbow
+    # progress. Increasing alpha lowers base-frame TCP Z by up to this amount.
+    WRM_TCP_Z_DROP_M: float = 0.05
     REALMAN_REALTIME_STATE_PUSH: bool = True
     REALMAN_STATE_PUSH_CYCLE_MS: int = 5
     REALMAN_STATE_PUSH_PORT: int = 8098
@@ -86,11 +96,10 @@ class Config:
     BRAINCO_THUMB_ROTATE_PROGRESS_RANGE: float = 1.2
 
     # ── Task / Dataset ────────────────────────────────────────────────────
-    TASK_NAME: str = "pick_and_place"
-    DATASET_DIR: str = "./datasets/pnp_long"
+    TASK_NAME: str = "WRM_grasp_ball"
+    DATASET_DIR: str = "./datasets/WRM_grasp_ball"
     DATASET_TYPE: str = "l"          # 'a' = ACT (hdf5), 'l' = lerobot
     PUSH_TO_HUB: bool = False
-    SAVE_EEF: bool = False
     # Keep image compression and video encoding from starving high-rate robot
     # command threads during LeRobot recording.
     LEROBOT_IMAGE_WRITER_PROCESSES: int = 1
@@ -127,14 +136,17 @@ class Config:
     SIGNALING_PORT: int = 8765           # WebRTC video signaling (WebSocket)
 
     # ── Video streaming ───────────────────────────────────────────────────
-    VIDEO_TRANSPORT: str = "webrtc"      # "udp" = chunked JPEG (camera_udp), "webrtc" = WebRTC_udp
+    VIDEO_TRANSPORT: str = "webrtc"      # "udp" = chunked JPEG (udp), "webrtc" = WebRTC_udp
     JPEG_QUALITY: int = 50
     HD_CHUNK_SIZE: int = 60000          # max payload bytes per UDP chunk
 
     # ── Control rates (Hz) ────────────────────────────────────────────────
     UR_CTRL_RATE: int = 100
     KELO_CTRL_RATE: int = 10
-    COLLECT_RATE: int = 10
+    COLLECT_RATE: int = 24
+    # Ignore startup shake after Teach is pressed before trajectory trimming.
+    # At the default 24 Hz collection rate, 40 frames is about 1.67 seconds.
+    TEACH_INITIAL_DISCARD_FRAMES: int = 25
     INFERENCE_FPS: int = 10
 
 
@@ -225,6 +237,22 @@ class Config:
     TACTILE_BASELINE_DRIFT_ALPHA: float = 0.0
     TACTILE_BASELINE_DRIFT_THRESHOLD: float = 80.0
 
+    # ── Beaver VL53L7CX arm bracelets ────────────────────────────────────
+    # Disabled by default. When enabled, Beaver is added to recording and the
+    # visualizer without blocking robot-control or camera threads.
+    beaver_enable: bool = True
+    BEAVER_PORT: str | None = None       # None auto-detects ESP32-S3 USB CDC.
+    BEAVER_BAUDRATE: int = 115200
+    BEAVER_GRID_WIDTH: int = 4          # Must match ESP32 firmware (4 or 8).
+    BEAVER_STALE_AFTER_S: float = 1.0
+    BEAVER_RECONNECT_DELAY_S: float = 2.0
+    # Stable dataset/visualizer slot order for the currently detected 5+4 sensors.
+    BEAVER_SENSOR_LAYOUT: tuple = (
+        (0, 0), (0, 1), (0, 2), (0, 3), (0, 4),
+        (1, 0), (1, 1), (1, 2), (1, 3),
+    )
+    BEAVER_VISUALIZER_MAX_MM: int = 2500
+
     def __post_init__(self):
         from airo_spatial_algebra.se3 import SE3Container
         from data_schema import normalize_data_type
@@ -280,14 +308,14 @@ class Config:
         if self.INITIAL_JOINT is None:
             if self.ROBOT_TYPE == "realman":
                 self.INITIAL_JOINT = np.array(
-                    [
-                        2.20,
-                        -0.26,
+                    [   
+                        0.254,
+                        1.46,
+                        1.59,
+                        -0.82,
+                        -0.08,
+                        -1.16,
                         0.10,
-                        -1.17,
-                        -0.11,
-                        -0.89,
-                        -0.50,
                     ]
                 )
                         # 2.6,
@@ -360,6 +388,17 @@ class Config:
             raise ValueError(
                 "BRAINCO_THUMB_ROTATE_PROGRESS_RANGE must be positive."
             )
+        if (
+            isinstance(self.TEACH_INITIAL_DISCARD_FRAMES, bool)
+            or not isinstance(self.TEACH_INITIAL_DISCARD_FRAMES, (int, np.integer))
+            or self.TEACH_INITIAL_DISCARD_FRAMES < 0
+        ):
+            raise ValueError(
+                "TEACH_INITIAL_DISCARD_FRAMES must be a non-negative integer."
+            )
+        self.TEACH_INITIAL_DISCARD_FRAMES = int(
+            self.TEACH_INITIAL_DISCARD_FRAMES
+        )
         if self.REALMAN_MIN_CANFD_RATE < 100.0:
             raise ValueError(
                 "REALMAN_MIN_CANFD_RATE must be at least 100 Hz."
@@ -383,6 +422,8 @@ class Config:
             raise ValueError("REALMAN_VR_TIMEOUT must be positive.")
         if self.REALMAN_MAX_JOINT_SPEED <= 0.0:
             raise ValueError("REALMAN_MAX_JOINT_SPEED must be positive.")
+        if self.RESET_JOINT_SPEED <= 0.0:
+            raise ValueError("RESET_JOINT_SPEED must be positive.")
         if self.REALMAN_MAX_JOINT_ACCELERATION <= 0.0:
             raise ValueError(
                 "REALMAN_MAX_JOINT_ACCELERATION must be positive."
@@ -405,6 +446,8 @@ class Config:
             raise ValueError(
                 "REALMAN_QP_ELBOW_MARGIN_DEG must be between 0 and 90 degrees."
             )
+        if not np.isfinite(self.WRM_TCP_Z_DROP_M) or self.WRM_TCP_Z_DROP_M < 0.0:
+            raise ValueError("WRM_TCP_Z_DROP_M must be finite and non-negative.")
         if self.REALMAN_CANFD_TRAJECTORY_MODE not in {0, 1, 2}:
             raise ValueError("REALMAN_CANFD_TRAJECTORY_MODE must be 0, 1, or 2.")
         if self.REALMAN_CANFD_RADIO < 0:
@@ -432,10 +475,6 @@ class Config:
             raise ValueError("REALMAN_STATE_PUSH_TIMEOUT must be positive.")
         if self.REALMAN_FORCE_COORDINATE not in {0, 1, 2}:
             raise ValueError("REALMAN_FORCE_COORDINATE must be 0, 1, or 2.")
-        if self.DATA_TYPE == "delta_tcp" and self.SAVE_EEF:
-            utils.logger.warning("SAVE_EEF is ignored when DATA_TYPE='delta_tcp'.")
-        if self.DATA_TYPE == "tcp" and self.SAVE_EEF:
-            utils.logger.warning("SAVE_EEF is redundant when DATA_TYPE='tcp'.")
         if self.DATA_TYPE not in {"qpos", "both", "tcp", "delta_tcp"}:
             raise ValueError(f"Unsupported DATA_TYPE: {self.DATA_TYPE}")
         if self.LEROBOT_IMAGE_WRITER_PROCESSES < 0:
@@ -453,6 +492,31 @@ class Config:
             raise ValueError("LEROBOT_ENCODER_THREADS must be at least 1.")
         if self.TACTILE_READER not in {"ble4", "serial"}:
             raise ValueError(f"Unsupported TACTILE_READER: {self.TACTILE_READER}")
+        if self.BEAVER_BAUDRATE <= 0:
+            raise ValueError("BEAVER_BAUDRATE must be positive.")
+        if self.BEAVER_GRID_WIDTH not in (4, 8):
+            raise ValueError("BEAVER_GRID_WIDTH must be 4 or 8.")
+        if self.BEAVER_STALE_AFTER_S <= 0:
+            raise ValueError("BEAVER_STALE_AFTER_S must be positive.")
+        if self.BEAVER_RECONNECT_DELAY_S <= 0:
+            raise ValueError("BEAVER_RECONNECT_DELAY_S must be positive.")
+        if self.BEAVER_VISUALIZER_MAX_MM <= 0:
+            raise ValueError("BEAVER_VISUALIZER_MAX_MM must be positive.")
+        layout = tuple(tuple(sensor) for sensor in self.BEAVER_SENSOR_LAYOUT)
+        if (
+            len(layout) != 9
+            or len(set(layout)) != 9
+            or any(
+                len(sensor) != 2
+                or sensor[0] not in (0, 1)
+                or not 0 <= sensor[1] < 18
+                for sensor in layout
+            )
+        ):
+            raise ValueError(
+                "BEAVER_SENSOR_LAYOUT must contain 9 unique (bus, index) IDs."
+            )
+        self.BEAVER_SENSOR_LAYOUT = layout
         if self.FORCE_MOVING_AVERAGE_WINDOW < 1:
             raise ValueError("FORCE_MOVING_AVERAGE_WINDOW must be at least 1.")
         if not 0.0 <= self.GRAVITY_COMP_FILTER_ALPHA <= 1.0:

@@ -313,6 +313,9 @@ def realman_config(**overrides) -> Config:
         "ROBOT_TYPE": "realman",
         "ROBOT_IP": "192.0.2.1",
         "FREEZE_ROTATION": False,
+        # Legacy RealMan tests exercise the original QP/one-shot paths. WRM
+        # tests opt in explicitly with an RM75-capable fake below.
+        "WRM_enable": False,
     }
     values.update(overrides)
     return Config(**values)
@@ -796,6 +799,81 @@ class CanfdCommandLoopTest(unittest.TestCase):
 
 
 class RealManTeleopTest(unittest.TestCase):
+    def test_wrm_couples_filtered_progress_into_tcp_z_before_ik(self) -> None:
+        class CapturingWrmIk:
+            instances = []
+
+            def __init__(self, *args, **kwargs) -> None:
+                del args, kwargs
+                self.robot_elbow_high = 40.0
+                self.robot_elbow_horizontal = -20.0
+                self.last_status = 0
+                self.coupling_limits = []
+                self.solved_targets = []
+                self.reference_calls = 0
+                self.seed = np.zeros(7)
+                self.__class__.instances.append(self)
+
+            def set_tcp_z_reference(self) -> None:
+                self.reference_calls += 1
+
+            def reset_seed(self, joints) -> None:
+                self.seed = np.asarray(joints, dtype=float).copy()
+
+            def couple_tcp_target_z(self, target, maximum_drop_m):
+                self.coupling_limits.append(float(maximum_drop_m))
+                coupled = np.asarray(target, dtype=float).copy()
+                coupled[2, 3] -= 0.02
+                return coupled
+
+            def solve(self, target):
+                self.solved_targets.append(np.asarray(target, dtype=float).copy())
+                return self.seed + 0.01
+
+            def accept_solution(self, joints) -> None:
+                self.seed = np.asarray(joints, dtype=float).copy()
+
+            def update_tracking(self, sample) -> bool:
+                del sample
+                return True
+
+            def visualizer_state(self):
+                return {}
+
+            def tcp_z_offset(self, maximum_drop_m) -> float:
+                del maximum_drop_m
+                return -0.02
+
+        backend = FakeRealManBackend(FakeRealManArm())
+        backend.to_robot_tcp_pose = lambda pose: np.asarray(pose, dtype=float)
+        cfg = realman_config(
+            WRM_enable=True,
+            WRM_TCP_Z_DROP_M=0.05,
+            TELEOP_COMMAND_MODE="joint",
+        )
+        with patch("wrm_akm.Rm75ArmAngleIk", CapturingWrmIk):
+            teleop = RealManTeleop(
+                controller_data(),
+                cfg=cfg,
+                backend=backend,
+            )
+        try:
+            teleop.process_controller(controller_data(), 0.01)
+            self.assertTrue(
+                teleop.process_controller(
+                    controller_data(x=0.01, grip=True),
+                    0.01,
+                )
+            )
+            self.assertTrue(teleop.canfd.resolve_pending_target())
+
+            wrm = CapturingWrmIk.instances[-1]
+            self.assertEqual(wrm.coupling_limits[-1], 0.05)
+            self.assertAlmostEqual(wrm.solved_targets[-1][2, 3], 0.28)
+            self.assertGreaterEqual(wrm.reference_calls, 2)
+        finally:
+            teleop.close()
+
     def test_right_joystick_horizontal_biases_last_joint_in_joint_mode(self) -> None:
         teleop = RealManTeleop(
             controller_data(),

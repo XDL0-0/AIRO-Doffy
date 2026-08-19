@@ -1,0 +1,7 @@
+# The repository-level requirements already provide these packages. This file
+# documents the standalone training folder's direct runtime dependencies.
+torch>=2.2
+lerobot>=0.5,<0.6
+pyarrow>=14
+PyYAML>=6
+tqdm>=4.66

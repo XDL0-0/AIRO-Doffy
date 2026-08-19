@@ -1,6 +1,6 @@
 """Camera capture + WebRTC streaming to VR headset, and VR data reception.
 
-Replaces the chunked-JPEG-over-UDP camera streaming in camera_udp.py with
+Replaces the chunked-JPEG-over-UDP streaming in udp.py with
 WebRTC (aiortc).  Each Realsense camera becomes a VideoStreamTrack in a
 single RTCPeerConnection.  A DataChannel named "control" replaces the old
 UDP socket_2 resolution/zoom commands.
@@ -91,7 +91,7 @@ class RealsenseCameraTrack(VideoStreamTrack):
 class WebRTCUDPManager:
     """WebRTC video streaming + UDP VR data reception.
 
-    Drop-in replacement for ``CameraUDPManager`` — same public attributes
+    Drop-in replacement for ``UDPManager`` — same public attributes
     (``data``, ``hand_data``, ``camera_images``, ``depth_images``, etc.)
     and methods (``test_connection``, ``start_comms_threads``, ``close``).
     """
@@ -212,7 +212,7 @@ class WebRTCUDPManager:
     ) -> Tuple[Dict[str, U.UdpComms], Dict[str, Realsense]]:
         """Create UDP sockets for VR data and cameras.
 
-        Unlike CameraUDPManager we do NOT allocate per-camera TX sockets.
+        Unlike UDPManager we do NOT allocate per-camera TX sockets.
         We only need RX sockets for VR pose (socket_0) and record control
         (socket_1), plus an optional tactile TX socket.
         """

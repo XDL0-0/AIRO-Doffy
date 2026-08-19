@@ -31,7 +31,7 @@ from airo_spatial_algebra.se3 import SE3Container
 
 import utils
 from config import Config
-from dataset import DatasetRecorder
+from data_recording import RealManEpisodeRecorder
 from force_filter import WrenchFilter
 from robot_backend import RealManBackend, make_robot_backend
 from visualizer_config import VisualizerConfig
@@ -1145,7 +1145,16 @@ class RealManTeleop:
                 raise RuntimeError("The connected RealMan backend does not expose a force sensor.")
 
             self.dof = int(self.backend.dof)
-            self.control_mode = self.cfg.TELEOP_COMMAND_MODE
+            self.wrm_enabled = bool(getattr(self.cfg, "WRM_enable", False))
+            if self.wrm_enabled and self.dof != 7:
+                raise ValueError("WRM AKM requires a seven-DoF RM75.")
+            if self.wrm_enabled and self.cfg.TRACKING_MODE != "controller":
+                raise ValueError("WRM AKM currently supports VR controller tracking only.")
+            # Redundancy/arm-angle control requires joint CAN-FD targets.  The
+            # disabled path retains TELEOP_COMMAND_MODE without modification.
+            self.control_mode = (
+                "joint" if self.wrm_enabled else self.cfg.TELEOP_COMMAND_MODE
+            )
             self.tracking_mode = self.cfg.TRACKING_MODE
             self.tcp_tool = getattr(self.backend, "tcp_tool", self.cfg.TCP_TOOL)
             self.hand = getattr(self.backend, "hand", None)
@@ -1254,6 +1263,7 @@ class RealManTeleop:
         self._raw_arm = raw_arm
         self._realman_api = getattr(self.backend.robot, "_api", None)
         self._remote_ik_solver: RealManRemoteIkSolver | None = None
+        self._wrm_akm = None
         self._last_remote_ik_status = 0
         self._state_push_callback = None
         self._state_push_active = False
@@ -1297,7 +1307,34 @@ class RealManTeleop:
                 )
         self._joint_speed_limits = joint_speed_limits
 
-        if self.control_mode == "joint" and self.cfg.REALMAN_QP_IK_ENABLE:
+        if self.wrm_enabled:
+            from wrm_akm import Rm75ArmAngleIk
+
+            self._wrm_akm = Rm75ArmAngleIk(
+                raw_arm,
+                self._realman_api,
+                self._joints,
+                self.backend.to_robot_tcp_pose(self._tcp_pose),
+                lower_limits_radians=getattr(
+                    self.backend.robot,
+                    "_joint_lower_limits",
+                    None,
+                ),
+                upper_limits_radians=getattr(
+                    self.backend.robot,
+                    "_joint_upper_limits",
+                    None,
+                ),
+            )
+            self._wrm_akm.set_tcp_z_reference()
+            utils.logger.info(
+                "WRM AKM calibrated: robot elbow arm-angle %.1f deg (high) "
+                "-> %.1f deg (horizontal), TCP Z drop up to %.3f m.",
+                self._wrm_akm.robot_elbow_high,
+                self._wrm_akm.robot_elbow_horizontal,
+                self.cfg.WRM_TCP_Z_DROP_M,
+            )
+        elif self.control_mode == "joint" and self.cfg.REALMAN_QP_IK_ENABLE:
             if RealManRemoteIkSolver.is_available(raw_arm, self._realman_api):
                 self._remote_ik_solver = RealManRemoteIkSolver(
                     raw_arm,
@@ -1344,7 +1381,10 @@ class RealManTeleop:
             self.canfd.set_joint_target(self._last_joint_target)
             self.canfd.set_joint_target_resolver(
                 self._resolve_joint_target,
-                continuous=self._remote_ik_solver is not None,
+                continuous=(
+                    self._remote_ik_solver is not None
+                    or self._wrm_akm is not None
+                ),
             )
         else:
             self.canfd.set_tcp_target(self._tool_tcp_to_realman_pose(self._last_tcp_target))
@@ -1371,7 +1411,8 @@ class RealManTeleop:
             f"RealMan teleop ready - DoF:{self.dof}, mode:{self.control_mode}, "
             f"tracking:{self.tracking_mode}, tool:{self.tcp_tool}, "
             f"CAN-FD:{self.cfg.REALMAN_CTRL_RATE} Hz, "
-            f"IK:{'QP continuous' if self._remote_ik_solver else 'legacy'}, "
+            "IK:"
+            f"{'WRM arm-angle' if self._wrm_akm else ('QP continuous' if self._remote_ik_solver else 'legacy')}, "
             f"sensors:{sensor_description}"
         )
 
@@ -1450,6 +1491,9 @@ class RealManTeleop:
             measured_tcp,
             dtype=float,
         ).copy()
+        if self._wrm_akm is not None:
+            self._wrm_akm.reset_seed(measured_joints)
+            self._wrm_akm.set_tcp_z_reference()
 
     def _set_hand_reference(
         self,
@@ -1464,6 +1508,9 @@ class RealManTeleop:
         self._seed_joint_filter(measured_joints)
         self._last_joint_target = np.asarray(measured_joints, dtype=float).copy()
         self._last_tcp_target = np.asarray(measured_tcp, dtype=float).copy()
+        if self._wrm_akm is not None:
+            self._wrm_akm.reset_seed(measured_joints)
+            self._wrm_akm.set_tcp_z_reference()
         self._hand_initialized = True
 
     def _request_reset(self) -> None:
@@ -1484,6 +1531,8 @@ class RealManTeleop:
         self._position_filter.reset()
         self._rotation_filter.reset()
         self._seed_joint_filter(self.initial_joint)
+        if self._wrm_akm is not None:
+            self._wrm_akm.reset_seed(self.initial_joint)
         self._requires_reference = True
         self._grip_active = False
         self._reset_in_progress = True
@@ -1615,7 +1664,15 @@ class RealManTeleop:
         """Run IK on the same fixed-rate thread that owns CAN-FD SDK calls."""
 
         snapshot = self.state_snapshot()
-        if self._remote_ik_solver is not None:
+        if self._wrm_akm is not None:
+            tcp_target = self._wrm_akm.couple_tcp_target_z(
+                tcp_target,
+                self.cfg.WRM_TCP_Z_DROP_M,
+            )
+            robot_tcp_target = self.backend.to_robot_tcp_pose(tcp_target)
+            joint_target = self._wrm_akm.solve(robot_tcp_target)
+            solver_status = self._wrm_akm.last_status
+        elif self._remote_ik_solver is not None:
             # VR targets describe the configured tool TCP. RealMan's QP matrix
             # describes the controller/flange TCP, matching the legacy backend
             # IK boundary and preserving a non-identity TCP_TRANSFORM.
@@ -1665,7 +1722,33 @@ class RealManTeleop:
                 return None
             self._last_joint_target = filtered
             self._last_tcp_target = tcp_target
+            if self._wrm_akm is not None:
+                self._wrm_akm.accept_solution(filtered)
             return filtered
+
+    def update_wrm_tracking(self, sample) -> bool:
+        """Update only the abstract elbow objective from one Unity sample.
+
+        Invalid, stale, or low-confidence samples freeze the last elbow target;
+        controller/TCP safety remains governed by the existing input path.
+        """
+
+        if self._wrm_akm is None:
+            return False
+        with self._control_lock:
+            return bool(self._wrm_akm.update_tracking(sample))
+
+    def wrm_visualizer_state(self) -> dict | None:
+        """Return WRM alpha/configuration state when AKM is enabled."""
+
+        if self._wrm_akm is None:
+            return None
+        state = self._wrm_akm.visualizer_state()
+        state["tcp_z_offset_m"] = self._wrm_akm.tcp_z_offset(
+            self.cfg.WRM_TCP_Z_DROP_M
+        )
+        state["tcp_z_drop_limit_m"] = float(self.cfg.WRM_TCP_Z_DROP_M)
+        return state
 
     def process_controller(
         self,
@@ -2251,9 +2334,9 @@ def _create_camera_manager(cfg: Config):
         return WebRTCUDPManager()
 
     if cfg.VIDEO_TRANSPORT.lower() == "udp":
-        from camera_udp import CameraUDPManager
+        from udp import UDPManager
 
-        return CameraUDPManager()
+        return UDPManager(config=cfg)
 
     raise ValueError(f"Unsupported VIDEO_TRANSPORT: {cfg.VIDEO_TRANSPORT}")
 
@@ -2278,327 +2361,6 @@ def _visualizer_images(images: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return previews
 
 
-class RealManEpisodeRecorder:
-    """Record cached RealMan state and camera frames without touching CAN-FD."""
-
-    def __init__(
-        self,
-        cfg: Config,
-        teleop: RealManTeleop,
-        camera_manager,
-        *,
-        dataset: DatasetRecorder | None = None,
-        background_errors: list[str] | None = None,
-    ) -> None:
-        self.cfg = cfg
-        self.teleop = teleop
-        self.camera_manager = camera_manager
-        self.background_errors = background_errors
-        self.dataset = (
-            dataset
-            if dataset is not None
-            else DatasetRecorder(
-                camera_manager.camera_num,
-                robot_dof=teleop.dof,
-                robot_type=getattr(
-                    teleop.backend,
-                    "dataset_robot_type",
-                    teleop.backend.name,
-                ),
-                force_collect=cfg.FORCE_COLLECT,
-                torque_collect=cfg.TORQUE_COLLECT,
-                gripper=False,
-                config=cfg,
-            )
-        )
-        self.pause_event = threading.Event()
-        self._dataset_lock = threading.Lock()
-        self._close_lock = threading.Lock()
-        self._closed = False
-        self._last_state_quaternion: np.ndarray | None = None
-        self._last_action_quaternion: np.ndarray | None = None
-
-    @staticmethod
-    def _pose_vector(
-        tcp_pose: np.ndarray,
-        previous_quaternion: np.ndarray | None,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        pose = np.asarray(tcp_pose, dtype=float)
-        quaternion = utils.quat_cal(
-            pose[:3, :3],
-            previous_quaternion,
-        )
-        vector = np.concatenate(
-            [quaternion, pose[:3, 3]]
-        ).astype(np.float32)
-        return vector, quaternion
-
-    @staticmethod
-    def _delta_tcp_action(
-        measured_tcp: np.ndarray,
-        target_tcp: np.ndarray,
-    ) -> np.ndarray:
-        delta_translation = target_tcp[:3, 3] - measured_tcp[:3, 3]
-        delta_rotation = target_tcp[:3, :3] @ measured_tcp[:3, :3].T
-        delta_rotvec, _ = cv2.Rodrigues(delta_rotation)
-        return np.concatenate(
-            [delta_translation, delta_rotvec.reshape(3)]
-        ).astype(np.float32)
-
-    def _state_and_action(
-        self,
-        robot: RealManStateSnapshot,
-        action_joints: np.ndarray,
-        action_tcp: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        state_tcp, self._last_state_quaternion = self._pose_vector(
-            robot.tcp_pose,
-            self._last_state_quaternion,
-        )
-        if self.cfg.DATA_TYPE == "tcp":
-            action, self._last_action_quaternion = self._pose_vector(
-                action_tcp,
-                self._last_action_quaternion,
-            )
-            return state_tcp, action, state_tcp
-        if self.cfg.DATA_TYPE == "delta_tcp":
-            action = self._delta_tcp_action(robot.tcp_pose, action_tcp)
-            return robot.joints.astype(np.float32), action, state_tcp
-        return (
-            robot.joints.astype(np.float32),
-            np.asarray(action_joints, dtype=np.float32),
-            state_tcp,
-        )
-
-    def collect_once(self) -> bool:
-        """Collect one configured-rate frame when an episode is active."""
-
-        if self.pause_event.is_set():
-            return False
-        with self.camera_manager._lock:
-            if not self.camera_manager.data_collecting_state:
-                return False
-            images = {
-                name: np.asarray(image).copy()
-                for name, image in self.camera_manager.camera_images.items()
-            }
-            image_timestamps = dict(
-                getattr(
-                    self.camera_manager,
-                    "camera_image_timestamps_ns",
-                    {},
-                )
-            )
-            depth_images = (
-                {
-                    name: np.asarray(depth).copy()
-                    for name, depth in self.camera_manager.depth_images.items()
-                }
-                if self.cfg.DEPTH_INFO_ENABLE
-                else None
-            )
-            vr_input_timestamp_ns = int(
-                getattr(self.camera_manager, "vr_input_timestamp_ns", 0)
-            )
-
-        if not (
-            self.camera_manager.is_movement_exist()
-            or self.teleop.reset_active()
-        ):
-            return False
-
-        collect_timestamp_ns = time.monotonic_ns()
-        robot, action_joints, action_tcp, action_timestamp_ns = (
-            self.teleop.recording_snapshot()
-        )
-        state, action, tcp_vector = self._state_and_action(
-            robot,
-            action_joints,
-            action_tcp,
-        )
-        extra = {
-            "collect_timestamp_ns": np.array(
-                collect_timestamp_ns,
-                dtype=np.int64,
-            ),
-            "robot_state_timestamp_ns": np.array(
-                robot.state_timestamp_ns,
-                dtype=np.int64,
-            ),
-            "robot_action_timestamp_ns": np.array(
-                action_timestamp_ns,
-                dtype=np.int64,
-            ),
-            "vr_input_timestamp_ns": np.array(
-                vr_input_timestamp_ns,
-                dtype=np.int64,
-            ),
-            "tactile_timestamp_ns": np.array(0, dtype=np.int64),
-            "camera_timestamps_ns": image_timestamps,
-            "tcp_pose": tcp_vector,
-        }
-        wrench = (
-            robot.wrench
-            if self.cfg.FORCE_COLLECT or self.cfg.TORQUE_COLLECT
-            else None
-        )
-        with self._dataset_lock:
-            if self.pause_event.is_set():
-                return False
-            self.dataset.data_collection(
-                state,
-                action,
-                images,
-                None,
-                wrench,
-                depth_images,
-                extra,
-            )
-        return True
-
-    def process_pending_once(self) -> bool:
-        """Handle one export or rollback request from VR/the visualizer."""
-
-        with self.camera_manager._lock:
-            rollback = bool(self.camera_manager.data_rollback_state)
-            export = bool(self.camera_manager.data_export_state)
-        if not rollback and not export:
-            return False
-
-        self.pause_event.set()
-        try:
-            with self._dataset_lock:
-                if rollback:
-                    removed = self.dataset.rollback_last_episode()
-                    if removed:
-                        utils.logger.info(
-                            "Rollback complete. Next episode: "
-                            f"{self.dataset.recorded_episodes}"
-                        )
-                    else:
-                        utils.logger.warning(
-                            "Rollback requested, but no episode was removed."
-                        )
-                elif self.dataset.collect_step:
-                    self.dataset.data_export(self.camera_manager)
-                    self.dataset._reset_data_dict()
-                    utils.logger.info(
-                        "Episode "
-                        f"{self.dataset.recorded_episodes - 1} exported successfully"
-                    )
-                else:
-                    utils.logger.warning("No data to export.")
-            return True
-        finally:
-            with self.camera_manager._lock:
-                if rollback:
-                    self.camera_manager.data_rollback_state = False
-                if export:
-                    self.camera_manager.data_export_state = False
-            self.pause_event.clear()
-
-    def handle_visualizer_commands(self, visualizer_handle) -> None:
-        if visualizer_handle is None:
-            return
-        for command in visualizer_handle.drain_commands():
-            name = command.get("command")
-            if name == "rollback_last_episode":
-                with self.camera_manager._lock:
-                    self.camera_manager.data_collecting_state = False
-                    self.camera_manager.data_export_state = False
-                    self.camera_manager.data_rollback_state = True
-                utils.logger.info("Rollback requested from visualizer.")
-
-    def recording_status(self) -> dict[str, object]:
-        with self.camera_manager._lock:
-            collecting = bool(self.camera_manager.data_collecting_state)
-        with self._dataset_lock:
-            return self.dataset.recording_status(collecting=collecting)
-
-    def _report_background_failure(
-        self,
-        label: str,
-        exc: Exception,
-        stop_event: threading.Event,
-    ) -> None:
-        message = f"RealMan {label} failed: {exc}"
-        utils.logger.exception(message)
-        if self.background_errors is not None:
-            self.background_errors.append(message)
-        stop_event.set()
-
-    def _collect_loop(self, stop_event: threading.Event) -> None:
-        period_s = 1.0 / self.cfg.COLLECT_RATE
-        next_tick = time.monotonic()
-        try:
-            while not stop_event.is_set():
-                self.collect_once()
-                next_tick += period_s
-                remaining = next_tick - time.monotonic()
-                if remaining > 0.0:
-                    stop_event.wait(remaining)
-                else:
-                    next_tick = time.monotonic()
-        except Exception as exc:
-            self._report_background_failure("dataset collection", exc, stop_event)
-
-    def _export_loop(self, stop_event: threading.Event) -> None:
-        try:
-            while not stop_event.is_set():
-                self.process_pending_once()
-                stop_event.wait(0.05)
-        except Exception as exc:
-            self._report_background_failure("dataset export", exc, stop_event)
-        finally:
-            self.close()
-
-    def start(self, stop_event: threading.Event) -> list[threading.Thread]:
-        threads = [
-            threading.Thread(
-                target=self._collect_loop,
-                args=(stop_event,),
-                name="realman-dataset-collector",
-                daemon=True,
-            ),
-            threading.Thread(
-                target=self._export_loop,
-                args=(stop_event,),
-                name="realman-dataset-exporter",
-                daemon=True,
-            ),
-        ]
-        for thread in threads:
-            thread.start()
-        return threads
-
-    def close(self) -> None:
-        with self._close_lock:
-            if self._closed:
-                return
-            self.pause_event.set()
-            try:
-                with self.camera_manager._lock:
-                    rollback = bool(
-                        self.camera_manager.data_rollback_state
-                    )
-                    self.camera_manager.data_collecting_state = False
-                    self.camera_manager.data_export_state = False
-                    self.camera_manager.data_rollback_state = False
-                with self._dataset_lock:
-                    if rollback:
-                        self.dataset.rollback_last_episode()
-                    elif self.dataset.collect_step:
-                        utils.logger.info(
-                            "Saving the active RealMan episode before exit."
-                        )
-                        self.dataset.data_export(self.camera_manager)
-                        self.dataset._reset_data_dict()
-                    self.dataset.close()
-                self._closed = True
-            finally:
-                self.pause_event.clear()
-
-
 def visualizer_publish_loop(
     visualizer_handle,
     teleop: RealManTeleop,
@@ -2607,6 +2369,7 @@ def visualizer_publish_loop(
     stop_event: threading.Event,
     background_errors: list[str] | None = None,
     recorder: RealManEpisodeRecorder | None = None,
+    beaver_reader=None,
 ) -> None:
     period_s = 1.0 / viz_cfg.HZ
     force_frame = ("sensor", "work", "tool")[
@@ -2737,8 +2500,18 @@ def visualizer_publish_loop(
                     ),
                     "status_extra": status,
                     **(
+                        {"wrm": teleop.wrm_visualizer_state()}
+                        if teleop.wrm_enabled
+                        else {}
+                    ),
+                    **(
                         {"dataset": recorder.recording_status()}
                         if recorder is not None
+                        else {}
+                    ),
+                    **(
+                        {"beaver": beaver_reader.visualizer_payload()}
+                        if beaver_reader is not None
                         else {}
                     ),
                     "connected": not errors,
@@ -2762,6 +2535,8 @@ def main() -> None:
     teleop: RealManTeleop | None = None
     recorder: RealManEpisodeRecorder | None = None
     tcp_state_sender: QuestTcpStateSender | None = None
+    wrm_receiver = None
+    beaver_reader = None
     visualizer_handle = None
     worker_threads: list[threading.Thread] = []
     background_errors: list[str] = []
@@ -2776,8 +2551,65 @@ def main() -> None:
 
     try:
         camera_manager = _create_camera_manager(cfg)
-        initial_data = camera_manager.test_connection()
+        if cfg.WRM_enable:
+            from wrm_akm import WrmUdpReceiver
+
+            # Port 8005 was the legacy socket_2 resolution/fine-control
+            # channel. Transfer ownership instead of binding two UDP sockets
+            # and non-deterministically splitting Unity datagrams.
+            legacy_control_socket = camera_manager.socket_list.pop(
+                "socket_2",
+                None,
+            )
+            if legacy_control_socket is not None:
+                legacy_control_socket.close()
+            wrm_receiver = WrmUdpReceiver(cfg.PC_IP, cfg.CONTROL_PORT)
+            wrm_thread = threading.Thread(
+                target=wrm_receiver.run,
+                args=(stop_event,),
+                name="wrm-unity-udp-receiver",
+                daemon=True,
+            )
+            wrm_thread.start()
+            worker_threads.append(wrm_thread)
+            utils.logger.info(
+                "WRM Unity tracking enabled on UDP %s:%d.",
+                cfg.PC_IP,
+                cfg.CONTROL_PORT,
+            )
+
+            # Accept either a complete controller+elbow packet on 8005 or the
+            # legacy controller pose on 8001 plus elbow-only packets on 8005.
+            initial_data = None
+            connection_deadline = time.monotonic() + 60.0
+            while initial_data is None and time.monotonic() < connection_deadline:
+                camera_manager.send_and_receive_data()
+                with camera_manager._lock:
+                    legacy_controller = camera_manager.data
+                wrm_sample, _ = wrm_receiver.snapshot()
+                if wrm_sample is not None and wrm_sample.has_controller_pose:
+                    initial_data = wrm_sample.as_controller_data(legacy_controller)
+                elif legacy_controller is not None:
+                    initial_data = legacy_controller
+                if initial_data is None:
+                    stop_event.wait(0.01)
+            if initial_data is None:
+                raise TimeoutError(
+                    "No VR controller pose received on UDP 8001 or WRM UDP 8005."
+                )
+        else:
+            initial_data = camera_manager.test_connection()
         teleop = RealManTeleop(initial_data, cfg=cfg)
+        if wrm_receiver is not None:
+            initial_wrm_sample, _ = wrm_receiver.snapshot()
+            teleop.update_wrm_tracking(initial_wrm_sample)
+        if cfg.beaver_enable:
+            from beaver import BeaverReader
+
+            beaver_reader = BeaverReader.from_config(cfg)
+            beaver_thread = beaver_reader.start(stop_event)
+            worker_threads.append(beaver_thread)
+            utils.logger.info("Beaver USB acquisition enabled for 9 sensors.")
         # Dataset discovery/import can be expensive. Finish it before the
         # high-follow sender starts so it cannot steal time from CAN-FD's
         # strict 10 ms packet deadline.
@@ -2786,6 +2618,7 @@ def main() -> None:
             teleop,
             camera_manager,
             background_errors=background_errors,
+            beaver_reader=beaver_reader,
         )
         camera_manager.start_comms_threads()
         worker_threads.extend(teleop.start(stop_event))
@@ -2817,6 +2650,9 @@ def main() -> None:
                 camera_num=camera_manager.camera_num,
                 show_rollback_button=True,
                 show_record_button=False,
+                beaver_enabled=cfg.beaver_enable,
+                beaver_layout=cfg.BEAVER_SENSOR_LAYOUT,
+                beaver_max_mm=cfg.BEAVER_VISUALIZER_MAX_MM,
             )
             visualizer_thread = threading.Thread(
                 target=visualizer_publish_loop,
@@ -2828,6 +2664,7 @@ def main() -> None:
                     stop_event,
                     background_errors,
                     recorder,
+                    beaver_reader,
                 ),
                 name="realman-visualizer-publisher",
                 daemon=True,
@@ -2882,6 +2719,19 @@ def main() -> None:
                 )
                 input_timestamp_ns = camera_manager.vr_input_timestamp_ns
 
+            if wrm_receiver is not None:
+                wrm_sample, _ = wrm_receiver.snapshot()
+                # Called even without a new packet so timeout/low confidence
+                # freezes the elbow objective while TCP follows existing logic.
+                teleop.update_wrm_tracking(wrm_sample)
+                if (
+                    wrm_sample is not None
+                    and wrm_sample.has_controller_pose
+                    and wrm_sample.received_ns >= input_timestamp_ns
+                ):
+                    controller_data = wrm_sample.as_controller_data(controller_data)
+                    input_timestamp_ns = wrm_sample.received_ns
+
             new_input = input_timestamp_ns > previous_input_timestamp_ns
             if cfg.TRACKING_MODE == "hand" and hand_data is not None and new_input:
                 now = time.monotonic()
@@ -2935,6 +2785,18 @@ def main() -> None:
                 camera_manager.close()
             except Exception as exc:
                 utils.logger.warning(f"Error closing camera manager: {exc}")
+
+        if wrm_receiver is not None:
+            try:
+                wrm_receiver.close()
+            except Exception as exc:
+                utils.logger.warning(f"Error closing WRM UDP receiver: {exc}")
+
+        if beaver_reader is not None:
+            try:
+                beaver_reader.close()
+            except Exception as exc:
+                utils.logger.warning(f"Error closing Beaver reader: {exc}")
 
         all_threads = list(worker_threads)
         if teleop is not None:

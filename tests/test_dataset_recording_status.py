@@ -3,10 +3,31 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
+from data_recording import DataRecordingService
 from dataset import DatasetRecorder
 
 
 class DatasetRecordingStatusTests(unittest.TestCase):
+    @staticmethod
+    def empty_recorder() -> DatasetRecorder:
+        recorder = DatasetRecorder.__new__(DatasetRecorder)
+        recorder.dataset_type = "l"
+        recorder.dataset_dir = Path("unused")
+        recorder.collect_step = 0
+        recorder.recorded_episodes = 0
+        recorder._last_episode_length_cache = None
+        recorder._last_episode_length_cache_for = None
+        return recorder
+
+    def test_service_status_includes_configured_collect_rate(self) -> None:
+        service = DataRecordingService(
+            self.empty_recorder(),
+            lambda: None,
+            collect_rate=24,
+        )
+
+        self.assertEqual(service.recording_status()["collect_rate_hz"], 24.0)
+
     def test_successful_export_retains_completed_episode_length(self) -> None:
         recorder = DatasetRecorder.__new__(DatasetRecorder)
         recorder.dataset_type = "l"

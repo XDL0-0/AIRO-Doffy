@@ -14,6 +14,7 @@ aiortc
 # HuggingFace / LeRobot
 huggingface-hub
 lerobot
+rerun-sdk
 
 # airo robotics stack
 airo-camera-toolkit

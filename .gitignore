@@ -26,7 +26,11 @@ datasets/**
 *.hdf5
 torque_log.npz
 eval_results/
-policies/
+policies/*
+!policies/realman_beaver/
+!policies/realman_beaver/**
+policies/realman_beaver/**/__pycache__/
+policies/realman_beaver/**/*.py[cod]
 eval_dataset_plots/
 upload_to_github.sh
 

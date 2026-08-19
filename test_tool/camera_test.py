@@ -11,7 +11,7 @@ import cv2
 
 import utils
 from config import Config
-from camera_udp import CameraUDPManager
+from udp import UDPManager
 from WebRTC_udp import WebRTCUDPManager
 
 
@@ -24,7 +24,7 @@ def main() -> None:
     if cfg.VIDEO_TRANSPORT.lower() == "webrtc":
         cu_manager = WebRTCUDPManager()
     else:
-        cu_manager = CameraUDPManager()
+        cu_manager = UDPManager(config=cfg)
 
     # Start the background threads for camera reading and transmission (UDP/WebRTC)
     cu_manager.start_comms_threads()

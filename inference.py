@@ -558,7 +558,7 @@ class InferenceCameraManager:
 
 class TactileDataHolder:
     """Minimal container so the tactile reader thread can write data
-    without depending on CameraUDPManager."""
+    without depending on the UDP transport manager."""
 
     def __init__(self):
         self._lock = threading.Lock()

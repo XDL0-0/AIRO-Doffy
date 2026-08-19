@@ -9,7 +9,7 @@ A high-performance codebase for controlling robot manipulators (UR3e, UR5e, Real
 - **Low-Latency Teleoperation**: Real-time VR controller tracking to robot end-effector mapping with backend-specific IK/control and safety limits.
 - **Hand Tracking Support**: Receive and visualize 24-bone hand skeleton data from Meta Quest hand tracking (text and binary protocols).
 - **HD Video Streaming**: Two transport options:
-  - **UDP** (`camera_udp.py`): Chunked JPEG transfer, compatible with `UdpSocketMultiHD.cs`.
+  - **UDP** (`udp.py`): Chunked JPEG transfer, compatible with `UdpSocketMultiHD.cs`.
   - **WebRTC** (`WebRTC_udp.py`): aiortc-based multi-track video (H.264/VP8) with WebSocket signaling + DataChannel for control. Lower bandwidth, NAT-friendly.
 - **Fast Gripper Control**: Custom non-blocking TCP socket implementation for the Robotiq 2F-85 gripper.
 - **Tactile & Force Integration**: Supports serial MagTouch and 4-taxel BLE MagTouch readers, UR force/torque readings, gravity compensation, baseline reset, and configurable wrench filtering.
@@ -87,6 +87,7 @@ The system uses `config.py` as its central configuration. Key settings:
 | `REALMAN_QP_DQ_WEIGHT` | Per-joint QP speed multiplier; lower values trade tracking accuracy for smoother motion | `0.5` |
 | `REALMAN_QP_LIMIT_HOLDON` | Hold the QP solution at a joint limit instead of pushing through it | `True` |
 | `REALMAN_QP_ELBOW_MARGIN_DEG` | Keep J4 (7-DoF) or J3 (6-DoF) this far from the straight-elbow singularity | `3.0` |
+| `WRM_TCP_Z_DROP_M` | Maximum reference-relative TCP Z decrease as WRM elbow progress moves from high to horizontal | `0.05` |
 | `REALMAN_REALTIME_STATE_PUSH` | Receive joint, TCP, and force state through the controller's realtime UDP push | `True` |
 | `REALMAN_STATE_PUSH_CYCLE_MS` | Realtime state-push cycle; must be a positive multiple of 5 ms | `5` |
 | `REALMAN_STATE_PUSH_PORT` | PC UDP port on which realtime state packets are received | `8098` |
@@ -94,6 +95,7 @@ The system uses `config.py` as its central configuration. Key settings:
 | `REALMAN_FORCE_COORDINATE` | Force frame requested from the controller: `0` sensor, `1` work, `2` tool | `0` |
 | `REALMAN_SENSOR_RATE` | Synchronous joint/TCP/force polling rate when realtime state push is disabled | `30.0` |
 | `REALMAN_VR_TIMEOUT` | Hold the last target after this many seconds without a VR packet | `0.25` |
+| `RESET_JOINT_SPEED` | Speed of the reset/home motion in rad/s (teach-collect initial pose and teleop reset); position backends only | `1.0` |
 
 ### Tracking & Streaming
 | Parameter | Description | Default |
@@ -108,9 +110,10 @@ The system uses `config.py` as its central configuration. Key settings:
 ### Dataset
 | Parameter | Description | Default |
 |---|---|---|
-| `DATASET_DIR` | Dataset save path | `./datasets/pnp_long` |
+| `DATASET_DIR` | Dataset base path shared by teleop and teach collection | `./datasets/WRM_grasp` |
 | `DATASET_TYPE` | `"a"` = ACT/HDF5, `"l"` = LeRobot | `l` |
 | `DATA_TYPE` | State/action representation (`qpos`, `both`, `tcp`, `delta_tcp`) | `both` |
+| `TEACH_INITIAL_DISCARD_FRAMES` | Teaching samples discarded before trajectory edge trimming | `40` |
 | `LEROBOT_IMAGE_WRITER_PROCESSES` | Background processes used for image compression | `1` |
 | `LEROBOT_IMAGE_WRITER_THREADS` | Background threads used for image compression | `1` |
 | `LEROBOT_VIDEO_CODEC` | Video codec used during episode save | `h264` |
@@ -259,27 +262,51 @@ fallback, not an automatic downgrade: those reads consume CAN-FD timing budget,
 so the same startup gate and runtime watchdog remain active and will refuse or
 stop motion if the measured command timing is no longer valid.
 
-### RealMan Freedrive Teaching Collection
+### RealMan Teach, Replay, and Collect
 
-Collect only measured robot state (seven joint angles and TCP pose) plus the
-integrated six-axis force/torque sensor, without VR, cameras, tactile sensing,
-or gripper data. Before enabling freedrive, the collector sets RealMan's
-drag-teach sensitivity to `99`:
+Collect measured robot state (seven joint angles and TCP pose), the integrated
+six-axis force/torque sensor, and RGB observations from every detected RealSense
+camera, without VR, tactile sensing, or gripper data. The detected camera count
+is used to initialize both the LeRobot dataset and visualizer.
+Camera capture is local-only and does not create UDP sockets, WebRTC signaling,
+or VR receiver threads. When tactile collection is disabled, the visualizer also
+omits the tactile panel. Freedrive is only enabled while teaching, with RealMan's
+drag-teach sensitivity set to `99`:
 
 ```bash
 python realman_teachcollect.py \
     --robot-ip 192.168.1.18 \
-    --dataset-dir ./datasets/realman_teach \
     --task "freedrive demonstration" \
     --fps 10
 ```
 
-The output uses LeRobot format and is written to the dataset base path with the
-repository's `_lero` suffix (the example writes
-`./datasets/realman_teach_lero`). In the visualizer, **Start record** begins an
-episode, **Save episode** stops and saves it, and **Undo episode** discards the
-active episode or deletes the latest saved episode. Closing the visualizer
-stops freedrive; Ctrl-C also stops safely and saves a non-empty active episode.
+Both RealMan teleoperation and teach collection use `Config.DATASET_DIR` by
+default. Teach collection also accepts `--dataset-dir` as an explicit override.
+The output uses LeRobot format and is written to the selected dataset base path
+with the repository's `_lero` suffix. The visualizer workflow is:
+
+1. Optionally press **Initial pose** to move to `Config.INITIAL_JOINT`.
+2. Press **Teach**, drag the robot through the desired path, then press
+   **End Teach**. Teaching stores joint waypoints in memory but does not write a
+   dataset episode. Every sample is retained while teaching. When teaching ends,
+   the first `Config.TEACH_INITIAL_DISCARD_FRAMES` samples (40 by default) are
+   discarded to remove startup shake. The stationary prefix and suffix of the
+   remaining samples are then trimmed; slow motion and pauses inside the
+   demonstrated path are preserved.
+3. Press **Teach** while a trajectory is ready to clear it and immediately
+   begin teaching a replacement. Press **Reteach** to clear the path and wait
+   before starting again.
+4. Once teaching ends, **Replay collect** is enabled. It moves to the first
+   taught waypoint, replays the path, records synchronized robot, force,
+   camera, depth, and enabled Beaver data, and exports one dataset episode.
+   After export completes and recording is disabled, the robot automatically
+   returns to `Config.INITIAL_JOINT`; that return motion is not recorded.
+
+The saved action is the taught joint target while the observation is the
+measured joint state during replay. Closing the visualizer or pressing Ctrl-C
+stops freedrive and closes the dataset safely.
+
+**Undo episode** removes the most recently exported episode.
 
 Validate a recorded episode without connecting to the robot:
 
@@ -306,8 +333,20 @@ confirmation, and then replays the trajectory through low-follow CAN-FD at the
 dataset FPS. `--yes` skips confirmations only after the motion has been checked
 with `--dry-run`. At each prompt, press Enter to continue or type `c` to quit.
 
+Joint replay defaults to `--source observation.state`, the measured trajectory.
+This is the faithful and safe choice: recorded `action` targets can contain
+command glitches (for example a single-frame jump while the arm settles into the
+episode start pose), while the measured state stays smooth. Episodes may be
+spread across several parquet files (chunked by frames); the tool locates rows
+by `episode_index` automatically. `--initial-speed` (default 1.0 rad/s) sets the
+speed of the controller-planned move to each episode's start pose. The
+airo_robots wrapper scales the rad/s value to a percentage of the arm's maximum
+joint speed (3.14 rad/s ≈ 100% on an RM75); values above the arm maximum are
+rejected by its safety check.
+
 Both recorded self-proprioception representations can be replayed. Joint mode
-uses `action` by default (or `observation.state` with `--source`):
+uses `observation.state` by default; pass `--source action` to command the
+recorded action targets instead:
 
 ```bash
 python -m dataset_tool.replay_realman_lerobot \
@@ -417,7 +456,8 @@ Each UDP packet: 12-byte big-endian header + JPEG payload
 airo-doffy/
 ├── config.py           # Central configuration
 ├── main.py             # Data collection entry point
-├── camera_udp.py       # Camera streaming (UDP chunks) + VR data reception
+├── realsense_camera.py # Shared local RealSense capture
+├── udp.py              # UDP video/control transport using captured camera frames
 ├── WebRTC_udp.py       # Camera streaming (WebRTC) + VR data reception
 ├── parse_vr.py         # VR data parsing (controller + hand tracking)
 ├── robot_backend.py    # Robot backend adapters for UR, RealMan, and generic manipulators

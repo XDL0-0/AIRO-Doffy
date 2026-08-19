@@ -197,7 +197,7 @@ class RobotBackend:
         raise NotImplementedError
 
     def reset(self, joints: np.ndarray) -> None:
-        action = self.move_to_joint_configuration(joints, 1.0)
+        action = self.move_to_joint_configuration(joints, self.cfg.RESET_JOINT_SPEED)
         if action is not None and hasattr(action, "wait"):
             action.wait()
 

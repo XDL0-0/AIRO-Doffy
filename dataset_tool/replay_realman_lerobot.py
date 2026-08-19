@@ -22,7 +22,7 @@ from scipy.spatial.transform import Rotation
 
 logger = logging.getLogger(__name__)
 REALMAN_DOF = 7
-DEFAULT_DATASET_DIR = "./datasets/realman_test_lero"
+DEFAULT_DATASET_DIR = "./datasets/WRM_grasp_lero"
 
 
 @dataclass(frozen=True)
@@ -80,7 +80,7 @@ class RealManLeRobotDataset:
         root: str | Path,
         *,
         control_mode: str = "joint",
-        source: str = "action",
+        source: str = "observation.state",
     ) -> None:
         if control_mode not in {"joint", "tcp"}:
             raise ValueError("control_mode must be 'joint' or 'tcp'.")
@@ -190,12 +190,13 @@ class RealManLeRobotDataset:
 
     def _load_episode_frames(self, episode_index: int) -> pd.DataFrame:
         chunk_index = episode_index // self.chunks_size
-        file_index = episode_index % self.chunks_size
         exact_path = self.root / self.data_path.format(
             chunk_index=chunk_index,
-            file_index=file_index,
+            file_index=episode_index % self.chunks_size,
         )
-        paths = [exact_path] if exact_path.is_file() else sorted(
+        # Parquet files may hold several episodes (chunked by frames), so scan
+        # the whole chunk directory rather than assuming one file per episode.
+        paths = sorted(
             (self.root / "data" / f"chunk-{chunk_index:03d}").glob("*.parquet")
         )
         if not paths:
@@ -210,6 +211,8 @@ class RealManLeRobotDataset:
             if "episode_index" in frame:
                 frame = frame[frame["episode_index"] == episode_index]
             elif path != exact_path:
+                # A legacy per-episode file without the column is only usable
+                # when it is the exact file for this episode.
                 continue
             if not frame.empty:
                 matches.append(frame)
@@ -456,10 +459,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--source",
         choices=["action", "observation.state"],
-        default="action",
-        help="Joint feature to command in --control-mode joint.",
+        default="observation.state",
+        help="Joint feature to command in --control-mode joint. "
+        "observation.state (the measured trajectory) is the safe default; "
+        "action may contain command-target glitches.",
+
     )
-    parser.add_argument("--initial-speed", type=float, default=0.3)
+    parser.add_argument(
+        "--initial-speed",
+        type=float,
+        default=2.0,
+        help="Move-to-start joint speed (rad/s); the airo_robots wrapper scales "
+        "it to a percentage of the arm max (3.14 rad/s = 100% on RM75).",
+    )
     parser.add_argument("--initial-timeout", type=float, default=30.0)
     parser.add_argument(
         "--max-joint-speed",

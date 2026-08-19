@@ -12,10 +12,15 @@ from config import Config
 from visualizer_config import VisualizerConfig
 from robot_teleop import RobotTeleop
 from dataset import DatasetRecorder
-from camera_udp import CameraUDPManager
+from data_recording import (
+    DataRecordingService,
+    ManagerRecordingControl,
+    RecordingFrame,
+)
+from udp import UDPManager
 from WebRTC_udp import WebRTCUDPManager
 
-CameraManager = CameraUDPManager | WebRTCUDPManager
+CameraManager = UDPManager | WebRTCUDPManager
 
 cfg = Config()
 viz_cfg = VisualizerConfig()
@@ -115,72 +120,70 @@ def run_tactile_reader(tactile_holder: TactileDataHolder) -> None:
 
 # ── Background loops ─────────────────────────────────────────────────────
 
-def collect_loop(
+def create_recording_frame(
     teleop: RobotTeleop,
     cu_manager: CameraManager,
-    dataset: DatasetRecorder,
-    collect_rate: int,
-    stop_event: threading.Event,
-    pause_event: threading.Event | None = None,
-) -> None:
-    """Sample state/action at *collect_rate* Hz and buffer into *dataset*."""
-    dt = 1.0 / collect_rate
-    next_tick = time.monotonic()
-    while not stop_event.is_set():
-        t0 = time.monotonic()
-        collect_ts_ns = time.monotonic_ns()
-
-        # Skip collection while export is in progress
-        if pause_event is not None and pause_event.is_set():
-            next_tick += dt
-            sleep_time = next_tick - time.monotonic()
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            else:
-                next_tick = time.monotonic()
-            continue
-
-        collecting = cu_manager.data_collecting_state
+    beaver_reader=None,
+) -> RecordingFrame | None:
+    """Prepare one atomic multimodal frame for DataRecordingService."""
+    controller_motion = cu_manager.is_movement_exist()
+    with cu_manager._lock:
         has_hand_motion = bool(cu_manager.hand_data) and teleop.tracking_mode == "hand"
-        has_motion = cu_manager.is_movement_exist() or has_hand_motion or teleop.reset_sign
+        if not (
+            controller_motion
+            or has_hand_motion
+            or teleop.reset_sign
+        ):
+            return None
+        images = {
+            name: np.asarray(image).copy()
+            for name, image in cu_manager.camera_images.items()
+        }
+        image_timestamps = dict(
+            getattr(cu_manager, "camera_image_timestamps_ns", {})
+        )
+        depth_images = (
+            {
+                name: np.asarray(depth).copy()
+                for name, depth in cu_manager.depth_images.items()
+            }
+            if cu_manager.depth_mode
+            else None
+        )
+        tactile = (
+            None
+            if cu_manager.tactile_data is None
+            else cu_manager.tactile_data.copy()
+        )
+        tactile_timestamp = int(getattr(cu_manager, "tactile_timestamp_ns", 0))
+        vr_input_timestamp = int(getattr(cu_manager, "vr_input_timestamp_ns", 0))
 
-        if collecting and has_motion:
-            # ── Atomic snapshot: one lock covers ALL cu_manager modalities ──
-            with cu_manager._lock:
-                images = dict(cu_manager.camera_images)
-                image_timestamps = dict(
-                    getattr(cu_manager, "camera_image_timestamps_ns", {})
-                )
-                depth_imgs = dict(cu_manager.depth_images) if cu_manager.depth_mode else None
-                # .copy() to break shared reference; None is fine (dataset handles it)
-                tactile = cu_manager.tactile_data.copy() if cu_manager.tactile_data is not None else None
-                tactile_timestamp = getattr(cu_manager, "tactile_timestamp_ns", 0)
-                vr_input_timestamp = getattr(cu_manager, "vr_input_timestamp_ns", 0)
-
-            # Robot state uses its own _state_lock inside get_state_snapshot()
-            state, action, wrench, extra = teleop.get_state_snapshot()
-            if extra is None:
-                extra = {}
-            extra["collect_timestamp_ns"] = np.array(collect_ts_ns, dtype=np.int64)
-            extra["camera_timestamps_ns"] = image_timestamps
-            extra["tactile_timestamp_ns"] = np.array(
-                tactile_timestamp, dtype=np.int64
-            )
-            extra["vr_input_timestamp_ns"] = np.array(
-                vr_input_timestamp, dtype=np.int64
-            )
-
-            wrench_val = wrench if teleop.wrench_mode else None
-            dataset.data_collection(
-                state, action, images, tactile, wrench_val, depth_imgs, extra
-            )
-
-        next_tick += dt
-        remaining = next_tick - time.monotonic()
-        if remaining > 0:
-            time.sleep(remaining)
-        elif time.monotonic() - t0 > dt:
-            next_tick = time.monotonic()
+    collect_timestamp_ns = time.monotonic_ns()
+    state, action, wrench, extra = teleop.get_state_snapshot()
+    extra = {} if extra is None else dict(extra)
+    beaver = beaver_reader.snapshot() if beaver_reader is not None else None
+    extra.update(
+        {
+            "collect_timestamp_ns": np.array(collect_timestamp_ns, dtype=np.int64),
+            "camera_timestamps_ns": image_timestamps,
+            "tactile_timestamp_ns": np.array(tactile_timestamp, dtype=np.int64),
+            "vr_input_timestamp_ns": np.array(vr_input_timestamp, dtype=np.int64),
+            "beaver_timestamp_ns": np.array(
+                0 if beaver is None else beaver.timestamp_ns,
+                dtype=np.int64,
+            ),
+        }
+    )
+    return RecordingFrame(
+        state=state,
+        action=action,
+        camera_images=images,
+        tactile_data=tactile,
+        wrench_data=wrench if teleop.wrench_mode else None,
+        depth_images=depth_images,
+        extra_data=extra,
+        beaver_data=beaver,
+    )
 
 
 def tactile_bridge_loop(
@@ -250,9 +253,10 @@ def visualizer_publish_loop(
     visualizer_handle,
     teleop: RobotTeleop,
     cu_manager: CameraManager,
-    dataset: DatasetRecorder,
+    recording_service: DataRecordingService,
     tactile_holder: TactileDataHolder | None,
     stop_event: threading.Event,
+    beaver_reader=None,
 ) -> None:
     dt = 1.0 / viz_cfg.HZ
     while not stop_event.is_set():
@@ -300,8 +304,11 @@ def visualizer_publish_loop(
                 "camera_count": cu_manager.camera_num,
                 "tactile": tactile,
                 "tactile_timestamp_ns": tactile_timestamp_ns,
-                "dataset": dataset.recording_status(
-                    collecting=bool(cu_manager.data_collecting_state)
+                "dataset": recording_service.recording_status(),
+                **(
+                    {"beaver": beaver_reader.visualizer_payload()}
+                    if beaver_reader is not None
+                    else {}
                 ),
                 "connected": not error,
                 "error": error,
@@ -310,62 +317,6 @@ def visualizer_publish_loop(
 
         if stop_event.wait(timeout=dt):
             break
-
-
-def export_loop(
-    dataset: DatasetRecorder,
-    cu_manager: CameraManager,
-    stop_event: threading.Event,
-    pause_event: threading.Event | None = None,
-) -> None:
-    """Wait for export signals and write episodes to disk."""
-    try:
-        while not stop_event.is_set():
-            if getattr(cu_manager, "data_rollback_state", False):
-                if pause_event is not None:
-                    pause_event.set()
-                try:
-                    if dataset.rollback_last_episode():
-                        utils.logger.info(
-                            f"Rollback complete. Next episode: {dataset.recorded_episodes}"
-                        )
-                    else:
-                        utils.logger.warning("Rollback requested, but no episode was removed.")
-                except Exception:
-                    utils.logger.exception("Rollback failed")
-                finally:
-                    if pause_event is not None:
-                        pause_event.clear()
-                    cu_manager.data_rollback_state = False
-
-            elif cu_manager.data_export_state:
-                if not dataset.collect_step:
-                    utils.logger.error("No data to export")
-                    cu_manager.data_export_state = False
-                else:
-                    # Pause collection to avoid frames leaking across episodes
-                    if pause_event is not None:
-                        pause_event.set()
-                    dataset.data_export(cu_manager)
-                    dataset._reset_data_dict()
-                    if pause_event is not None:
-                        pause_event.clear()
-                    utils.logger.info(
-                        f"Episode {dataset.recorded_episodes - 1} exported successfully"
-                    )
-                    cu_manager.data_export_state = False
-
-            if stop_event.wait(timeout=0.5):
-                break
-
-    except Exception:
-        utils.logger.exception("Export loop error")
-    finally:
-        utils.logger.info("Cleaning up export...")
-        try:
-            dataset.close()
-        except Exception as e:
-            utils.logger.error(f"Error finalizing dataset: {e}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────
@@ -378,8 +329,15 @@ def main() -> None:
     if cfg.VIDEO_TRANSPORT.lower() == "webrtc":
         cu_manager = WebRTCUDPManager()
     else:
-        cu_manager = CameraUDPManager()
+        cu_manager = UDPManager(config=cfg)
     teleop = RobotTeleop(cu_manager.test_connection())
+    beaver_reader = None
+    if cfg.beaver_enable:
+        from beaver import BeaverReader
+
+        beaver_reader = BeaverReader.from_config(cfg)
+        beaver_reader.start(stop_event)
+        utils.logger.info("Beaver USB acquisition enabled for 9 sensors.")
     if viz_cfg.ENABLED and not teleop.wrench_mode:
         utils.logger.warning(
             "VISUALIZER is enabled, but the selected robot backend does not expose TCP force."
@@ -417,11 +375,18 @@ def main() -> None:
         force_collect=cfg.FORCE_COLLECT and teleop.backend.supports_force,
         torque_collect=cfg.TORQUE_COLLECT and teleop.backend.supports_force,
         gripper=teleop.gripper_enabled,
+        config=cfg,
     )
     cu_manager.start_comms_threads()
-
-    # Synchronization: pause collection during episode export
-    pause_event = threading.Event()
+    recording_service = DataRecordingService(
+        dataset,
+        lambda: create_recording_frame(teleop, cu_manager, beaver_reader),
+        cfg.COLLECT_RATE,
+        control=ManagerRecordingControl(cu_manager),
+        export_context=cu_manager,
+        thread_name="teleop-dataset",
+    )
+    recording_threads = recording_service.start(stop_event)
 
     visualizer_handle = None
     t_visualizer = None
@@ -434,10 +399,21 @@ def main() -> None:
             title="Teleop Visualizer",
             force_panel_range=viz_cfg.FORCE_PANEL_RANGE,
             camera_num=cu_manager.camera_num,
+            beaver_enabled=cfg.beaver_enable,
+            beaver_layout=cfg.BEAVER_SENSOR_LAYOUT,
+            beaver_max_mm=cfg.BEAVER_VISUALIZER_MAX_MM,
         )
         t_visualizer = threading.Thread(
             target=visualizer_publish_loop,
-            args=(visualizer_handle, teleop, cu_manager, dataset, tactile_holder, stop_event),
+            args=(
+                visualizer_handle,
+                teleop,
+                cu_manager,
+                recording_service,
+                tactile_holder,
+                stop_event,
+                beaver_reader,
+            ),
             daemon=True,
         )
         t_visualizer.start()
@@ -446,19 +422,6 @@ def main() -> None:
             f"force LPF={cfg.FORCE_LOW_PASS_ALPHA:.2f}, "
             f"panel range=+/-{viz_cfg.FORCE_PANEL_RANGE:g} N)."
         )
-
-    t_collect = threading.Thread(
-        target=collect_loop,
-        args=(teleop, cu_manager, dataset, cfg.COLLECT_RATE, stop_event, pause_event),
-        daemon=True,
-    )
-    t_export = threading.Thread(
-        target=export_loop,
-        args=(dataset, cu_manager, stop_event, pause_event),
-        daemon=True,
-    )
-    t_collect.start()
-    t_export.start()
 
     try:
         prev_time = time.monotonic()
@@ -484,13 +447,7 @@ def main() -> None:
                 reset_request_held = reset_requested
 
             if visualizer_handle is not None:
-                for command in visualizer_handle.drain_commands():
-                    if command.get("command") == "rollback_last_episode":
-                        with cu_manager._lock:
-                            cu_manager.data_collecting_state = False
-                            cu_manager.data_export_state = False
-                            cu_manager.data_rollback_state = True
-                        utils.logger.info("Rollback requested from visualizer.")
+                recording_service.handle_visualizer_commands(visualizer_handle)
 
             next_tick += MIN_DT
             remaining = next_tick - time.monotonic()
@@ -518,6 +475,8 @@ def main() -> None:
             cu_manager.close()
         except Exception as e:
             utils.logger.error(f"Error closing cu_manager: {e}")
+        if beaver_reader is not None:
+            beaver_reader.close()
 
         if t_tactile_reader is not None:
             t_tactile_reader.join(timeout=3.0)
@@ -527,8 +486,9 @@ def main() -> None:
             t_visualizer.join(timeout=1.0)
         if visualizer_handle is not None:
             visualizer_handle.close()
-        t_collect.join(timeout=3.0)
-        t_export.join(timeout=5.0)
+        for thread in recording_threads:
+            thread.join(timeout=5.0)
+        recording_service.close()
 
         try:
             teleop.close()

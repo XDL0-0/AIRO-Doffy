@@ -45,7 +45,7 @@ class VRDataReceiver:
         self.socket_list = self._create_sockets()
 
     def _create_sockets(self) -> Dict[str, U.UdpComms]:
-        """Allocate the same 3 UDP socket pairs used by CameraUDPManager."""
+        """Allocate the same three UDP socket pairs used by UDPManager."""
         sockets: Dict[str, U.UdpComms] = {}
         port = self.ip_port
 

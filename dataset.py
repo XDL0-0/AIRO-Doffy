@@ -28,7 +28,6 @@ class DatasetRecorder:
         config: Config | None = None,
     ):
         cfg = Config() if config is None else config
-        self.save_eef = cfg.SAVE_EEF
         self.task_description = cfg.TASK_NAME
         self.camera_num = camera_num
         self.dataset_type = cfg.DATASET_TYPE
@@ -52,6 +51,14 @@ class DatasetRecorder:
         self.lerobot_encoder_threads = int(cfg.LEROBOT_ENCODER_THREADS)
         self.tactile_mode = cfg.TACTILE_TRANSFER
         self.tactile_shape = tuple(cfg.TACTILE_SHAPE)
+        self.beaver_mode = bool(cfg.beaver_enable)
+        self.beaver_sensor_layout = tuple(cfg.BEAVER_SENSOR_LAYOUT)
+        self.beaver_grid_width = int(cfg.BEAVER_GRID_WIDTH)
+        self.beaver_shape = (
+            len(self.beaver_sensor_layout),
+            self.beaver_grid_width,
+            self.beaver_grid_width,
+        )
         self.force_collect = bool(force_collect) if force_collect is not None else cfg.FORCE_COLLECT
         self.torque_collect = bool(torque_collect) if torque_collect is not None else cfg.TORQUE_COLLECT
         self.depth_mode = cfg.DEPTH_INFO_ENABLE
@@ -65,10 +72,20 @@ class DatasetRecorder:
         self.state_dim = self.schema.state_dim
         self.action_dim = self.schema.action_dim
         self.tcp_pose_dim = 7
-        self.timestamp_names = (
-            ["collect", "robot_state", "robot_action", "vr_input", "tactile"]
-            + [f"camera_{i}" for i in range(self.camera_num)]
-        )
+        self._timestamp_scalar_keys = [
+            ("collect", "collect_timestamp_ns"),
+            ("robot_state", "robot_state_timestamp_ns"),
+            ("robot_action", "robot_action_timestamp_ns"),
+            ("vr_input", "vr_input_timestamp_ns"),
+            ("tactile", "tactile_timestamp_ns"),
+        ]
+        if self.beaver_mode:
+            self._timestamp_scalar_keys.append(
+                ("beaver", "beaver_timestamp_ns")
+            )
+        self.timestamp_names = [
+            name for name, _key in self._timestamp_scalar_keys
+        ] + [f"camera_{i}" for i in range(self.camera_num)]
         self.timestamp_dim = len(self.timestamp_names)
 
         self.data_dict: dict[str, list] = {}
@@ -88,6 +105,12 @@ class DatasetRecorder:
         utils.logger.info(f"Action dim: {self.action_dim}")
         if self.tactile_mode:
             utils.logger.info(f"Tactile shape: {self.tactile_shape}")
+        if self.beaver_mode:
+            utils.logger.info(
+                "Beaver shape: %s, layout: %s",
+                self.beaver_shape,
+                self.beaver_sensor_layout,
+            )
 
         self._reset_data_dict()
         self._init_dataset()
@@ -108,6 +131,10 @@ class DatasetRecorder:
             self.data_dict["/observations/torque"] = []
         if self.tactile_mode:
             self.data_dict["/observations/tactile"] = []
+        if self.beaver_mode:
+            self.data_dict["/observations/beaver/distance_mm"] = []
+            self.data_dict["/observations/beaver/target_status"] = []
+            self.data_dict["/observations/beaver/present"] = []
         for i in range(self.camera_num):
             self.data_dict[f"/observations/images/camera_{i}"] = []
         if self.depth_mode:
@@ -200,6 +227,22 @@ class DatasetRecorder:
                 "dtype": "float32",
                 "shape": self.tactile_shape,
                 "names": ["sensor_idx", "axis"],
+            }
+        if self.beaver_mode:
+            features["observation.beaver.distance_mm"] = {
+                "dtype": "float32",
+                "shape": self.beaver_shape,
+                "names": ["sensor", "row", "column"],
+            }
+            features["observation.beaver.target_status"] = {
+                "dtype": "float32",
+                "shape": self.beaver_shape,
+                "names": ["sensor", "row", "column"],
+            }
+            features["observation.beaver.present"] = {
+                "dtype": "float32",
+                "shape": (self.beaver_shape[0],),
+                "names": ["sensor"],
             }
 
         expected_keys = set(features.keys())
@@ -296,6 +339,7 @@ class DatasetRecorder:
         wrench_data: np.ndarray | None = None,
         depth_images: dict[str, np.ndarray] | None = None,
         extra_data: dict[str, object] | None = None,
+        beaver_data: object | None = None,
     ) -> None:
         state = self._coerce_vector(state, self.state_dim, "state")
         action = self._coerce_vector(action, self.action_dim, "action")
@@ -309,6 +353,7 @@ class DatasetRecorder:
                 wrench_data,
                 depth_images,
                 extra_data,
+                beaver_data,
             )
             return
 
@@ -332,6 +377,11 @@ class DatasetRecorder:
             self.data_dict["/observations/tactile"].append(
                 self._format_tactile(tactile_data)
             )
+        if self.beaver_mode:
+            distance, status, present = self._format_beaver(beaver_data)
+            self.data_dict["/observations/beaver/distance_mm"].append(distance)
+            self.data_dict["/observations/beaver/target_status"].append(status)
+            self.data_dict["/observations/beaver/present"].append(present)
         for name, img in camera_images.items():
             self.data_dict[f"/observations/images/{name}"].append(img)
         if self.depth_mode and depth_images is not None:
@@ -347,6 +397,7 @@ class DatasetRecorder:
         wrench_data: np.ndarray | None,
         depth_images: dict[str, np.ndarray] | None,
         extra_data: dict[str, object] | None,
+        beaver_data: object | None,
     ) -> None:
         """Build one frame dict and call add_frame immediately (LeRobot only)."""
         if self.lerobot_dataset is None:
@@ -377,6 +428,11 @@ class DatasetRecorder:
             # Always write tactile: zeros fallback keeps episode schemas complete
             # while the sensor connects or calibrates.
             frame_data["observation.tactile"] = self._format_tactile(tactile_data)
+        if self.beaver_mode:
+            distance, status, present = self._format_beaver(beaver_data)
+            frame_data["observation.beaver.distance_mm"] = distance
+            frame_data["observation.beaver.target_status"] = status
+            frame_data["observation.beaver.present"] = present
 
         for name, img in camera_images.items():
             frame_data[f"observation.images.{name}"] = np.array(img, dtype=np.uint8)
@@ -410,6 +466,42 @@ class DatasetRecorder:
             f"Expected tactile shape {self.tactile_shape}, got {tactile.shape}"
         )
 
+    def _format_beaver(
+        self,
+        beaver_data: object | None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if beaver_data is None:
+            return (
+                np.zeros(self.beaver_shape, dtype=np.float32),
+                np.full(self.beaver_shape, 255, dtype=np.float32),
+                np.zeros((self.beaver_shape[0],), dtype=np.float32),
+            )
+
+        def field(name: str):
+            if isinstance(beaver_data, dict):
+                return beaver_data.get(name)
+            return getattr(beaver_data, name, None)
+
+        distance = np.asarray(field("distance_mm"), dtype=np.float32)
+        status = np.asarray(field("target_status"), dtype=np.float32)
+        present = np.asarray(field("present"), dtype=np.float32)
+        if distance.shape != self.beaver_shape:
+            raise ValueError(
+                f"Expected Beaver distance shape {self.beaver_shape}, "
+                f"got {distance.shape}"
+            )
+        if status.shape != self.beaver_shape:
+            raise ValueError(
+                f"Expected Beaver status shape {self.beaver_shape}, "
+                f"got {status.shape}"
+            )
+        if present.shape != (self.beaver_shape[0],):
+            raise ValueError(
+                "Expected Beaver present shape "
+                f"({self.beaver_shape[0]},), got {present.shape}"
+            )
+        return distance, status, present
+
     def _get_timestamps_extra(
         self, extra_data: dict[str, object] | None
     ) -> np.ndarray:
@@ -417,14 +509,7 @@ class DatasetRecorder:
         if extra_data is None:
             return values
 
-        scalar_keys = [
-            "collect_timestamp_ns",
-            "robot_state_timestamp_ns",
-            "robot_action_timestamp_ns",
-            "vr_input_timestamp_ns",
-            "tactile_timestamp_ns",
-        ]
-        for idx, key in enumerate(scalar_keys):
+        for idx, (_name, key) in enumerate(self._timestamp_scalar_keys):
             value = extra_data.get(key)
             if value is not None:
                 values[idx] = int(np.asarray(value).item())
@@ -432,7 +517,9 @@ class DatasetRecorder:
         camera_timestamps = extra_data.get("camera_timestamps_ns")
         if isinstance(camera_timestamps, dict):
             for cam_idx in range(self.camera_num):
-                values[5 + cam_idx] = int(camera_timestamps.get(f"camera_{cam_idx}", 0))
+                values[len(self._timestamp_scalar_keys) + cam_idx] = int(
+                    camera_timestamps.get(f"camera_{cam_idx}", 0)
+                )
         return values
 
     @staticmethod
@@ -571,6 +658,28 @@ class DatasetRecorder:
                 obs.create_dataset("torque", (max_timesteps, 3))
             if self.tactile_mode:
                 obs.create_dataset("tactile", (max_timesteps, *self.tactile_shape))
+            if self.beaver_mode:
+                beaver_group = obs.create_group("beaver")
+                beaver_group.attrs["sensor_layout"] = np.asarray(
+                    self.beaver_sensor_layout,
+                    dtype=np.int16,
+                )
+                beaver_group.attrs["grid_width"] = self.beaver_grid_width
+                beaver_group.create_dataset(
+                    "distance_mm",
+                    (max_timesteps, *self.beaver_shape),
+                    dtype="float32",
+                )
+                beaver_group.create_dataset(
+                    "target_status",
+                    (max_timesteps, *self.beaver_shape),
+                    dtype="float32",
+                )
+                beaver_group.create_dataset(
+                    "present",
+                    (max_timesteps, self.beaver_shape[0]),
+                    dtype="float32",
+                )
 
             w, h = self.resolution
             img_shape = (h, w)  # (height, width) for numpy

@@ -67,6 +67,9 @@ class TeleopSample:
     tactile: np.ndarray | None = None
     tactile_timestamp_ns: int = 0
     dataset: dict | None = None
+    teach: dict | None = None
+    wrm: dict | None = None
+    beaver: dict | None = None
     source_label: str = "teleop data"
     status_extra: str = ""
     connected: bool = True
@@ -309,6 +312,11 @@ class TeleopDashboard:
         camera_num: int = 1,
         show_rollback_button: bool = True,
         show_record_button: bool = False,
+        show_teach_controls: bool = False,
+        show_tactile_panel: bool = True,
+        beaver_enabled: bool = False,
+        beaver_layout: tuple[tuple[int, int], ...] | None = None,
+        beaver_max_mm: float = 2500.0,
     ) -> None:
         self.data_queue = data_queue
         self.command_queue = command_queue
@@ -318,6 +326,11 @@ class TeleopDashboard:
         self.camera_slots = max(1, self.camera_count)
         self.show_rollback_button = show_rollback_button
         self.show_record_button = show_record_button
+        self.show_teach_controls = show_teach_controls
+        self.show_tactile_panel = bool(show_tactile_panel)
+        self.beaver_enabled = bool(beaver_enabled)
+        self.beaver_layout = tuple(beaver_layout or ())
+        self.beaver_max_mm = max(1.0, float(beaver_max_mm))
         self.interval_ms = max(10, int(1000 / hz))
         self.latest = TeleopSample(timestamp=time.monotonic(), wrench=np.zeros(6))
         self.times: deque[float] = deque(maxlen=max(10, int(window_s * hz * 2)))
@@ -330,7 +343,7 @@ class TeleopDashboard:
         outer = self.fig.add_gridspec(
             1,
             2,
-            width_ratios=[2.15, 1.0],
+            width_ratios=[1.55, 1.0],
             wspace=0.08,
             left=0.035,
             right=0.985,
@@ -340,12 +353,26 @@ class TeleopDashboard:
         plot_grid = outer[0, 0].subgridspec(3, 2, hspace=0.28, wspace=0.18)
         camera_rows, camera_cols = self._camera_grid_shape(self.camera_slots)
         camera_height = max(0.8, 0.62 * camera_rows)
-        side_grid = outer[0, 1].subgridspec(
-            5,
-            1,
-            height_ratios=[1.15, 0.8, 0.95, camera_height, 0.62],
-            hspace=0.16,
-        )
+        if self.show_tactile_panel:
+            side_grid = outer[0, 1].subgridspec(
+                5,
+                1,
+                height_ratios=[1.35, 0.8, 0.95, camera_height, 0.62],
+                hspace=0.16,
+            )
+            tactile_index = 2
+            camera_index = 3
+            pose_index = 4
+        else:
+            side_grid = outer[0, 1].subgridspec(
+                4,
+                1,
+                height_ratios=[1.35, 0.8, camera_height, 0.62],
+                hspace=0.16,
+            )
+            tactile_index = None
+            camera_index = 2
+            pose_index = 3
 
         self.axes = []
         self.lines = []
@@ -369,16 +396,27 @@ class TeleopDashboard:
 
         self.status_ax = self.fig.add_subplot(side_grid[0])
         self.vector_ax = self.fig.add_subplot(side_grid[1])
-        self.tactile_ax = self.fig.add_subplot(side_grid[2])
-        self.pose_ax = self.fig.add_subplot(side_grid[4])
-        for ax, name in (
+        self.tactile_ax = (
+            None
+            if tactile_index is None
+            else self.fig.add_subplot(side_grid[tactile_index])
+        )
+        self.pose_ax = self.fig.add_subplot(side_grid[pose_index])
+        panel_axes = [
             (self.status_ax, "Status"),
             (self.vector_ax, "TCP Force Vector"),
-            (self.tactile_ax, "Tactile"),
             (self.pose_ax, "Robot State"),
-        ):
+        ]
+        if self.tactile_ax is not None:
+            panel_axes.insert(2, (self.tactile_ax, "Tactile"))
+        for ax, name in panel_axes:
             self._style_panel_axis(ax, name)
-        camera_grid = side_grid[3].subgridspec(camera_rows, camera_cols, hspace=0.18, wspace=0.08)
+        camera_grid = side_grid[camera_index].subgridspec(
+            camera_rows,
+            camera_cols,
+            hspace=0.18,
+            wspace=0.08,
+        )
         self.camera_axes = []
         self.camera_artists = []
         self.camera_placeholders = []
@@ -435,28 +473,96 @@ class TeleopDashboard:
         self.record_button_ax = self.status_ax.inset_axes([0.38, 0.12, 0.27, 0.24])
         self.record_button = Button(
             self.record_button_ax,
-            "Start record",
+            "Start\nrecord",
             color="#234936",
             hovercolor="#326b4d",
         )
         self.record_button.label.set_color("#e8f1ff")
-        self.record_button.label.set_fontsize(9)
+        self.record_button.label.set_fontsize(8)
         self.record_button.on_clicked(self._request_record_toggle)
         if not self.show_record_button:
             self.record_button_ax.set_visible(False)
+            # Hidden Button axes still participate in Matplotlib hit-testing.
+            # Disconnect them so they cannot grab a click intended for an
+            # overlapping teach control.
+            self.record_button.disconnect_events()
 
-        self.rollback_button_ax = self.status_ax.inset_axes([0.68, 0.12, 0.28, 0.24])
+        rollback_bounds = (
+            [0.67, 0.07, 0.31, 0.18]
+            if self.show_teach_controls
+            else [0.68, 0.12, 0.28, 0.24]
+        )
+        self.rollback_button_ax = self.status_ax.inset_axes(rollback_bounds)
         self.rollback_button = Button(
             self.rollback_button_ax,
-            "Undo episode",
+            "Undo\nepisode",
             color="#263446",
             hovercolor="#3b4b62",
         )
         self.rollback_button.label.set_color("#e8f1ff")
-        self.rollback_button.label.set_fontsize(9)
+        self.rollback_button.label.set_fontsize(8)
         self.rollback_button.on_clicked(self._request_rollback)
         if not self.show_rollback_button:
             self.rollback_button_ax.set_visible(False)
+            self.rollback_button.disconnect_events()
+
+        self.teach_button_ax = self.status_ax.inset_axes([0.38, 0.30, 0.18, 0.18])
+        self.teach_button = Button(
+            self.teach_button_ax,
+            "Teach",
+            color="#234936",
+            hovercolor="#326b4d",
+        )
+        self.teach_button.on_clicked(self._request_teach_toggle)
+
+        self.reteach_button_ax = self.status_ax.inset_axes([0.58, 0.30, 0.18, 0.18])
+        self.reteach_button = Button(
+            self.reteach_button_ax,
+            "Reteach",
+            color="#5a4321",
+            hovercolor="#7a5d2e",
+        )
+        self.reteach_button.on_clicked(self._request_reteach)
+
+        self.replay_button_ax = self.status_ax.inset_axes([0.78, 0.30, 0.20, 0.18])
+        self.replay_button = Button(
+            self.replay_button_ax,
+            "Replay\ncollect",
+            color="#24486a",
+            hovercolor="#32648f",
+        )
+        self.replay_button.on_clicked(self._request_replay_collect)
+
+        self.initial_pose_button_ax = self.status_ax.inset_axes(
+            [0.38, 0.07, 0.27, 0.18]
+        )
+        self.initial_pose_button = Button(
+            self.initial_pose_button_ax,
+            "Initial\npose",
+            color="#263446",
+            hovercolor="#3b4b62",
+        )
+        self.initial_pose_button.on_clicked(self._request_initial_pose)
+        self.teach_control_axes = (
+            self.teach_button_ax,
+            self.reteach_button_ax,
+            self.replay_button_ax,
+            self.initial_pose_button_ax,
+        )
+        self.teach_control_buttons = (
+            self.teach_button,
+            self.reteach_button,
+            self.replay_button,
+            self.initial_pose_button,
+        )
+        for button in self.teach_control_buttons:
+            button.label.set_color("#e8f1ff")
+            button.label.set_fontsize(8)
+        for axis in self.teach_control_axes:
+            axis.set_visible(self.show_teach_controls)
+        if not self.show_teach_controls:
+            for button in self.teach_control_buttons:
+                button.disconnect_events()
 
         self.vector_ax.set_xlim(-self.force_panel_range, self.force_panel_range)
         self.vector_ax.set_ylim(-self.force_panel_range, self.force_panel_range)
@@ -466,15 +572,18 @@ class TeleopDashboard:
         self.vector_arrow = self.vector_ax.arrow(0, 0, 0, 0, color="#24d9ff", width=0.015)
         self.vector_label = self.vector_ax.text(0.04, 0.9, "", transform=self.vector_ax.transAxes, fontsize=10)
 
-        self.tactile_panel = MagTouchRawDashboardPanel(self.tactile_ax)
-        self.tactile_text = self.tactile_ax.text(
-            0.04,
-            0.88,
-            "waiting",
-            transform=self.tactile_ax.transAxes,
-            color="#9fb0c5",
-            fontsize=10,
-        )
+        self.tactile_panel = None
+        self.tactile_text = None
+        if self.tactile_ax is not None:
+            self.tactile_panel = MagTouchRawDashboardPanel(self.tactile_ax)
+            self.tactile_text = self.tactile_ax.text(
+                0.04,
+                0.88,
+                "waiting",
+                transform=self.tactile_ax.transAxes,
+                color="#9fb0c5",
+                fontsize=10,
+            )
 
         self.pose_text = self.pose_ax.text(
             0.04,
@@ -494,6 +603,50 @@ class TeleopDashboard:
             fontsize=16,
             fontweight="bold",
         )
+        self.workflow_message_text = self.fig.text(
+            0.035,
+            0.025,
+            "",
+            color="#ffd94d",
+            fontsize=10,
+        )
+        self.beaver_fig = None
+        self.beaver_axes = []
+        self.beaver_artists = []
+        if self.beaver_enabled:
+            self._build_beaver_figure()
+
+    def _build_beaver_figure(self) -> None:
+        self.beaver_fig, axes = plt.subplots(
+            3,
+            3,
+            figsize=(10.5, 9.0),
+            facecolor="#080b10",
+        )
+        self.beaver_fig.canvas.manager.set_window_title("Beaver distance sensors")
+        cmap = plt.get_cmap("turbo_r").copy()
+        cmap.set_bad("#343c49")
+        layout = self.beaver_layout or tuple((0, idx) for idx in range(9))
+        for slot, ax in enumerate(axes.flat):
+            bus, sensor = layout[slot]
+            ax.set_facecolor("#101722")
+            ax.set_title(
+                f"B{bus}S{sensor} · waiting",
+                color="#ffd94d",
+                fontsize=10,
+            )
+            ax.set_xticks([])
+            ax.set_yticks([])
+            artist = ax.imshow(
+                np.ma.masked_all((1, 1)),
+                cmap=cmap,
+                vmin=0,
+                vmax=self.beaver_max_mm,
+                interpolation="nearest",
+            )
+            self.beaver_axes.append(ax)
+            self.beaver_artists.append(artist)
+        self.beaver_fig.tight_layout(rect=(0.02, 0.02, 0.98, 0.94))
 
     @staticmethod
     def _camera_grid_shape(camera_slots: int) -> tuple[int, int]:
@@ -568,6 +721,17 @@ class TeleopDashboard:
                 tactile=raw.get("tactile"),
                 tactile_timestamp_ns=int(raw.get("tactile_timestamp_ns", 0)),
                 dataset=raw.get("dataset"),
+                teach=(
+                    raw.get("teach")
+                    if isinstance(raw.get("teach"), dict)
+                    else None
+                ),
+                wrm=raw.get("wrm") if isinstance(raw.get("wrm"), dict) else None,
+                beaver=(
+                    raw.get("beaver")
+                    if isinstance(raw.get("beaver"), dict)
+                    else None
+                ),
                 source_label=str(raw.get("source_label", "teleop data")),
                 status_extra=str(raw.get("status_extra", "")),
                 connected=bool(raw.get("connected", True)),
@@ -592,6 +756,39 @@ class TeleopDashboard:
         except queue.Full:
             self.record_button.label.set_text("Queue full")
 
+    def _queue_teach_command(self, command: str, label) -> None:
+        try:
+            self.command_queue.put_nowait(
+                {"command": command, "timestamp": time.monotonic()}
+            )
+            label.set_text("Queued")
+        except queue.Full:
+            label.set_text("Queue full")
+
+    def _request_teach_toggle(self, _event) -> None:
+        status = self.latest.teach or {}
+        if not status.get("teach_enabled", False):
+            return
+        self._queue_teach_command("toggle_teach", self.teach_button.label)
+
+    def _request_reteach(self, _event) -> None:
+        status = self.latest.teach or {}
+        if not status.get("reteach_enabled", False):
+            return
+        self._queue_teach_command("reteach", self.reteach_button.label)
+
+    def _request_replay_collect(self, _event) -> None:
+        status = self.latest.teach or {}
+        if not status.get("replay_enabled", False):
+            return
+        self._queue_teach_command("replay_collect", self.replay_button.label)
+
+    def _request_initial_pose(self, _event) -> None:
+        status = self.latest.teach or {}
+        if not status.get("initial_pose_enabled", False):
+            return
+        self._queue_teach_command("initial_pose", self.initial_pose_button.label)
+
     def _update(self, _frame):
         self._read_latest()
         sample = self.latest
@@ -608,6 +805,7 @@ class TeleopDashboard:
         self._update_status(sample, wrench)
         self._update_vector(wrench)
         self._update_tactile(sample)
+        self._update_beaver(sample)
         self._update_camera(sample)
         self._update_pose(sample)
         return []
@@ -650,6 +848,7 @@ class TeleopDashboard:
         self.force_mag_text.set_text(f"|F| {float(np.linalg.norm(wrench[:3])):5.2f} N")
         self.torque_mag_text.set_text(f"|T| {float(np.linalg.norm(wrench[3:])):5.3f} Nm")
         self._update_dataset_status(sample)
+        self._update_teach_status(sample)
         if sample.error:
             self.status_text.set_text(f"{state}  |  {sample.error[:58]}")
 
@@ -670,15 +869,21 @@ class TeleopDashboard:
         last_text = "--" if last_length is None else str(int(last_length))
         collecting = "REC" if status.get("collecting") else "idle"
         dataset_type = str(status.get("dataset_type", "?"))
+        collect_rate = status.get("collect_rate_hz")
+        rate_text = (
+            ""
+            if collect_rate is None
+            else f"  {float(collect_rate):g} Hz"
+        )
         self.dataset_text.set_text(
-            f"{dataset_type} {collecting}\n"
+            f"{dataset_type} {collecting}{rate_text}\n"
             f"eps {recorded:04d}  cur {current_frames:04d}\n"
             f"last {last_text}"
         )
         self.record_button.label.set_text(
-            "Save episode" if status.get("collecting") else "Start record"
+            "Save\nepisode" if status.get("collecting") else "Start\nrecord"
         )
-        self.rollback_button.label.set_text("Undo episode")
+        self.rollback_button.label.set_text("Undo\nepisode")
         if not self.show_record_button:
             self.record_button_ax.set_visible(False)
         if not self.show_rollback_button:
@@ -687,6 +892,58 @@ class TeleopDashboard:
             self.rollback_button_ax.set_alpha(0.45)
         else:
             self.rollback_button_ax.set_alpha(1.0)
+
+    @staticmethod
+    def _set_control_enabled(axis, enabled: bool) -> None:
+        axis.set_alpha(1.0 if enabled else 0.35)
+
+    def _update_teach_status(self, sample: TeleopSample) -> None:
+        if not self.show_teach_controls:
+            for axis in self.teach_control_axes:
+                axis.set_visible(False)
+            return
+        for axis in self.teach_control_axes:
+            axis.set_visible(sample.teach is not None)
+        if sample.teach is None:
+            return
+
+        status = sample.teach
+        state = str(status.get("state", "idle"))
+        frames = int(status.get("trajectory_frames", 0))
+        state_text = {
+            "teaching": "TEACH",
+            "ready": "ready",
+            "replaying": "REPLAY",
+            "moving_initial": "INIT",
+        }.get(state, "idle")
+        dataset_text = self.dataset_text.get_text()
+        self.dataset_text.set_text(
+            f"{dataset_text}\npath {state_text} {frames:04d}".strip()
+        )
+        self.workflow_message_text.set_text(str(status.get("message", "")))
+        self.teach_button.label.set_text(
+            "End Teach" if state == "teaching" else "Teach"
+        )
+        self.reteach_button.label.set_text("Reteach")
+        self.replay_button.label.set_text(
+            "Collecting" if state == "replaying" else "Replay\ncollect"
+        )
+        self.initial_pose_button.label.set_text(
+            "Moving..." if state == "moving_initial" else "Initial\npose"
+        )
+        self._set_control_enabled(
+            self.teach_button_ax, bool(status.get("teach_enabled", False))
+        )
+        self._set_control_enabled(
+            self.reteach_button_ax, bool(status.get("reteach_enabled", False))
+        )
+        self._set_control_enabled(
+            self.replay_button_ax, bool(status.get("replay_enabled", False))
+        )
+        self._set_control_enabled(
+            self.initial_pose_button_ax,
+            bool(status.get("initial_pose_enabled", False)),
+        )
 
     def _update_vector(self, wrench: np.ndarray) -> None:
         self.vector_arrow.remove()
@@ -708,6 +965,8 @@ class TeleopDashboard:
         )
 
     def _update_tactile(self, sample: TeleopSample) -> None:
+        if self.tactile_panel is None or self.tactile_text is None:
+            return
         self.tactile_panel.update(sample.tactile)
         if sample.tactile is None:
             self.tactile_text.set_text("waiting")
@@ -720,6 +979,63 @@ class TeleopDashboard:
         )
         self.tactile_text.set_text(f"sensor {tuple(sample.tactile.shape)}  {age_ms:.0f} ms")
         self.tactile_text.set_color("#47f091")
+
+    def _update_beaver(self, sample: TeleopSample) -> None:
+        if not self.beaver_enabled or sample.beaver is None:
+            return
+        data = sample.beaver
+        distance = np.asarray(data.get("distance_mm"))
+        status = np.asarray(data.get("target_status"))
+        present = np.asarray(data.get("present"), dtype=bool).reshape(-1)
+        if (
+            distance.ndim != 3
+            or distance.shape != status.shape
+            or distance.shape[0] != len(self.beaver_artists)
+            or distance.shape[1] != distance.shape[2]
+            or distance.shape[1] not in (4, 8)
+        ):
+            return
+        stale = bool(data.get("stale", False))
+        for slot, (ax, artist) in enumerate(
+            zip(self.beaver_axes, self.beaver_artists)
+        ):
+            valid = (
+                np.isin(status[slot], (5, 9))
+                & np.isfinite(distance[slot])
+                & (distance[slot] > 0)
+            )
+            image = np.ma.masked_where(~valid, distance[slot])
+            artist.set_data(image)
+            bus, sensor = (
+                self.beaver_layout[slot]
+                if slot < len(self.beaver_layout)
+                else (0, slot)
+            )
+            online = slot < present.size and present[slot]
+            state = "stale" if stale and online else ("online" if online else "missing")
+            average_text = (
+                f"avg {float(np.mean(distance[slot][valid])):.1f} mm"
+                if np.any(valid)
+                else "avg --"
+            )
+            ax.set_title(
+                f"B{bus}S{sensor} · {state} · {average_text}",
+                color="#47f091" if online and not stale else "#ff6b6b",
+                fontsize=10,
+            )
+        if self.beaver_fig is not None:
+            connection = "CONNECTED" if data.get("connected") and not stale else "WAITING"
+            error = str(data.get("error", ""))
+            suffix = f" · {error[:80]}" if error else ""
+            self.beaver_fig.suptitle(
+                f"Beaver 9-sensor {distance.shape[1]}x{distance.shape[2]} view · "
+                f"{connection} · frame "
+                f"{int(data.get('frame_count', 0))} · lost "
+                f"{int(data.get('lost_frames', 0))}{suffix}",
+                color="#e8f1ff",
+                fontsize=13,
+            )
+            self.beaver_fig.canvas.draw_idle()
 
     def _update_camera(self, sample: TeleopSample) -> None:
         images = sample.images or {}
@@ -756,6 +1072,27 @@ class TeleopDashboard:
                 lines.append(" ".join(f"{v:+5.1f}" for v in deg[start : start + columns]))
         else:
             lines.append("joint deg unavailable")
+
+        if sample.wrm is not None:
+            alpha = sample.wrm.get("elbow_alpha")
+            confidence = sample.wrm.get("confidence")
+            target = sample.wrm.get("arm_angle_target_deg")
+            tcp_z_offset = sample.wrm.get("tcp_z_offset_m")
+            frozen = bool(sample.wrm.get("tracking_frozen", True))
+            alpha_text = "--" if alpha is None else f"{float(alpha):.3f}"
+            confidence_text = (
+                "--" if confidence is None else f"{float(confidence):.2f}"
+            )
+            target_text = "--" if target is None else f"{float(target):+.1f} deg"
+            lines.append(
+                f"WRM alpha {alpha_text}  conf {confidence_text}  "
+                f"{'FROZEN' if frozen else 'TRACK'}"
+            )
+            lines.append(f"arm-angle target {target_text}")
+            if tcp_z_offset is not None:
+                lines.append(
+                    f"WRM TCP z offset {float(tcp_z_offset) * 100.0:+.1f} cm"
+                )
         self.pose_text.set_text("\n".join(lines))
 
 
@@ -771,6 +1108,11 @@ def _run_visualizer(
     camera_num: int,
     show_rollback_button: bool,
     show_record_button: bool,
+    show_teach_controls: bool,
+    show_tactile_panel: bool,
+    beaver_enabled: bool,
+    beaver_layout: tuple[tuple[int, int], ...],
+    beaver_max_mm: float,
 ) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     if matplotlib.get_backend().lower() == "agg":
@@ -786,6 +1128,11 @@ def _run_visualizer(
         camera_num=camera_num,
         show_rollback_button=show_rollback_button,
         show_record_button=show_record_button,
+        show_teach_controls=show_teach_controls,
+        show_tactile_panel=show_tactile_panel,
+        beaver_enabled=beaver_enabled,
+        beaver_layout=beaver_layout,
+        beaver_max_mm=beaver_max_mm,
     )
     dashboard.start()
 
@@ -800,6 +1147,11 @@ def start_visualizer(
     camera_num: int = 1,
     show_rollback_button: bool = True,
     show_record_button: bool = False,
+    show_teach_controls: bool = False,
+    show_tactile_panel: bool = True,
+    beaver_enabled: bool = False,
+    beaver_layout: tuple[tuple[int, int], ...] = (),
+    beaver_max_mm: float = 2500.0,
 ) -> VisualizerHandle:
     cfg = VisualizerConfig()
     # Kept for compatibility with older callers; real wrench filtering happens
@@ -828,6 +1180,11 @@ def start_visualizer(
             camera_num,
             show_rollback_button,
             show_record_button,
+            show_teach_controls,
+            show_tactile_panel,
+            beaver_enabled,
+            beaver_layout,
+            beaver_max_mm,
         ),
         daemon=True,
     )
