@@ -42,7 +42,12 @@ class ObservationNormalizer(nn.Module):
         self._valid_statuses = tuple(valid_statuses)
 
     @classmethod
-    def from_lerobot_dataset(cls, config: RealmanBeaverConfig) -> ObservationNormalizer:
+    def from_lerobot_dataset(
+        cls,
+        config: RealmanBeaverConfig,
+        episodes: Sequence[int] | None = None,
+    ) -> ObservationNormalizer:
+        """Build normalization statistics, optionally from selected episodes only."""
         dataset, model = config.dataset, config.model
         if dataset.normalization_source == "metadata":
             return cls._from_metadata(config)
@@ -54,10 +59,21 @@ class ObservationNormalizer(nn.Module):
             )
         keys = (dataset.state_key, dataset.action_key)
         chunks: dict[str, list[np.ndarray]] = {key: [] for key in keys}
+        included = set(episodes) if episodes is not None else None
         for path in paths:
-            table = pq.read_table(path, columns=list(keys))
+            columns = [*keys, "episode_index"] if included is not None else list(keys)
+            table = pq.read_table(path, columns=columns)
+            selected: np.ndarray | slice = slice(None)
+            if included is not None:
+                episode_index = np.asarray(table["episode_index"]).reshape(-1)
+                selected = np.isin(episode_index, tuple(included))
+                if not selected.any():
+                    continue
             for key in keys:
-                chunks[key].append(np.asarray(table[key].to_pylist(), dtype=np.float32))
+                values = np.asarray(table[key].to_pylist(), dtype=np.float32)
+                chunks[key].append(values[selected])
+        if any(not values for values in chunks.values()):
+            raise ValueError("No state/action rows matched the normalization episodes")
         state = np.concatenate(chunks[dataset.state_key], axis=0)
         action = np.concatenate(chunks[dataset.action_key], axis=0)
         if state.shape[1:] != (model.state_dim,) or action.shape[1:] != (
@@ -240,6 +256,18 @@ def episode_split(config: DatasetConfig) -> tuple[list[int], list[int]]:
     with info_path.open("r", encoding="utf-8") as stream:
         total = int(json.load(stream)["total_episodes"])
     episodes = list(range(total))
+    if config.val_episodes is not None:
+        validation = sorted(config.val_episodes)
+        invalid = [episode for episode in validation if episode >= total]
+        if invalid:
+            raise ValueError(
+                f"dataset.val_episodes contains indices outside [0, {total - 1}]: {invalid}"
+            )
+        validation_set = set(validation)
+        training = [episode for episode in episodes if episode not in validation_set]
+        if not training:
+            raise ValueError("dataset.val_episodes must leave at least one training episode")
+        return training, validation
     random.Random(config.split_seed).shuffle(episodes)
     validation_count = round(total * config.val_fraction)
     if config.val_fraction > 0 and total > 1:

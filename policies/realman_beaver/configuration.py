@@ -37,6 +37,9 @@ class DatasetConfig:
     beaver_valid_statuses: tuple[int, ...] = (5, 9)
     val_fraction: float = 0.1
     split_seed: int = 42
+    # Explicit zero-based LeRobot episode indices take precedence over the
+    # seeded val_fraction split when provided.
+    val_episodes: tuple[int, ...] | None = None
     normalization_source: str = "parquet"
     distance_max_mm: float = 2550.0
     normalization_floor: float = 1e-4
@@ -44,6 +47,8 @@ class DatasetConfig:
     def __post_init__(self) -> None:
         self.image_shape = tuple(self.image_shape)
         self.beaver_valid_statuses = tuple(self.beaver_valid_statuses)
+        if self.val_episodes is not None:
+            self.val_episodes = tuple(self.val_episodes)
 
 
 @dataclass
@@ -247,6 +252,11 @@ class RealmanBeaverConfig:
             raise ValueError(
                 "dataset fps must be positive and val_fraction must be in [0, 1)"
             )
+        if dataset.val_episodes is not None:
+            if any(episode < 0 for episode in dataset.val_episodes):
+                raise ValueError("dataset.val_episodes must contain non-negative indices")
+            if len(set(dataset.val_episodes)) != len(dataset.val_episodes):
+                raise ValueError("dataset.val_episodes must not contain duplicates")
         if len(dataset.image_shape) != 3 or dataset.image_shape[0] != 3:
             raise ValueError(
                 "dataset.image_shape must be channel-first RGB, for example (3, 480, 640)"

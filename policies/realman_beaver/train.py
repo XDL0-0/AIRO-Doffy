@@ -35,6 +35,7 @@ from policies.realman_beaver.modeling import (
 )
 
 LossFunction = Callable[[dict[str, Tensor]], tuple[Tensor, dict[str, float]]]
+_WANDB_METRIC_KINDS: set[str] = set()
 
 
 class ExponentialMovingAverage:
@@ -93,13 +94,52 @@ def _to_device(batch: dict[str, Tensor], device: torch.device) -> dict[str, Tens
 
 
 def _wandb_log(kind: str, step: int, values: dict[str, float]) -> None:
-    """Log step/epoch metrics to W&B, no-op when W&B is not initialized."""
+    """Log metrics against a stage-local step without rewinding W&B's step."""
     if wandb.run is None:
         return
-    wandb.log(
-        {f"{kind}/{key}": value for key, value in values.items()},
-        step=step,
-    )
+    step_key = f"{kind}/global_step"
+    if kind not in _WANDB_METRIC_KINDS:
+        wandb.define_metric(step_key)
+        wandb.define_metric(f"{kind}/*", step_metric=step_key)
+        _WANDB_METRIC_KINDS.add(kind)
+    payload = {f"{kind}/{key}": value for key, value in values.items()}
+    payload[step_key] = step
+    # Do not pass W&B's global step: tokenizer and latent training each start
+    # from zero, while the stage-local custom axes remain independent.
+    wandb.log(payload)
+
+
+def _parse_episode_spec(value: str) -> tuple[int, ...]:
+    """Parse zero-based comma-separated episode indices and inclusive ranges."""
+    episodes: list[int] = []
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            raise argparse.ArgumentTypeError("episode ranges must not be empty")
+        if "-" in item:
+            start_text, end_text = item.split("-", 1)
+            try:
+                start, end = int(start_text), int(end_text)
+            except ValueError as exc:
+                raise argparse.ArgumentTypeError(
+                    f"invalid episode range: {item}"
+                ) from exc
+            if start < 0 or end < start:
+                raise argparse.ArgumentTypeError(f"invalid episode range: {item}")
+            episodes.extend(range(start, end + 1))
+        else:
+            try:
+                episode = int(item)
+            except ValueError as exc:
+                raise argparse.ArgumentTypeError(
+                    f"invalid episode index: {item}"
+                ) from exc
+            if episode < 0:
+                raise argparse.ArgumentTypeError("episode indices must be non-negative")
+            episodes.append(episode)
+    if len(set(episodes)) != len(episodes):
+        raise argparse.ArgumentTypeError("episode indices must not contain duplicates")
+    return tuple(episodes)
 
 
 def _mean_metrics(metrics: Iterable[dict[str, float]]) -> dict[str, float]:
@@ -427,11 +467,15 @@ def train(config: RealmanBeaverConfig) -> Path:
             print(f"wandb: init failed, continuing without W&B: {exc}")
 
     train_episodes, val_episodes = episode_split(config.dataset)
-    normalizer = ObservationNormalizer.from_lerobot_dataset(config).to(device)
+    normalizer = ObservationNormalizer.from_lerobot_dataset(
+        config, train_episodes
+    ).to(device)
     print(
         f"variant={config.model.variant} device={device} "
         f"train_episodes={len(train_episodes)} val_episodes={len(val_episodes)}"
     )
+    print(f"train_episode_indices={train_episodes}")
+    print(f"val_episode_indices={val_episodes}")
 
     if config.model.variant in {"original_dp", "dp_beaver", "fm", "fm_beaver"}:
         train_dataset = RealmanPolicyDataset(config, train_episodes, stage="policy")
@@ -633,6 +677,14 @@ def _parser() -> argparse.ArgumentParser:
         "--val-fraction", type=float, help="Override dataset.val_fraction"
     )
     parser.add_argument(
+        "--val-episodes",
+        type=_parse_episode_spec,
+        help=(
+            "Override validation episodes with zero-based LeRobot indices; "
+            "accepts comma-separated indices and inclusive ranges such as 50-74"
+        ),
+    )
+    parser.add_argument(
         "--tokenizer-checkpoint",
         help="Skip reactive tokenizer training and load this file",
     )
@@ -677,6 +729,8 @@ def main() -> None:
         config.rfm.latent_batch_size = args.batch_size
     if args.val_fraction is not None:
         config.dataset.val_fraction = args.val_fraction
+    if args.val_episodes is not None:
+        config.dataset.val_episodes = args.val_episodes
     if args.tokenizer_checkpoint is not None:
         reactive = config.rdp if config.model.variant == "rdp_like" else config.rfm
         reactive.tokenizer_checkpoint = args.tokenizer_checkpoint

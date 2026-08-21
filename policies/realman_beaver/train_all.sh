@@ -12,38 +12,52 @@ MERGED_DATASET_ROOT="${MERGED_DATASET_ROOT:-${REPO_ROOT}/datasets/WRM_grasp_cyli
 MAX_PARALLEL="${MAX_PARALLEL:-2}"
 WANDB_PROJECT="${WANDB_PROJECT:-}"
 MODE="sequential"
+WAIT_FOR_LOCK="false"
 
 usage() {
-    echo "Usage: $0 [--parallel|--sequential] [arguments passed to every trainer]"
+    echo "Usage: $0 [--parallel|--sequential] [--wait] [arguments passed to every trainer]"
     echo
     echo "Environment overrides: DEVICE=cuda:0 NUM_WORKERS=1 OUTPUT_ROOT=path"
     echo "  CYLINDER_DATASET_ROOT=path MERGED_DATASET_ROOT=path"
+    echo "  TRAIN_DATASET_ROOT=path TRAIN_DATASET_NAME=name (run one dataset only)"
     echo "  MAX_PARALLEL=2 WANDB_PROJECT=project-name"
     echo "Default: train six policies on each of the cylinder and merged datasets sequentially."
     echo "--parallel runs at most MAX_PARALLEL trainers concurrently."
 }
 
-case "${1:-}" in
-    --parallel)
-        MODE="parallel"
-        shift
-        ;;
-    --sequential)
-        MODE="sequential"
-        shift
-        ;;
-    --help|-h)
-        usage
-        exit 0
-        ;;
-esac
-
-EXTRA_ARGS=("$@")
+EXTRA_ARGS=()
+while (($#)); do
+    case "$1" in
+        --parallel)
+            MODE="parallel"
+            ;;
+        --sequential)
+            MODE="sequential"
+            ;;
+        --wait)
+            WAIT_FOR_LOCK="true"
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *)
+            EXTRA_ARGS+=("$1")
+            ;;
+    esac
+    shift
+done
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "${OUTPUT_ROOT}"
 
-DATASET_NAMES=("WRM_grasp_cylinder_lero" "WRM_grasp_cylinder_all")
-DATASET_ROOTS=("${CYLINDER_DATASET_ROOT}" "${MERGED_DATASET_ROOT}")
+if [[ -n "${TRAIN_DATASET_ROOT:-}" ]]; then
+    TRAIN_DATASET_NAME="${TRAIN_DATASET_NAME:-$(basename -- "${TRAIN_DATASET_ROOT}")}"
+    DATASET_NAMES=("${TRAIN_DATASET_NAME}")
+    DATASET_ROOTS=("${TRAIN_DATASET_ROOT}")
+else
+    DATASET_NAMES=("WRM_grasp_cylinder_lero" "WRM_grasp_cylinder_all")
+    DATASET_ROOTS=("${CYLINDER_DATASET_ROOT}" "${MERGED_DATASET_ROOT}")
+fi
 for dataset_root in "${DATASET_ROOTS[@]}"; do
     if [[ ! -f "${dataset_root}/meta/info.json" ]]; then
         echo "LeRobot dataset is missing meta/info.json: ${dataset_root}" >&2
@@ -58,7 +72,11 @@ fi
 
 # Do not allow two launchers to write the same checkpoints concurrently.
 exec 9>"${OUTPUT_ROOT}/.training.lock"
-if ! flock -n 9; then
+if [[ "${WAIT_FOR_LOCK}" == "true" ]]; then
+    echo "[$(date -Is)] waiting for ${OUTPUT_ROOT}/.training.lock"
+    flock 9
+    echo "[$(date -Is)] acquired ${OUTPUT_ROOT}/.training.lock"
+elif ! flock -n 9; then
     echo "Another train_all.sh process already owns ${OUTPUT_ROOT}/.training.lock" >&2
     exit 2
 fi
