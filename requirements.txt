@@ -24,3 +24,6 @@ ur-analytic-ik
 
 # tactile sensor (internal)
 # sensor-comm-dds
+
+# experiment tracking
+wandb

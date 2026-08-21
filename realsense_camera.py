@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 import threading
 import time
 from typing import Dict, List, Tuple
@@ -35,6 +36,10 @@ class RealSenseCameraManager:
         self.camera_image_timestamps_ns: Dict[str, int] = {}
         self.depth_images: Dict[str, np.ndarray] = {}
         self.depth_timestamps_ns: Dict[str, int] = {}
+        self._sync_buffer_size = int(cfg.SENSOR_SYNC_BUFFER_SIZE)
+        self.camera_frame_buffers: Dict[
+            str, deque[tuple[int, np.ndarray, np.ndarray | None]]
+        ] = {}
 
         self.camera_num, self.camera_series_num = self._detect_cameras()
         self.camera_list: Dict[str, Realsense] = {}
@@ -69,6 +74,7 @@ class RealSenseCameraManager:
             serial_number=serial,
         )
         self.camera_list[name] = camera
+        self.camera_frame_buffers[name] = deque(maxlen=self._sync_buffer_size)
         width, height = self.realsense_resolution
         utils.logger.info(
             f"{name}: serial={serial}, fps={self.realsense_fps}, "
@@ -80,6 +86,7 @@ class RealSenseCameraManager:
         consecutive_errors = 0
         while self.running:
             try:
+                capture_start_ns = time.monotonic_ns()
                 camera.grab_images()
                 image = camera.retrieve_rgb_image()
                 if image.dtype != np.uint8:
@@ -92,7 +99,11 @@ class RealSenseCameraManager:
                     except (RuntimeError, AttributeError):
                         pass
 
-                capture_timestamp_ns = time.monotonic_ns()
+                capture_end_ns = time.monotonic_ns()
+                # The wrapper does not expose the RealSense hardware timestamp.
+                # Bracket the blocking acquisition instead of stamping after all
+                # retrieval work, which otherwise biases every frame late.
+                capture_timestamp_ns = (capture_start_ns + capture_end_ns) // 2
                 with self._lock:
                     name = f"camera_{idx}"
                     self.camera_images[name] = image
@@ -100,6 +111,9 @@ class RealSenseCameraManager:
                     if depth is not None:
                         self.depth_images[name] = depth
                         self.depth_timestamps_ns[name] = capture_timestamp_ns
+                    self.camera_frame_buffers[name].append(
+                        (capture_timestamp_ns, image, depth)
+                    )
                 consecutive_errors = 0
                 time.sleep(1 / self.realsense_fps)
             except RuntimeError as exc:
@@ -114,6 +128,39 @@ class RealSenseCameraManager:
                     f"retrying in 1s: {exc}"
                 )
                 time.sleep(1.0)
+
+    def snapshot_nearest(
+        self,
+        reference_timestamp_ns: int,
+    ) -> tuple[
+        dict[str, np.ndarray],
+        dict[str, int],
+        dict[str, np.ndarray] | None,
+    ]:
+        """Copy the buffered frame nearest to a monotonic reference time."""
+        reference_timestamp_ns = int(reference_timestamp_ns)
+        images: dict[str, np.ndarray] = {}
+        timestamps: dict[str, int] = {}
+        depth_images: dict[str, np.ndarray] | None = {} if self.depth_mode else None
+        with self._lock:
+            for name in sorted(self.camera_list):
+                history = self.camera_frame_buffers.get(name)
+                if history:
+                    timestamp_ns, image, depth = min(
+                        history,
+                        key=lambda frame: abs(frame[0] - reference_timestamp_ns),
+                    )
+                elif name in self.camera_images:
+                    timestamp_ns = int(self.camera_image_timestamps_ns.get(name, 0))
+                    image = self.camera_images[name]
+                    depth = self.depth_images.get(name)
+                else:
+                    continue
+                images[name] = np.asarray(image).copy()
+                timestamps[name] = int(timestamp_ns)
+                if depth_images is not None and depth is not None:
+                    depth_images[name] = np.asarray(depth).copy()
+        return images, timestamps, depth_images
 
     def start(self) -> None:
         if self._closed:

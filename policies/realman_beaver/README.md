@@ -1,175 +1,132 @@
-# Realman–Beaver LeRobot diffusion policies
+# Realman–Beaver policy baselines
 
-This folder trains and deploys three policies from the local LeRobot dataset at
-`/home/yuyuan/AIRO-Doffy/datasets/WRM_grasp_lero`.
+This package trains and deploys six baselines from the local LeRobot dataset.
+The original diffusion models remain available; three flow-matching models are
+provided alongside them.
 
-| config | policy input | training structure |
+| config | observations | trajectory model |
 | --- | --- | --- |
-| `original_dp.yaml` | one camera + 7 joints | native LeRobot `DiffusionPolicy` |
-| `dp_beaver.yaml` | one camera + 7 joints + Beaver | native LeRobot `DiffusionPolicy`; Beaver is appended to state |
-| `rdp_like.yaml` | one camera + 7 joints + Beaver | asymmetric action tokenizer, then native LeRobot latent DP |
+| `original_dp.yaml` | camera + 7 joints | native LeRobot `DiffusionPolicy` |
+| `dp_beaver.yaml` | camera + 7 joints + Beaver | native LeRobot `DiffusionPolicy` |
+| `rdp_like.yaml` | camera + 7 joints + Beaver | asymmetric tokenizer + latent diffusion |
+| `fm.yaml` | camera + 7 joints | conditional flow matching |
+| `fm_beaver.yaml` | camera + 7 joints + Beaver | conditional flow matching |
+| `rfm.yaml` | camera + 7 joints + Beaver | asymmetric tokenizer + latent flow matching |
 
-The first two variants instantiate LeRobot 0.5's real ResNet18 +
-FiLM-conditioned 1D U-Net implementation. They use its diffusion scheduler,
-epsilon-noise MSE objective, padding mask, action-chunk sampling, observation
-queue, and receding-horizon deployment. `dp_beaver` expands each state from 7
-to 160 values: 7 normalized joints, 144 normalized distances, and 9 sensor
-presence flags.
+## Flow-matching models
 
-The RDP-like policy follows the two-stage structure of
-[Reactive Diffusion Policy](https://github.com/xiaoxiaoxh/reactive_diffusion_policy),
-with tactile images replaced by Beaver distance grids:
+`fm` and `fm_beaver` use the same ResNet18 observation encoder and
+FiLM-conditioned 1D U-Net shape as the diffusion baselines, but they do not
+instantiate `DiffusionPolicy` or a diffusion scheduler. Given normalized action
+data `x₁`, Gaussian noise `x₀`, and `t ~ Uniform(0, 1)`, training uses the linear
+path
 
-1. The asymmetric Action Tokenizer's CNN encoder sees only a 32-step action
-   trajectory. It produces sixteen 4-D tokens (downsample ratio 2, matching
-   the reference RDP's `downsampled_input_h = 16`). A causal GRU reconstructs
-   actions from those tokens and all 32 Beaver frames using L1 reconstruction
-   plus a `1e-6` KL term.
-2. The trained tokenizer is frozen. A native LeRobot diffusion policy learns
-   the latent-token trajectory from two camera/joint observations sampled at
-   12 Hz. The slow branch samples with the full 100-step DDPM schedule,
-   matching the reference RDP (`num_inference_steps: 100`).
-3. During rollout, the slow branch replans every 8 control ticks (3 Hz at
-   the dataset's 24 Hz rate, matching the DP variants' `n_action_steps=8`
-   receding horizon). The fast GRU runs every tick with the latest Beaver
-   frame. Beaver data never enters the slow visual diffusion model.
+```text
+xₜ = (1 - t) x₀ + t x₁
+target velocity = x₁ - x₀
+```
 
-This is deliberately called **RDP-like**: it preserves RDP's action-only
-encoder, asymmetric sensor decoder, frozen-tokenizer second stage, and
-slow/fast execution, but Beaver distances are not GelSight/McTac images.
+The U-Net predicts the velocity with padding-masked MSE. Inference starts from
+Gaussian noise and integrates the learned ODE from `t=0` to `t=1` with the
+configured number of Euler steps (`flow_num_inference_steps`).
 
-## Dataset and normalization
+`rfm` preserves the reactive structure of `rdp_like`: an action-only encoder
+produces a 16-token latent trajectory, while a causal GRU decodes actions using
+the latest Beaver frame. Its slow visual branch generates latent tokens with
+flow matching instead of diffusion. The tokenizer is trained first and frozen
+while the slow latent flow is trained.
 
-The supplied dataset was inspected directly:
+## Beaver validity masking
 
-| field | value |
-| --- | --- |
-| episodes / frames | 51 / 11,934 |
-| frequency | 24 Hz |
-| `observation.images.camera_0` | `3×480×640`, float in `[0, 1]` after decoding |
-| `observation.state` / `action` | 7 / 7 |
-| `observation.beaver.distance_mm` | `9×4×4` |
-| `observation.beaver.present` | 9 |
-| `observation.beaver.target_status` | `9×4×4`, VL53L7CX per-pixel status codes |
+All Beaver-conditioned variants load these fields:
 
-Original DP action windows use LeRobot's canonical two-observation alignment:
-relative indices `[-1, 0, ..., 14]` for a 16-step horizon. State and action use
-LeRobot's min/max mapping to `[-1, 1]`; images use its mean/std mapping. The
-state/action extrema are recomputed over every parquet shard because the
-current `meta/stats.json` covers only part of the dataset. Image mean/std still
-comes from that metadata, so regenerate the dataset statistics if the videos
-have changed.
+- `observation.beaver.distance_mm`: `9×4×4`
+- `observation.beaver.present`: `9`
+- `observation.beaver.target_status`: `9×4×4`
 
-Beaver distances are masked before normalization, in two stages. The
-sensor-level mask (`present`) zeroes every pixel of a disconnected sensor. The
-pixel-level mask uses `target_status`: only codes 5 (valid) and 9 (weak
-signal) carry a usable distance, so the other ~35% of pixels — mostly 255 (no
-target), which read as noisy maximum-range garbage — are zeroed and never
-reach the model. The active codes live in
-`DatasetConfig.beaver_valid_statuses`.
+Every distance pixel is disabled before it reaches a policy or tokenizer unless
+its `beaver_status` is listed in `DatasetConfig.beaver_valid_statuses`. The
+shipped configuration accepts status 5 (valid) and 9 (weak signal). Other codes,
+including 255 (no target), are zeroed pixel by pixel. The sensor-level `present`
+mask still zeroes the complete grid of a disconnected sensor.
+
+`fm_beaver` and `dp_beaver` append the resulting 144 masked distance values and
+9 presence flags to the normalized 7-D joint state. `rfm` and `rdp_like` pass
+the masked distance grids only to their fast tokenizer decoder; their slow
+visual trajectory models do not consume Beaver data.
 
 ## Training
 
-Run from the repository root:
+Run one baseline from the repository root:
 
 ```bash
-# Recommended on this machine: all three concurrently, with separate logs and outputs.
-policies/realman_beaver/train_all.sh
+python -m policies.realman_beaver.train \
+  --config policies/realman_beaver/configs/fm.yaml
 
-# Or force sequential training.
-policies/realman_beaver/train_all.sh --sequential
+python -m policies.realman_beaver.train \
+  --config policies/realman_beaver/configs/fm_beaver.yaml
 
-# Individual jobs:
+python -m policies.realman_beaver.train \
+  --config policies/realman_beaver/configs/rfm.yaml
+```
+
+The original configs remain unchanged entry points:
+
+```bash
 python -m policies.realman_beaver.train \
   --config policies/realman_beaver/configs/original_dp.yaml
-
 python -m policies.realman_beaver.train \
   --config policies/realman_beaver/configs/dp_beaver.yaml
-
 python -m policies.realman_beaver.train \
   --config policies/realman_beaver/configs/rdp_like.yaml
 ```
 
-The launcher writes checkpoints and timestamped logs to
-`policies/output/{original_dp,dp_beaver,rdp_like}`. `DEVICE`, `NUM_WORKERS`, and
-`OUTPUT_ROOT` can be overridden as environment variables. Additional arguments
-are forwarded to every trainer, for example
-`train_all.sh --max-steps 10 --val-fraction 0`.
-
-The shipped schedule runs original DP and Beaver DP for 100,000 optimizer
-steps. RDP-like follows the reference RDP schedule exactly: the tokenizer runs
-601 epochs and the latent DP runs 401 epochs, both with batch size 64 and
-`max_train_steps` null — every epoch runs the full dataloader. Each DP stage
-writes numbered snapshots at steps 25k, 50k, 75k, and 100k, plus its final
-`last.pt`; RDP stages write the same step snapshots plus `tokenizer_last.pt`
-and `last.pt` at the end of each stage.
-
-For RDP-like training, `tokenizer_last.pt` is written after stage 1 and
-`last.pt` after stage 2. To reuse a trained tokenizer:
+Train all six sequentially (the safe default for one GPU), or explicitly launch
+them in parallel:
 
 ```bash
-python -m policies.realman_beaver.train \
-  --config policies/realman_beaver/configs/rdp_like.yaml \
-  --tokenizer-checkpoint policies/output/rdp_like/tokenizer_last.pt
+policies/realman_beaver/train_all.sh
+policies/realman_beaver/train_all.sh --parallel
 ```
 
-A real one-step CUDA smoke test is:
+`DEVICE`, `NUM_WORKERS`, and `OUTPUT_ROOT` override the launcher defaults.
+Additional CLI arguments are forwarded to every trainer. For example:
 
 ```bash
-python -m policies.realman_beaver.train \
-  --config policies/realman_beaver/configs/original_dp.yaml \
-  --device cuda:0 --num-workers 0 --max-steps 1 --val-fraction 0 \
-  --output-dir /tmp/original_dp_smoke
+policies/realman_beaver/train_all.sh --max-steps 10 --val-fraction 0
 ```
 
-`--max-steps 1` bounds both RDP stages. Checkpoints contain the model,
-optimizer, scheduler, resolved configuration, full normalization state, and EMA
-weights.
-
-## Can all three train together?
-
-Yes with the shipped batch sizes on this machine's RTX 4070 12 GiB. Measured
-one-step peak allocations were approximately 1.75 GiB for original DP,
-1.85 GiB for Beaver DP, and 1.24 GiB for the largest RDP stage. A concurrent
-one-step run of all three completed successfully.
-
-They still share one GPU, so concurrent jobs do not provide three-GPU
-throughput and may take longer overall. Sequential training is the safer choice
-for maximum throughput; concurrent runs are useful when comparing early
-learning curves. If running concurrently, reduce each job to one data-loader
-worker to avoid twelve default workers competing for CPU and disk bandwidth.
+Direct policies write `metrics.jsonl` and `last.pt`. Reactive models write a
+tokenizer checkpoint first, then either `latent_dp_metrics.jsonl` or
+`latent_fm_metrics.jsonl` and a deployable `last.pt`. Existing W&B options apply
+to every variant.
 
 ## Deployment
 
-Load the EMA policy and call `reset()` at the start of every robot episode:
+Load a checkpoint and reset the policy at the start of each episode:
 
 ```python
 import torch
 
 from policies.realman_beaver.checkpoint import load_policy
 
-policy = load_policy(
-    "policies/output/rdp_like/last.pt",
-    device="cuda:0",
-)
+policy = load_policy("policies/output/rfm/last.pt", device="cuda:0")
 policy.reset()
 
 observation = {
-    "image": camera_chw_float01.to("cuda:0"),  # [3, 480, 640]
-    "state": joint_configuration.to("cuda:0"),  # [7]
-    "beaver_distance": distance_mm.to("cuda:0"),  # [9, 4, 4]
-    "beaver_present": sensor_present.to("cuda:0"),  # [9]
-    "beaver_status": target_status.to("cuda:0"),  # [9, 4, 4], VL53L7CX codes
+    "image": camera_chw_float01.to("cuda:0"),
+    "state": joint_configuration.to("cuda:0"),
+    "beaver_distance": distance_mm.to("cuda:0"),
+    "beaver_present": sensor_present.to("cuda:0"),
+    "beaver_status": target_status.to("cuda:0"),
 }
 with torch.inference_mode():
-    action = policy.select_action(observation)  # [1, 7]
+    action = policy.select_action(observation)
 ```
 
-For `original_dp`, omit the two Beaver fields. For `dp_beaver`, use the same
-observation structure as RDP-like. The wrappers accept batched observations as
-well. This package outputs joint targets only; robot-side joint limits,
-command-rate enforcement, collision handling, and emergency-stop logic remain
-mandatory.
+Omit the Beaver fields only for `original_dp` and `fm`. Beaver-conditioned
+deployment requires `beaver_status`, preventing unmasked invalid pixels from
+silently reaching a model.
 
 ## Verification
 
@@ -177,11 +134,6 @@ mandatory.
 python -m unittest policies.realman_beaver.tests.test_policy -v
 ```
 
-The tests assert that both DP variants contain LeRobot's native
-`DiffusionPolicy`, run loss/backpropagation and sampling, exercise both RDP
-training stages, and execute each online deployment path.
-
-Method references: [Diffusion Policy](https://arxiv.org/abs/2303.04137),
-[Stanford implementation](https://github.com/real-stanford/diffusion_policy),
-[Reactive Diffusion Policy paper](https://arxiv.org/abs/2503.02881), and
-[RDP implementation](https://github.com/xiaoxiaoxh/reactive_diffusion_policy).
+The tests cover all six model constructors, loss/backpropagation, diffusion and
+flow sampling, both reactive pipelines, online action selection, and per-pixel
+status masking.

@@ -77,6 +77,18 @@ class BeaverProtocolTests(unittest.TestCase):
         self.assertEqual(snapshot.sequence, 11)
         self.assertEqual(snapshot.lost_frames, 1)
 
+    def test_reader_selects_buffered_snapshot_nearest_to_reference(self) -> None:
+        decoder = FrameDecoder()
+        first = decoder.feed(encoded_frame(11))[0]
+        second = decoder.feed(encoded_frame(12))[0]
+        reader = BeaverReader(sensor_layout=LAYOUT, sync_buffer_size=2)
+        with patch("beaver.time.monotonic_ns", side_effect=[100, 300]):
+            reader._publish_frame(first, frame_count=1, lost_frames=0)
+            reader._publish_frame(second, frame_count=2, lost_frames=0)
+
+        self.assertEqual(reader.snapshot_nearest(140).sequence, 11)
+        self.assertEqual(reader.snapshot_nearest(260).sequence, 12)
+
     def test_reader_treats_none_in_waiting_as_empty_buffer(self) -> None:
         stop_event = threading.Event()
 

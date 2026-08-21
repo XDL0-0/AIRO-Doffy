@@ -1,4 +1,4 @@
-"""LeRobot v3 adapters and normalization for all three policies."""
+"""LeRobot dataset adapters and normalization for all six baselines."""
 
 from __future__ import annotations
 
@@ -202,9 +202,9 @@ class ObservationNormalizer(nn.Module):
         status: Tensor | None = None,
     ) -> Tensor:
         normalized_state = self.normalize_state(state)
-        normalized_distance = self.normalize_beaver(
-            distance, present, status
-        ).flatten(start_dim=-3)
+        normalized_distance = self.normalize_beaver(distance, present, status).flatten(
+            start_dim=-3
+        )
         return torch.cat(
             (normalized_state, normalized_distance, present.clamp(0.0, 1.0)), dim=-1
         )
@@ -248,7 +248,7 @@ def episode_split(config: DatasetConfig) -> tuple[list[int], list[int]]:
 
 
 class RealmanPolicyDataset(Dataset[dict[str, Tensor]]):
-    """Build DP, tokenizer, or latent-DP sequences from the LeRobot dataset."""
+    """Build direct-policy, tokenizer, or latent-policy sequences."""
 
     def __init__(
         self,
@@ -260,7 +260,8 @@ class RealmanPolicyDataset(Dataset[dict[str, Tensor]]):
             raise ValueError("stage must be policy, tokenizer, or latent")
         self.config = config
         self.stage = stage
-        dataset, model, rdp = config.dataset, config.model, config.rdp
+        dataset, model = config.dataset, config.model
+        reactive = config.rdp if model.variant == "rdp_like" else config.rfm
         root = Path(dataset.root).expanduser().resolve()
         history = list(range(1 - model.n_obs_steps, 1))
 
@@ -282,7 +283,7 @@ class RealmanPolicyDataset(Dataset[dict[str, Tensor]]):
                     )
                 ],
             }
-            if model.variant == "dp_beaver":
+            if model.variant in {"dp_beaver", "fm_beaver"}:
                 delta_timestamps[dataset.beaver_distance_key] = [
                     step / dataset.fps for step in history
                 ]
@@ -295,13 +296,15 @@ class RealmanPolicyDataset(Dataset[dict[str, Tensor]]):
         else:
             delta_timestamps = {
                 dataset.image_key: [
-                    step * rdp.slow_observation_stride / dataset.fps for step in history
+                    step * reactive.slow_observation_stride / dataset.fps
+                    for step in history
                 ],
                 dataset.state_key: [
-                    step * rdp.slow_observation_stride / dataset.fps for step in history
+                    step * reactive.slow_observation_stride / dataset.fps
+                    for step in history
                 ],
                 dataset.action_key: [
-                    step / dataset.fps for step in range(rdp.action_horizon)
+                    step / dataset.fps for step in range(reactive.action_horizon)
                 ],
             }
 
@@ -365,7 +368,12 @@ class RealmanPolicyDataset(Dataset[dict[str, Tensor]]):
         included = (
             set(episodes) if episodes is not None else set(np.unique(episode_index))
         )
-        horizon = self.config.rdp.action_horizon
+        reactive = (
+            self.config.rdp
+            if self.config.model.variant == "rdp_like"
+            else self.config.rfm
+        )
+        horizon = reactive.action_horizon
         queries, padding = [], []
         for episode in sorted(included):
             selected = np.flatnonzero(episode_index == episode)
@@ -397,7 +405,10 @@ class RealmanPolicyDataset(Dataset[dict[str, Tensor]]):
         if self.stage in {"policy", "latent"}:
             required[config.dataset.image_key] = None
             required[config.dataset.state_key] = (7,)
-        if self.stage == "tokenizer" or config.model.variant == "dp_beaver":
+        if self.stage == "tokenizer" or config.model.variant in {
+            "dp_beaver",
+            "fm_beaver",
+        }:
             required[config.dataset.beaver_distance_key] = (9, 4, 4)
             required[config.dataset.beaver_present_key] = (9,)
             required[config.dataset.beaver_status_key] = (9, 4, 4)
@@ -438,7 +449,10 @@ class RealmanPolicyDataset(Dataset[dict[str, Tensor]]):
         if self.stage in {"policy", "latent"}:
             sample["image"] = item[dataset.image_key].float()
             sample["state"] = item[dataset.state_key].float()
-        if self.stage == "tokenizer" or self.config.model.variant == "dp_beaver":
+        if self.stage == "tokenizer" or self.config.model.variant in {
+            "dp_beaver",
+            "fm_beaver",
+        }:
             sample["beaver_distance"] = item[dataset.beaver_distance_key].float()
             sample["beaver_present"] = item[dataset.beaver_present_key].float()
             sample["beaver_status"] = item[dataset.beaver_status_key].float()

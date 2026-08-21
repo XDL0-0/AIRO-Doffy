@@ -9,9 +9,17 @@ from policies.realman_beaver.configuration import (
     ModelConfig,
     RDPConfig,
     RealmanBeaverConfig,
+    RFMConfig,
 )
 from policies.realman_beaver.dataset import LatentNormalizer, ObservationNormalizer
-from policies.realman_beaver.modeling import LeRobotDPPolicy, RDPPolicy, build_policy
+from policies.realman_beaver.modeling import (
+    FlowMatchingModel,
+    FMPolicy,
+    LeRobotDPPolicy,
+    RDPPolicy,
+    RFMPolicy,
+    build_policy,
+)
 
 
 def tiny_config(variant: str) -> RealmanBeaverConfig:
@@ -28,8 +36,22 @@ def tiny_config(variant: str) -> RealmanBeaverConfig:
             diffusion_step_embed_dim=32,
             num_train_timesteps=8,
             num_inference_steps=2,
+            flow_time_embed_dim=32,
+            flow_num_inference_steps=2,
         ),
         rdp=RDPConfig(
+            action_horizon=8,
+            downsample_ratio=2,
+            latent_dim=4,
+            tokenizer_hidden_dim=16,
+            beaver_feature_dim=16,
+            slow_observation_stride=2,
+            slow_replan_steps=4,
+            latent_down_dims=(32, 64),
+            latent_kernel_size=3,
+            latent_num_inference_steps=2,
+        ),
+        rfm=RFMConfig(
             action_horizon=8,
             downsample_ratio=2,
             latent_dim=4,
@@ -57,10 +79,16 @@ def beaver_fields(
     """
     generator = torch.Generator().manual_seed(seed)
     codes = torch.tensor([5.0, 5.0, 5.0, 5.0, 9.0, 255.0, 255.0])
-    status = codes[torch.randint(len(codes), (batch_size, horizon, 9, 4, 4), generator=generator)]
+    status = codes[
+        torch.randint(len(codes), (batch_size, horizon, 9, 4, 4), generator=generator)
+    ]
     distance = torch.rand(batch_size, horizon, 9, 4, 4, generator=generator) * 2550.0
     present = torch.ones(batch_size, horizon, 9)
-    return {"beaver_distance": distance, "beaver_present": present, "beaver_status": status}
+    return {
+        "beaver_distance": distance,
+        "beaver_present": present,
+        "beaver_status": status,
+    }
 
 
 def dp_batch(include_beaver: bool) -> dict[str, torch.Tensor]:
@@ -134,31 +162,88 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(actions.shape, (2, 8, 7))
         self.assertTrue(torch.isfinite(actions).all())
 
+    def test_fm_and_fm_beaver_use_flow_matching(self) -> None:
+        for variant in ("fm", "fm_beaver"):
+            with self.subTest(variant=variant):
+                config = tiny_config(variant)
+                policy = build_policy(config, ObservationNormalizer.identity())
+                self.assertIsInstance(policy, FMPolicy)
+                self.assertIsInstance(policy.flow, FlowMatchingModel)
+                self.assertFalse(
+                    any(
+                        isinstance(module, DiffusionPolicy)
+                        for module in policy.modules()
+                    )
+                )
+                expected_state_dim = 7 if variant == "fm" else 160
+                self.assertEqual(
+                    policy.flow.config.input_features["observation.state"].shape,
+                    (expected_state_dim,),
+                )
+
+                batch = dp_batch(include_beaver=variant == "fm_beaver")
+                loss, metrics = policy.compute_loss(batch)
+                self.assertTrue(torch.isfinite(loss))
+                self.assertIn("flow_matching_loss", metrics)
+                loss.backward()
+                actions = policy.predict_action_chunk(batch)
+                self.assertEqual(actions.shape, (2, 2, 7))
+                self.assertTrue(torch.isfinite(actions).all())
+
+    def test_rfm_has_asymmetric_tokenizer_and_slow_flow(self) -> None:
+        config = tiny_config("rfm")
+        policy = build_policy(
+            config,
+            ObservationNormalizer.identity(),
+            LatentNormalizer.identity(config.rfm.latent_dim),
+        )
+        self.assertIsInstance(policy, RFMPolicy)
+        self.assertIsInstance(policy.slow_flow, FlowMatchingModel)
+        self.assertFalse(
+            any(isinstance(module, DiffusionPolicy) for module in policy.modules())
+        )
+
+        batch = rdp_batch()
+        tokenizer_loss, _ = policy.tokenizer_loss(batch)
+        self.assertTrue(torch.isfinite(tokenizer_loss))
+        tokenizer_loss.backward()
+
+        policy.zero_grad(set_to_none=True)
+        policy.freeze_tokenizer()
+        latent_loss, metrics = policy.latent_loss(batch)
+        self.assertTrue(torch.isfinite(latent_loss))
+        self.assertIn("latent_flow_matching_loss", metrics)
+        latent_loss.backward()
+
+        actions = policy.predict_action_chunk(batch)
+        self.assertEqual(actions.shape, (2, 8, 7))
+        self.assertTrue(torch.isfinite(actions).all())
+
     def test_online_deployment_shapes(self) -> None:
-        for variant in ("original_dp", "rdp_like"):
+        for variant in ("original_dp", "rdp_like", "fm", "rfm"):
             with self.subTest(variant=variant):
                 config = tiny_config(variant)
                 policy = build_policy(
                     config,
                     ObservationNormalizer.identity(),
-                    LatentNormalizer.identity(config.rdp.latent_dim),
+                    LatentNormalizer.identity(
+                        config.rdp.latent_dim
+                        if variant == "rdp_like"
+                        else config.rfm.latent_dim
+                    ),
                 ).eval()
                 observation = {
                     "image": torch.rand(3, 64, 64),
                     "state": torch.randn(7),
                 }
-                if variant == "rdp_like":
+                if variant in {"rdp_like", "rfm"}:
                     observation.update(
-                        {
-                            key: value[0, 0]
-                            for key, value in beaver_fields(1, 1).items()
-                        }
+                        {key: value[0, 0] for key, value in beaver_fields(1, 1).items()}
                     )
                 policy.reset()
                 action = policy.select_action(observation)
                 self.assertEqual(action.shape, (1, 7))
                 self.assertTrue(torch.isfinite(action).all())
-
 
     def test_status_mask_zeroes_invalid_pixels(self) -> None:
         normalizer = ObservationNormalizer.identity()
@@ -180,10 +265,12 @@ class PolicyTest(unittest.TestCase):
         self.assertTrue(torch.equal(masked[0, :, 2, 2], torch.zeros(9)))
 
         # Without status the same pixels are untouched (backward compatible).
-        self.assertTrue(torch.equal(
-            normalizer.normalize_beaver(distance, present, None)[0, :, 0, 0],
-            expected[0, :, 0, 0],
-        ))
+        self.assertTrue(
+            torch.equal(
+                normalizer.normalize_beaver(distance, present, None)[0, :, 0, 0],
+                expected[0, :, 0, 0],
+            )
+        )
 
         # Sensor-level mask still applies: a disconnected sensor reads zero
         # even where the status says valid.
@@ -199,6 +286,39 @@ class PolicyTest(unittest.TestCase):
         # 255 pixel (flattened index 0) is zero; 9 pixel (index 5) is kept.
         self.assertEqual(augmented[0, 7], 0.0)
         self.assertNotEqual(augmented[0, 7 + 5], 0.0)
+
+    def test_invalid_pixel_values_cannot_affect_beaver_policy_inputs(self) -> None:
+        for variant in ("dp_beaver", "fm_beaver"):
+            with self.subTest(variant=variant):
+                policy = build_policy(
+                    tiny_config(variant), ObservationNormalizer.identity()
+                )
+                batch = dp_batch(include_beaver=True)
+                batch["beaver_status"].fill_(5.0)
+                batch["beaver_status"][..., 0, 0] = 255.0
+                changed = {key: value.clone() for key, value in batch.items()}
+                changed["beaver_distance"][..., 0, 0] = 99999.0
+                self.assertTrue(
+                    torch.equal(policy._state(batch), policy._state(changed))
+                )
+
+        for variant in ("rdp_like", "rfm"):
+            with self.subTest(variant=variant):
+                config = tiny_config(variant)
+                reactive = config.rdp if variant == "rdp_like" else config.rfm
+                policy = build_policy(
+                    config,
+                    ObservationNormalizer.identity(),
+                    LatentNormalizer.identity(reactive.latent_dim),
+                ).eval()
+                batch = rdp_batch()
+                batch["beaver_status"].fill_(5.0)
+                batch["beaver_status"][..., 0, 0] = 255.0
+                changed = {key: value.clone() for key, value in batch.items()}
+                changed["beaver_distance"][..., 0, 0] = 99999.0
+                loss, _ = policy.tokenizer_loss(batch)
+                changed_loss, _ = policy.tokenizer_loss(changed)
+                self.assertTrue(torch.equal(loss, changed_loss))
 
 
 if __name__ == "__main__":

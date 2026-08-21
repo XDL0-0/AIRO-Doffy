@@ -8,6 +8,7 @@ policies to run, at what rate, and what to record.
 Usage:
     python eval_policy.py                      # evaluate all policies in EVAL.POLICIES
     python eval_policy.py --policy dp_beaver   # only one policy
+    python eval_policy.py --checkpoint-root policies/output/WRM_grasp_cylinder_all
     python eval_policy.py --episodes 5 --fps 24
 """
 
@@ -28,9 +29,15 @@ class EvalConfig:
     # dp_beaver_step_100000.pt) can be substituted per run via --checkpoint.
     POLICIES: dict[str, str] = field(
         default_factory=lambda: {
-            "original_dp": "policies/output/original_dp/last.pt",
-            "dp_beaver": "policies/output/dp_beaver/last.pt",
-            "rdp_like": "policies/output/rdp_like/last.pt",
+            name: f"policies/output/WRM_grasp_cylinder_lero/{name}/last.pt"
+            for name in (
+                "original_dp",
+                "dp_beaver",
+                "rdp_like",
+                "fm",
+                "fm_beaver",
+                "rfm",
+            )
         }
     )
     # Prefer the EMA weights saved in each checkpoint.
@@ -41,6 +48,10 @@ class EvalConfig:
     # The dataset was recorded at 24 Hz and the policies were trained for it.
     # Keep this equal to the dataset fps unless you retrained at another rate.
     FPS: int = 24
+    # Number of freshly predicted action steps to discard after each replan.
+    # RDP uses 4 at 24 Hz: inference takes about 1/6 s, so action[0:4] is
+    # already stale when the new chunk becomes available. Set 0 to disable.
+    INFERENCE_LATENCY_STEPS: int = 0
     # Episodes per policy. 0 = loop until Ctrl-C.
     EPISODES: int = 1
     # RDP-like only: how many fast control ticks each latent chunk is used
@@ -48,6 +59,8 @@ class EvalConfig:
     # aligned with the DP variants' n_action_steps=8 receding horizon.
     # Overrides the value baked into the checkpoint at load time.
     RDP_SLOW_REPLAN_STEPS: int | None = 8
+    # RFM equivalent of RDP_SLOW_REPLAN_STEPS.
+    RFM_SLOW_REPLAN_STEPS: int | None = 8
     # Max control steps per episode (~25 s per episode at 24 Hz).
     MAX_STEPS: int = 1500
 
@@ -88,6 +101,11 @@ class EvalConfig:
             )
         if self.FPS <= 0:
             raise ValueError(f"FPS must be positive, got {self.FPS}")
+        if self.INFERENCE_LATENCY_STEPS < 0:
+            raise ValueError(
+                "INFERENCE_LATENCY_STEPS cannot be negative, got "
+                f"{self.INFERENCE_LATENCY_STEPS}"
+            )
         if self.EPISODES < 0:
             raise ValueError(f"EPISODES cannot be negative, got {self.EPISODES}")
         if self.MAX_STEPS <= 0:
@@ -100,6 +118,12 @@ class EvalConfig:
             raise ValueError(
                 f"MAX_JOINT_DELTA must be positive, got {self.MAX_JOINT_DELTA}"
             )
+        for name, value in (
+            ("RDP_SLOW_REPLAN_STEPS", self.RDP_SLOW_REPLAN_STEPS),
+            ("RFM_SLOW_REPLAN_STEPS", self.RFM_SLOW_REPLAN_STEPS),
+        ):
+            if value is not None and value <= 0:
+                raise ValueError(f"{name} must be positive when set, got {value}")
         hw = Config()
         if hw.ROBOT_TYPE.lower() != self.ROBOT_TYPE:
             raise ValueError(

@@ -1,15 +1,16 @@
 """Teach a RealMan path, replay it, and collect synchronized observations.
 
 Drag-teach only stores an in-memory joint trajectory. Dataset frames are
-captured later while the robot replays that trajectory, so ``observation.state``
-contains measured joints and ``action`` contains the corresponding taught joint
-target.
+captured later while the robot replays that trajectory. ``observation.state``
+always contains measured joints; ``Config.TEACH_ACTION_MODE`` selects whether
+``action`` contains the next measured joint configuration or the current taught
+joint target.
 """
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 import threading
 import time
@@ -57,9 +58,14 @@ def create_camera_manager(cfg: Config) -> Any:
 
 def _camera_snapshot(
     camera_manager: Any | None,
+    reference_timestamp_ns: int | None = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, int], dict[str, np.ndarray] | None]:
     if camera_manager is None:
         return {}, {}, None
+
+    nearest = getattr(camera_manager, "snapshot_nearest", None)
+    if reference_timestamp_ns is not None and callable(nearest):
+        return nearest(reference_timestamp_ns)
 
     with camera_manager._lock:
         images = dict(camera_manager.camera_images)
@@ -178,8 +184,12 @@ class RealManTeachCollector:
             )
 
     def read_sample(self) -> TeachSample:
-        timestamp_ns = time.monotonic_ns()
+        state_read_start_ns = time.monotonic_ns()
         joints = np.asarray(self.backend.get_joint_configuration(), dtype=float)
+        state_read_end_ns = time.monotonic_ns()
+        # The SDK does not expose a hardware state timestamp. The midpoint of
+        # the blocking read is a less biased estimate than stamping before it.
+        timestamp_ns = (state_read_start_ns + state_read_end_ns) // 2
         tcp_pose = np.asarray(self.backend.get_tcp_pose(), dtype=float)
         raw_wrench = self.backend.get_tcp_force()
 
@@ -267,15 +277,22 @@ class RealManTeachCollector:
         self,
         sample: TeachSample,
         action: np.ndarray | None = None,
+        action_timestamp_ns: int | None = None,
     ) -> RecordingFrame:
         images, camera_timestamps, depth_images = _camera_snapshot(
-            self.camera_manager
+            self.camera_manager,
+            sample.timestamp_ns,
         )
-        beaver = (
-            self.beaver_reader.snapshot()
-            if self.beaver_reader is not None
-            else None
-        )
+        beaver = None
+        if self.beaver_reader is not None:
+            nearest = getattr(self.beaver_reader, "snapshot_nearest", None)
+            beaver = (
+                nearest(sample.timestamp_ns)
+                if callable(nearest)
+                else self.beaver_reader.snapshot()
+            )
+        if action_timestamp_ns is None:
+            action_timestamp_ns = sample.timestamp_ns
         return RecordingFrame(
             state=sample.joints,
             action=(
@@ -287,9 +304,13 @@ class RealManTeachCollector:
             wrench_data=sample.wrench,
             depth_images=depth_images,
             extra_data={
-                "collect_timestamp_ns": np.array(sample.timestamp_ns, dtype=np.int64),
+                "collect_timestamp_ns": np.array(
+                    time.monotonic_ns(), dtype=np.int64
+                ),
                 "robot_state_timestamp_ns": np.array(sample.timestamp_ns, dtype=np.int64),
-                "robot_action_timestamp_ns": np.array(sample.timestamp_ns, dtype=np.int64),
+                "robot_action_timestamp_ns": np.array(
+                    action_timestamp_ns, dtype=np.int64
+                ),
                 "camera_timestamps_ns": camera_timestamps,
                 "beaver_timestamp_ns": np.array(
                     0 if beaver is None else beaver.timestamp_ns,
@@ -315,9 +336,30 @@ class RealManTeachCollector:
         self,
         sample: TeachSample,
         action: np.ndarray | None = None,
+        action_timestamp_ns: int | None = None,
     ) -> None:
         self.recording_service.record_frame(
-            self._frame_from_sample(sample, action=action)
+            self._frame_from_sample(
+                sample,
+                action=action,
+                action_timestamp_ns=action_timestamp_ns,
+            )
+        )
+
+    @staticmethod
+    def _frame_with_action(
+        frame: RecordingFrame,
+        action: np.ndarray,
+        action_timestamp_ns: int,
+    ) -> RecordingFrame:
+        extra_data = dict(frame.extra_data or {})
+        extra_data["robot_action_timestamp_ns"] = np.array(
+            action_timestamp_ns, dtype=np.int64
+        )
+        return replace(
+            frame,
+            action=np.asarray(action, dtype=float).copy(),
+            extra_data=extra_data,
         )
 
     def publish_sample(self, sample: TeachSample, error: str = "") -> None:
@@ -577,10 +619,28 @@ class RealManTeachCollector:
             recording_active = True
 
             next_tick = time.perf_counter()
+            pending_next_joint_frame: RecordingFrame | None = None
             for target in trajectory:
+                command_timestamp_ns = time.monotonic_ns()
                 self.backend.command_joint_configuration(target, period)
                 sample = self.read_sample()
-                self.record_sample(sample, action=target)
+                frame = self._frame_from_sample(
+                    sample,
+                    action=target,
+                    action_timestamp_ns=command_timestamp_ns,
+                )
+                if self.cfg.TEACH_ACTION_MODE == "command":
+                    self.recording_service.record_frame(frame)
+                else:
+                    if pending_next_joint_frame is not None:
+                        self.recording_service.record_frame(
+                            self._frame_with_action(
+                                pending_next_joint_frame,
+                                sample.joints,
+                                sample.timestamp_ns,
+                            )
+                        )
+                    pending_next_joint_frame = frame
                 self.publish_sample(sample)
                 next_tick += period
                 delay = next_tick - time.perf_counter()
@@ -588,6 +648,24 @@ class RealManTeachCollector:
                     time.sleep(delay)
                 else:
                     next_tick = time.perf_counter()
+
+            if pending_next_joint_frame is not None:
+                # Match the RDP post-processing convention: the final frame has
+                # no t+1 state, so repeat the final measured configuration.
+                final_state_timestamp_ns = int(
+                    np.asarray(
+                        pending_next_joint_frame.extra_data[
+                            "robot_state_timestamp_ns"
+                        ]
+                    ).item()
+                )
+                self.recording_service.record_frame(
+                    self._frame_with_action(
+                        pending_next_joint_frame,
+                        pending_next_joint_frame.state,
+                        final_state_timestamp_ns,
+                    )
+                )
 
             if not self.recording_service.stop_recording():
                 raise RuntimeError("Failed to queue replay episode export.")

@@ -113,6 +113,8 @@ The system uses `config.py` as its central configuration. Key settings:
 | `DATASET_DIR` | Dataset base path shared by teleop and teach collection | `./datasets/WRM_grasp` |
 | `DATASET_TYPE` | `"a"` = ACT/HDF5, `"l"` = LeRobot | `l` |
 | `DATA_TYPE` | State/action representation (`qpos`, `both`, `tcp`, `delta_tcp`) | `both` |
+| `TEACH_ACTION_MODE` | Teach-replay action label: next measured joints (`next_joint`) or current taught target (`command`) | `next_joint` |
+| `SENSOR_SYNC_BUFFER_SIZE` | Recent timestamped camera/Beaver frames retained for nearest-time matching | `8` |
 | `TEACH_INITIAL_DISCARD_FRAMES` | Teaching samples discarded before trajectory edge trimming | `40` |
 | `LEROBOT_IMAGE_WRITER_PROCESSES` | Background processes used for image compression | `1` |
 | `LEROBOT_IMAGE_WRITER_THREADS` | Background threads used for image compression | `1` |
@@ -302,9 +304,14 @@ with the repository's `_lero` suffix. The visualizer workflow is:
    After export completes and recording is disabled, the robot automatically
    returns to `Config.INITIAL_JOINT`; that return motion is not recorded.
 
-The saved action is the taught joint target while the observation is the
-measured joint state during replay. Closing the visualizer or pressing Ctrl-C
-stops freedrive and closes the dataset safely.
+The observation is always the measured joint state during replay.
+`Config.TEACH_ACTION_MODE="next_joint"` follows Reactive Diffusion Policy's
+label semantics: `action[t]` is the measured joint configuration at `t+1`, and
+the final frame repeats the final measured state. Set it to `"command"` to save
+the taught joint target issued for the current frame instead. Camera and Beaver
+readers retain recent timestamped frames, and teach collection selects the one
+nearest to each measured robot-state timestamp. Closing the visualizer or
+pressing Ctrl-C stops freedrive and closes the dataset safely.
 
 **Undo episode** removes the most recently exported episode.
 
@@ -421,6 +428,11 @@ python eval_policy.py \
     --episodes 0 1 2 \
     --no-show
 ```
+
+`eval_policy.py` follows RDP's deployment-time latency matching: after each
+replan it discards the first `EvalConfig.INFERENCE_LATENCY_STEPS` predictions
+(default `4` at 24 Hz). Override it with `--latency-steps N`, or pass `0` to
+disable matching. This does not shift dataset labels a second time.
 
 ## VR Data Protocols
 

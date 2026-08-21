@@ -78,6 +78,24 @@ class FakeBackend:
         self.cleaned = True
 
 
+class LaggingFakeBackend(FakeBackend):
+    """Return prescribed measurements without snapping state to each command."""
+
+    def __init__(self, measured_joints) -> None:
+        super().__init__()
+        self._measured_joints = deque(
+            np.asarray(joints, dtype=float).copy() for joints in measured_joints
+        )
+
+    def get_joint_configuration(self):
+        if self._measured_joints:
+            self.joints = self._measured_joints.popleft()
+        return self.joints.copy()
+
+    def command_joint_configuration(self, joints, dt):
+        self.commanded_joints.append((np.asarray(joints, dtype=float).copy(), dt))
+
+
 class FakeDataset:
     def __init__(self) -> None:
         self.recorded_episodes = 0
@@ -188,6 +206,15 @@ def teaching_config() -> Config:
 
 
 class RealManTeachCollectorTests(unittest.TestCase):
+    def test_teach_action_mode_validation_and_default(self) -> None:
+        self.assertEqual(Config().TEACH_ACTION_MODE, "next_joint")
+        self.assertEqual(
+            Config(TEACH_ACTION_MODE=" COMMAND ").TEACH_ACTION_MODE,
+            "command",
+        )
+        with self.assertRaisesRegex(ValueError, "TEACH_ACTION_MODE"):
+            Config(TEACH_ACTION_MODE="target_or_state")
+
     def test_initial_teach_discard_frames_must_be_nonnegative_integer(self) -> None:
         with self.assertRaisesRegex(ValueError, "TEACH_INITIAL_DISCARD_FRAMES"):
             Config(TEACH_INITIAL_DISCARD_FRAMES=-1)
@@ -322,7 +349,9 @@ class RealManTeachCollectorTests(unittest.TestCase):
         self.assertEqual(dataset.exports, 1)
         self.assertEqual(dataset.recorded_episodes, 1)
         self.assertEqual(len(dataset.frames), 2)
-        np.testing.assert_allclose(dataset.frames[0]["action"], np.arange(7))
+        np.testing.assert_allclose(
+            dataset.frames[0]["action"], np.arange(7) + 0.1
+        )
         np.testing.assert_allclose(
             dataset.frames[1]["action"], np.arange(7) + 0.1
         )
@@ -358,6 +387,99 @@ class RealManTeachCollectorTests(unittest.TestCase):
         self.assertTrue(dataset.closed)
         self.assertTrue(visualizer.closed)
         self.assertTrue(backend.cleaned)
+
+    @patch("realman_teachcollect.time.sleep", return_value=None)
+    def test_next_joint_mode_uses_next_measured_state_and_its_timestamp(
+        self, _sleep
+    ) -> None:
+        measured = [
+            np.full(7, 10.0),
+            np.full(7, 20.0),
+            np.full(7, 30.0),
+        ]
+        backend = LaggingFakeBackend(measured)
+        dataset = FakeDataset()
+        cfg = teaching_config()
+        cfg.TEACH_ACTION_MODE = "next_joint"
+        collector = RealManTeachCollector(cfg, backend=backend, dataset=dataset)
+        collector.teach_state = TeachState.READY
+        collector.taught_trajectory = [
+            np.full(7, 1.0),
+            np.full(7, 2.0),
+            np.full(7, 3.0),
+        ]
+        collector._force_data_available = True
+
+        self.assertTrue(collector.replay_collect())
+
+        np.testing.assert_allclose(
+            np.stack([frame["state"] for frame in dataset.frames]), measured
+        )
+        np.testing.assert_allclose(
+            np.stack([frame["action"] for frame in dataset.frames]),
+            [measured[1], measured[2], measured[2]],
+        )
+        state_timestamps = [
+            int(frame["extra_data"]["robot_state_timestamp_ns"])
+            for frame in dataset.frames
+        ]
+        action_timestamps = [
+            int(frame["extra_data"]["robot_action_timestamp_ns"])
+            for frame in dataset.frames
+        ]
+        self.assertEqual(
+            action_timestamps,
+            [state_timestamps[1], state_timestamps[2], state_timestamps[2]],
+        )
+        collector.close()
+
+    @patch("realman_teachcollect.time.sleep", return_value=None)
+    def test_command_mode_uses_current_target_and_command_timestamp(self, _sleep) -> None:
+        measured = [np.full(7, 10.0), np.full(7, 20.0)]
+        targets = [np.full(7, 1.0), np.full(7, 2.0)]
+        backend = LaggingFakeBackend(measured)
+        dataset = FakeDataset()
+        cfg = teaching_config()
+        cfg.TEACH_ACTION_MODE = "command"
+        collector = RealManTeachCollector(cfg, backend=backend, dataset=dataset)
+        collector.teach_state = TeachState.READY
+        collector.taught_trajectory = targets
+        collector._force_data_available = True
+
+        self.assertTrue(collector.replay_collect())
+
+        np.testing.assert_allclose(
+            np.stack([frame["action"] for frame in dataset.frames]), targets
+        )
+        for frame in dataset.frames:
+            self.assertLessEqual(
+                int(frame["extra_data"]["robot_action_timestamp_ns"]),
+                int(frame["extra_data"]["robot_state_timestamp_ns"]),
+            )
+        collector.close()
+
+    @patch("realman_teachcollect.time.sleep", return_value=None)
+    def test_single_frame_next_joint_episode_repeats_its_own_state(self, _sleep) -> None:
+        measured = np.full(7, 12.0)
+        backend = LaggingFakeBackend([measured])
+        dataset = FakeDataset()
+        collector = RealManTeachCollector(
+            teaching_config(), backend=backend, dataset=dataset
+        )
+        collector.teach_state = TeachState.READY
+        collector.taught_trajectory = [np.full(7, 1.0)]
+        collector._force_data_available = True
+
+        self.assertTrue(collector.replay_collect())
+
+        self.assertEqual(len(dataset.frames), 1)
+        np.testing.assert_allclose(dataset.frames[0]["state"], measured)
+        np.testing.assert_allclose(dataset.frames[0]["action"], measured)
+        self.assertEqual(
+            int(dataset.frames[0]["extra_data"]["robot_action_timestamp_ns"]),
+            int(dataset.frames[0]["extra_data"]["robot_state_timestamp_ns"]),
+        )
+        collector.close()
 
     def test_reteach_only_clears_path_and_requires_teach_to_restart(self) -> None:
         backend = FakeBackend()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, replace
 import struct
 import threading
@@ -286,6 +287,7 @@ class BeaverReader:
         grid_width: int = DEFAULT_GRID_WIDTH,
         stale_after_s: float = 1.0,
         reconnect_delay_s: float = 2.0,
+        sync_buffer_size: int = 8,
     ) -> None:
         layout = tuple(_default_layout() if sensor_layout is None else sensor_layout)
         if len(layout) != 9 or len(set(layout)) != len(layout):
@@ -296,6 +298,12 @@ class BeaverReader:
             )
         if stale_after_s <= 0 or reconnect_delay_s <= 0:
             raise ValueError("Beaver timing values must be positive")
+        if (
+            isinstance(sync_buffer_size, bool)
+            or not isinstance(sync_buffer_size, (int, np.integer))
+            or sync_buffer_size < 1
+        ):
+            raise ValueError("sync_buffer_size must be a positive integer")
         self.device = device or None
         self.baudrate = int(baudrate)
         self.sensor_layout = layout
@@ -305,6 +313,7 @@ class BeaverReader:
         self._slot_by_sensor = {sensor: slot for slot, sensor in enumerate(layout)}
         self._lock = threading.Lock()
         self._snapshot = empty_snapshot(layout, self.grid_width)
+        self._history: deque[BeaverSnapshot] = deque(maxlen=int(sync_buffer_size))
         self._serial = None
         self._thread: threading.Thread | None = None
         self._local_stop = threading.Event()
@@ -318,21 +327,41 @@ class BeaverReader:
             grid_width=cfg.BEAVER_GRID_WIDTH,
             stale_after_s=cfg.BEAVER_STALE_AFTER_S,
             reconnect_delay_s=cfg.BEAVER_RECONNECT_DELAY_S,
+            sync_buffer_size=cfg.SENSOR_SYNC_BUFFER_SIZE,
+        )
+
+    @staticmethod
+    def _copy_snapshot(value: BeaverSnapshot) -> BeaverSnapshot:
+        return replace(
+            value,
+            distance_mm=value.distance_mm.copy(),
+            target_status=value.target_status.copy(),
+            present=value.present.copy(),
+            valid_count=value.valid_count.copy(),
+            average_mm=value.average_mm.copy(),
+            temperature_c=value.temperature_c.copy(),
+            stream_count=value.stream_count.copy(),
         )
 
     def snapshot(self) -> BeaverSnapshot:
         with self._lock:
-            value = self._snapshot
-            return replace(
-                value,
-                distance_mm=value.distance_mm.copy(),
-                target_status=value.target_status.copy(),
-                present=value.present.copy(),
-                valid_count=value.valid_count.copy(),
-                average_mm=value.average_mm.copy(),
-                temperature_c=value.temperature_c.copy(),
-                stream_count=value.stream_count.copy(),
+            return self._copy_snapshot(self._snapshot)
+
+    def snapshot_nearest(self, reference_timestamp_ns: int) -> BeaverSnapshot:
+        """Return the buffered frame nearest to a monotonic reference time."""
+        reference_timestamp_ns = int(reference_timestamp_ns)
+        with self._lock:
+            value = (
+                min(
+                    self._history,
+                    key=lambda frame: abs(
+                        frame.timestamp_ns - reference_timestamp_ns
+                    ),
+                )
+                if self._history
+                else self._snapshot
             )
+            return self._copy_snapshot(value)
 
     def visualizer_payload(self) -> dict[str, object]:
         return self.snapshot().visualizer_payload(self.stale_after_s)
@@ -378,24 +407,26 @@ class BeaverReader:
             average[slot] = sensor["average_mm"]
             temperature[slot] = sensor["temperature_c"]
             stream_count[slot] = sensor["stream_count"]
+        value = BeaverSnapshot(
+            distance_mm=distance,
+            target_status=status,
+            present=present,
+            valid_count=valid,
+            average_mm=average,
+            temperature_c=temperature,
+            stream_count=stream_count,
+            sensor_layout=self.sensor_layout,
+            grid_width=self.grid_width,
+            sequence=int(frame["sequence"]),
+            timestamp_ns=time.monotonic_ns(),
+            frame_count=frame_count,
+            lost_frames=lost_frames,
+            connected=True,
+            error="",
+        )
         with self._lock:
-            self._snapshot = BeaverSnapshot(
-                distance_mm=distance,
-                target_status=status,
-                present=present,
-                valid_count=valid,
-                average_mm=average,
-                temperature_c=temperature,
-                stream_count=stream_count,
-                sensor_layout=self.sensor_layout,
-                grid_width=self.grid_width,
-                sequence=int(frame["sequence"]),
-                timestamp_ns=time.monotonic_ns(),
-                frame_count=frame_count,
-                lost_frames=lost_frames,
-                connected=True,
-                error="",
-            )
+            self._snapshot = value
+            self._history.append(value)
 
     def _stopped(self, external_stop: threading.Event | None) -> bool:
         return self._local_stop.is_set() or (

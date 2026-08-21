@@ -94,7 +94,10 @@ class RealSenseCameraManagerTests(unittest.TestCase):
         def stop_after_frame(_delay):
             manager.running = False
 
-        with patch("realsense_camera.time.sleep", side_effect=stop_after_frame):
+        with (
+            patch("realsense_camera.time.sleep", side_effect=stop_after_frame),
+            patch("realsense_camera.time.monotonic_ns", side_effect=[100, 200]),
+        ):
             manager._camera_read_thread(cameras[0], 0)
 
         np.testing.assert_array_equal(
@@ -105,11 +108,31 @@ class RealSenseCameraManagerTests(unittest.TestCase):
             manager.depth_images["camera_0"],
             np.full((4, 6), 0.5, dtype=np.float32),
         )
-        self.assertGreater(manager.camera_image_timestamps_ns["camera_0"], 0)
+        self.assertEqual(manager.camera_image_timestamps_ns["camera_0"], 150)
         self.assertEqual(
             manager.camera_image_timestamps_ns["camera_0"],
             manager.depth_timestamps_ns["camera_0"],
         )
+        manager.close()
+
+    def test_snapshot_nearest_selects_buffered_frame_by_timestamp(self) -> None:
+        manager, _cameras = self.make_manager(camera_num=1, depth_mode=True)
+        history = manager.camera_frame_buffers["camera_0"]
+        for timestamp_ns, value in ((100, 1), (200, 2), (300, 3)):
+            history.append(
+                (
+                    timestamp_ns,
+                    np.full((2, 2, 3), value, dtype=np.uint8),
+                    np.full((2, 2), value, dtype=np.float32),
+                )
+            )
+
+        images, timestamps, depth = manager.snapshot_nearest(240)
+
+        self.assertEqual(timestamps, {"camera_0": 200})
+        self.assertTrue(np.all(images["camera_0"] == 2))
+        self.assertIsNotNone(depth)
+        self.assertTrue(np.all(depth["camera_0"] == 2))
         manager.close()
 
 

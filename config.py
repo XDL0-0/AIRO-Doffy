@@ -96,8 +96,8 @@ class Config:
     BRAINCO_THUMB_ROTATE_PROGRESS_RANGE: float = 1.2
 
     # ── Task / Dataset ────────────────────────────────────────────────────
-    TASK_NAME: str = "WRM_grasp_ball"
-    DATASET_DIR: str = "./datasets/WRM_grasp_ball"
+    TASK_NAME: str = "WRM_grasp_cylinder_different_sizes"
+    DATASET_DIR: str = "./datasets/WRM_grasp_cylinder_different_sizes"
     DATASET_TYPE: str = "l"          # 'a' = ACT (hdf5), 'l' = lerobot
     PUSH_TO_HUB: bool = False
     # Keep image compression and video encoding from starving high-rate robot
@@ -109,6 +109,14 @@ class Config:
     # Supported: "qpos"/"joint_configuration", "both", "tcp"/"tcp_quat"/"eef", "delta_tcp".
     # "both" keeps joint state/action and stores extra.tcp_pose for conversion or policies.
     DATA_TYPE: str = "both"
+    # Teach-replay label semantics:
+    # - "next_joint": action[t] is the measured joint configuration at t+1
+    #   (the Reactive Diffusion Policy convention).
+    # - "command": action[t] is the taught joint target sent at t.
+    TEACH_ACTION_MODE: str = "next_joint"
+    # Number of recent frames retained by timestamped sensor readers so teach
+    # collection can select the frame nearest to the measured robot state.
+    SENSOR_SYNC_BUFFER_SIZE: int = 8
     DEPTH_INFO_ENABLE: bool = False
     # ── Tracking mode ─────────────────────────────────────────────────────
     TRACKING_MODE: str = "controller"   # "controller" or "hand"
@@ -279,6 +287,18 @@ class Config:
             self.TCP_TOOL = "None"
         self.GRIPPER = self.TCP_TOOL == "Gripper"
         self.DATA_TYPE = normalize_data_type(self.DATA_TYPE)
+        self.TEACH_ACTION_MODE = str(self.TEACH_ACTION_MODE).strip().lower()
+        if self.TEACH_ACTION_MODE not in {"next_joint", "command"}:
+            raise ValueError(
+                "TEACH_ACTION_MODE must be 'next_joint' or 'command'."
+            )
+        if (
+            isinstance(self.SENSOR_SYNC_BUFFER_SIZE, bool)
+            or not isinstance(self.SENSOR_SYNC_BUFFER_SIZE, (int, np.integer))
+            or self.SENSOR_SYNC_BUFFER_SIZE < 1
+        ):
+            raise ValueError("SENSOR_SYNC_BUFFER_SIZE must be a positive integer.")
+        self.SENSOR_SYNC_BUFFER_SIZE = int(self.SENSOR_SYNC_BUFFER_SIZE)
         if self.VR_TO_ROBOT_AXES is None:
             if self.ROBOT_TYPE == "realman":
                 # Unity/Quest (+X right, +Y up, +Z forward) -> RealMan

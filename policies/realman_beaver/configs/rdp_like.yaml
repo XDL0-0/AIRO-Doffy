@@ -9,6 +9,8 @@ dataset:
   action_key: action
   beaver_distance_key: observation.beaver.distance_mm
   beaver_present_key: observation.beaver.present
+  beaver_status_key: observation.beaver.target_status
+  beaver_valid_statuses: [5, 9]
   val_fraction: 0.1
   split_seed: 42
   normalization_source: parquet

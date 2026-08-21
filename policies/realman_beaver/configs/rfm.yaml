@@ -18,7 +18,7 @@ dataset:
   normalization_floor: 0.0001
 
 model:
-  variant: original_dp
+  variant: rfm
   state_dim: 7
   action_dim: 7
   beaver_shape: [9, 4, 4]
@@ -31,22 +31,42 @@ model:
   down_dims: [256, 512, 1024]
   kernel_size: 5
   n_groups: 8
-  diffusion_step_embed_dim: 128
-  noise_scheduler_type: DDPM
-  num_train_timesteps: 100
-  num_inference_steps: 100
-  beta_schedule: squaredcos_cap_v2
-  prediction_type: epsilon
+  flow_time_embed_dim: 128
+  flow_time_embedding_scale: 100.0
+  flow_num_inference_steps: 10
   clip_sample_range: 1.0
 
+rfm:
+  action_horizon: 32
+  downsample_ratio: 2
+  latent_dim: 4
+  tokenizer_hidden_dim: 32
+  tokenizer_layers: 1
+  beaver_feature_dim: 32
+  kl_weight: 0.000001
+  slow_observation_stride: 2
+  slow_replan_steps: 8
+  latent_down_dims: [256, 512, 1024]
+  latent_kernel_size: 3
+  latent_num_inference_steps: 10
+  tokenizer_epochs: 601
+  tokenizer_max_steps: null
+  tokenizer_batch_size: 64
+  tokenizer_learning_rate: 0.001
+  tokenizer_weight_decay: 0.0001
+  latent_epochs: 401
+  latent_max_steps: null
+  latent_batch_size: 64
+  tokenizer_checkpoint: null
+
 training:
-  output_dir: outputs/realman_beaver/original_dp
+  output_dir: outputs/realman_beaver/rfm
   device: auto
   seed: 42
   batch_size: 8
   num_workers: 4
   epochs: 200
-  max_steps: 100000
+  max_steps: null
   learning_rate: 0.0001
   weight_decay: 0.000001
   betas: [0.95, 0.999]

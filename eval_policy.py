@@ -1,9 +1,9 @@
 """Evaluate the trained RealMan-Beaver policies on the RM75 robot.
 
-Loads one of the checkpoints from ``policies/output`` and closes the loop on
-hardware: Realsense camera + joint configuration (+ Beaver distance grids for
-``dp_beaver`` / ``rdp_like``) in, joint targets out, commanded at the dataset
-rate (24 Hz default).
+Loads one of the six DP/FM checkpoints from ``policies/output`` and closes the
+loop on hardware: Realsense camera + joint configuration (+ Beaver distance
+grids for ``dp_beaver`` / ``rdp_like`` / ``fm_beaver`` / ``rfm``) in, joint
+targets out, commanded at the dataset rate (24 Hz default).
 
 Beaver is initialized once at startup — before any policy is loaded — as soon
 as at least one selected policy needs it, and is shared across policies.
@@ -18,6 +18,8 @@ the Beaver heatmaps. Each episode is recorded to
 Usage:
     python eval_policy.py
     python eval_policy.py --policy dp_beaver
+    python eval_policy.py --policy fm --policy rfm
+    python eval_policy.py --checkpoint-root policies/output/WRM_grasp_cylinder_all
     python eval_policy.py --policy original_dp=path/to/step_050000.pt
     python eval_policy.py --episodes 3 --max-steps 400 --no-video
 
@@ -48,6 +50,99 @@ from config import Config
 from eval_config import EvalConfig
 from inference import InferenceCameraManager
 from robot_backend import make_robot_backend
+
+SUPPORTED_POLICY_VARIANTS = frozenset(
+    {"original_dp", "dp_beaver", "rdp_like", "fm", "fm_beaver", "rfm"}
+)
+BEAVER_POLICY_VARIANTS = frozenset(
+    {"dp_beaver", "rdp_like", "fm_beaver", "rfm"}
+)
+EXPECTED_CHECKPOINT_KINDS = {
+    "original_dp": "original_dp",
+    "dp_beaver": "dp_beaver",
+    "rdp_like": "latent_dp",
+    "fm": "fm",
+    "fm_beaver": "fm_beaver",
+    "rfm": "latent_fm",
+}
+
+
+def policy_needs_beaver(variant: str) -> bool:
+    """Return whether a deployment observation must contain Beaver fields."""
+    if variant not in SUPPORTED_POLICY_VARIANTS:
+        raise ValueError(f"Unsupported policy variant: {variant}")
+    return variant in BEAVER_POLICY_VARIANTS
+
+
+def validate_deployable_checkpoint(summary: dict[str, object]) -> str:
+    """Validate checkpoint metadata and return its six-policy variant."""
+    kind = str(summary.get("kind", "unknown"))
+    if kind == "tokenizer":
+        raise ValueError(
+            "tokenizer-only checkpoint is not deployable; use the final "
+            "reactive-policy last.pt"
+        )
+    variant = str(summary.get("variant", "unknown"))
+    if variant not in SUPPORTED_POLICY_VARIANTS:
+        raise ValueError(f"unsupported policy variant '{variant}'")
+    expected_kind = EXPECTED_CHECKPOINT_KINDS[variant]
+    if kind != expected_kind:
+        raise ValueError(
+            f"checkpoint kind '{kind}' does not match variant '{variant}' "
+            f"(expected '{expected_kind}')"
+        )
+    return variant
+
+
+def configure_policy_execution_window(policy, eval_cfg: EvalConfig) -> int:
+    """Apply reactive replan overrides and return the executable chunk size."""
+    variant = policy.config.model.variant
+    if variant == "rdp_like":
+        reactive = policy.config.rdp
+        override = eval_cfg.RDP_SLOW_REPLAN_STEPS
+    elif variant == "rfm":
+        reactive = policy.config.rfm
+        override = eval_cfg.RFM_SLOW_REPLAN_STEPS
+    elif variant in SUPPORTED_POLICY_VARIANTS:
+        return int(policy.config.model.n_action_steps)
+    else:
+        raise ValueError(f"Unsupported policy variant: {variant}")
+    if override is not None:
+        reactive.slow_replan_steps = override
+    return int(reactive.slow_replan_steps)
+
+
+def select_action_with_latency(
+    policy,
+    observation: dict[str, torch.Tensor],
+    latency_steps: int,
+) -> torch.Tensor:
+    """Select the time-matched action from a newly predicted action chunk.
+
+    RDP drops the first ``latency_steps`` predictions after a replan because
+    those control instants elapsed while inference was running. Repeated
+    ``select_action`` calls advance each policy's existing action queue or
+    causal decoder without triggering another expensive replan.
+    """
+    if latency_steps < 0:
+        raise ValueError("latency_steps cannot be negative")
+    action = policy.select_action(observation)
+    replanned = bool(getattr(policy, "last_replanned", False))
+    applied_steps = 0
+    if replanned:
+        for _ in range(latency_steps):
+            action = policy.select_action(observation)
+            if bool(getattr(policy, "last_replanned", False)):
+                raise RuntimeError(
+                    "Inference latency exceeds the policy's executable "
+                    "action chunk; reduce INFERENCE_LATENCY_STEPS."
+                )
+            applied_steps += 1
+        # Keep logging semantics tied to the control tick: this tick did
+        # generate a new chunk even though its stale prefix was discarded.
+        policy.last_replanned = True
+    policy.last_latency_steps = applied_steps
+    return action
 
 
 # ── Live monitor window ──────────────────────────────────────────────────
@@ -355,28 +450,34 @@ class PolicyEvaluator:
             self.checkpoint, device=self.device, use_ema=eval_cfg.USE_EMA
         )
         self.variant = self.policy.config.model.variant
-        if (
-            self.variant == "rdp_like"
-            and eval_cfg.RDP_SLOW_REPLAN_STEPS is not None
-        ):
-            old = self.policy.config.rdp.slow_replan_steps
-            self.policy.config.rdp.slow_replan_steps = (
-                eval_cfg.RDP_SLOW_REPLAN_STEPS
-            )
+        reactive = None
+        if self.variant == "rdp_like":
+            reactive = self.policy.config.rdp
+        elif self.variant == "rfm":
+            reactive = self.policy.config.rfm
+        old_replan_steps = reactive.slow_replan_steps if reactive else None
+        execution_window = configure_policy_execution_window(self.policy, eval_cfg)
+        if reactive is not None and old_replan_steps != reactive.slow_replan_steps:
             utils.logger.info(
-                f"Policy '{name}': rdp slow_replan_steps "
-                f"{old} -> {eval_cfg.RDP_SLOW_REPLAN_STEPS}"
+                f"Policy '{name}': {self.variant} slow_replan_steps "
+                f"{old_replan_steps} -> {reactive.slow_replan_steps}"
+            )
+        if eval_cfg.INFERENCE_LATENCY_STEPS >= execution_window:
+            raise ValueError(
+                "INFERENCE_LATENCY_STEPS must be smaller than the executable "
+                f"action window ({execution_window}), got "
+                f"{eval_cfg.INFERENCE_LATENCY_STEPS}."
             )
         if self.policy.config.model.action_dim != self.dof:
             raise ValueError(
                 f"Policy action_dim={self.policy.config.model.action_dim} "
                 f"does not match robot DoF={self.dof}."
             )
-        # original_dp has no Beaver branch; the other two need distance grids.
-        self.needs_beaver = self.variant != "original_dp"
+        self.needs_beaver = policy_needs_beaver(self.variant)
         utils.logger.info(
             f"Policy '{name}': variant={self.variant}, "
-            f"needs_beaver={self.needs_beaver}"
+            f"needs_beaver={self.needs_beaver}, "
+            f"inference_latency_steps={eval_cfg.INFERENCE_LATENCY_STEPS}"
         )
 
         # ── Sensors ──────────────────────────────────────────────────────
@@ -520,7 +621,11 @@ class PolicyEvaluator:
                 present.detach().cpu().numpy()[0],
             )
         with torch.inference_mode():
-            action = self.policy.select_action(obs)
+            action = select_action_with_latency(
+                self.policy,
+                obs,
+                self.cfg.INFERENCE_LATENCY_STEPS,
+            )
         return action.squeeze(0).cpu().numpy()
 
     # ── Commanding ───────────────────────────────────────────────────────
@@ -590,6 +695,7 @@ class PolicyEvaluator:
             "dropped": 0,
             "drops": {},
             "beaver_stale_steps": 0,
+            "inference_latency_steps": self.cfg.INFERENCE_LATENCY_STEPS,
             "action_delta_max": 0.0,
             "success": None,
         }
@@ -646,6 +752,9 @@ class PolicyEvaluator:
                         ),
                         "chunk_step": int(
                             getattr(self.policy, "last_chunk_step", 0)
+                        ),
+                        "latency_steps": int(
+                            getattr(self.policy, "last_latency_steps", 0)
                         ),
                         "commanded": commanded,
                         "drop_reason": reason or None,
@@ -882,7 +991,18 @@ def _parse_args() -> argparse.Namespace:
         "Default: all policies in EvalConfig.",
     )
     parser.add_argument("--device", default=None, help="cuda:0 / cpu")
+    parser.add_argument(
+        "--checkpoint-root",
+        default=None,
+        help="Use ROOT/<policy>/last.pt for all six default policy paths",
+    )
     parser.add_argument("--fps", type=int, default=None, help="Control rate in Hz")
+    parser.add_argument(
+        "--latency-steps",
+        type=int,
+        default=None,
+        help="Discard this many predicted actions after each replan (RDP: 4 at 24 Hz)",
+    )
     parser.add_argument(
         "--episodes", type=int, default=None, help="Episodes per policy"
     )
@@ -917,12 +1037,22 @@ def main() -> None:
     eval_cfg = EvalConfig()
     hw_cfg = Config()
 
+    if args.checkpoint_root:
+        checkpoint_root = Path(args.checkpoint_root).expanduser()
+        eval_cfg.POLICIES = {
+            name: str(checkpoint_root / name / "last.pt")
+            for name in eval_cfg.POLICIES
+        }
     if args.device:
         eval_cfg.DEVICE = args.device
     if args.fps:
         eval_cfg.FPS = args.fps
         # Keep the per-tick speed cap consistent with the actual control rate.
         eval_cfg.MAX_JOINT_DELTA = hw_cfg.REALMAN_MAX_JOINT_SPEED / args.fps
+    if args.latency_steps is not None:
+        if args.latency_steps < 0:
+            raise SystemExit("--latency-steps cannot be negative")
+        eval_cfg.INFERENCE_LATENCY_STEPS = args.latency_steps
     if args.episodes is not None:
         eval_cfg.EPISODES = args.episodes
     if args.max_steps:
@@ -965,25 +1095,18 @@ def main() -> None:
     variants: dict[str, str] = {}
     for name, checkpoint in selections.items():
         summary = checkpoint_summary(checkpoint)
-        if summary.get("kind") == "tokenizer":
-            raise SystemExit(
-                f"'{name}': {checkpoint} is a tokenizer-only checkpoint; "
-                "use the final latent_dp last.pt instead."
-            )
-        variant = summary.get("variant")
-        if variant not in {"original_dp", "dp_beaver", "rdp_like"}:
-            raise SystemExit(
-                f"'{name}': unsupported policy variant '{variant}' in "
-                f"{checkpoint}."
-            )
+        try:
+            variant = validate_deployable_checkpoint(summary)
+        except ValueError as exc:
+            raise SystemExit(f"'{name}': {exc} in {checkpoint}.") from exc
         variants[name] = variant
 
-    needs_beaver = any(variant != "original_dp" for variant in variants.values())
+    needs_beaver = any(policy_needs_beaver(variant) for variant in variants.values())
     shared_beaver: BeaverReader | None = None
     if needs_beaver:
         utils.logger.info(
             "Starting shared Beaver reader (used by: "
-            f"{', '.join(n for n, v in variants.items() if v != 'original_dp')})."
+            f"{', '.join(n for n, v in variants.items() if policy_needs_beaver(v))})."
         )
         shared_beaver = BeaverReader.from_config(hw_cfg)
         shared_beaver.start()
@@ -996,7 +1119,8 @@ def main() -> None:
     utils.logger.info(f"Device:  {eval_cfg.DEVICE}")
     utils.logger.info(
         f"FPS: {eval_cfg.FPS}  | Episodes: {eval_cfg.EPISODES}  | "
-        f"Max steps: {eval_cfg.MAX_STEPS}"
+        f"Max steps: {eval_cfg.MAX_STEPS}  | "
+        f"Latency steps: {eval_cfg.INFERENCE_LATENCY_STEPS}"
     )
     utils.logger.info(f"Output:  {run_dir}")
 

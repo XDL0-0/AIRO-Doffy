@@ -626,6 +626,10 @@ class TeleopDashboard:
         self.beaver_fig.canvas.manager.set_window_title("Beaver distance sensors")
         cmap = plt.get_cmap("turbo_r").copy()
         cmap.set_bad("#343c49")
+        # The wire encodes positive distances in 10 mm increments, so no
+        # valid positive reading can fall below 5 mm; the under-range slot
+        # is reserved to flag a valid zero-distance reading in bright magenta.
+        cmap.set_under("#ff00ff")
         layout = self.beaver_layout or tuple((0, idx) for idx in range(9))
         for slot, ax in enumerate(axes.flat):
             bus, sensor = layout[slot]
@@ -640,7 +644,7 @@ class TeleopDashboard:
             artist = ax.imshow(
                 np.ma.masked_all((1, 1)),
                 cmap=cmap,
-                vmin=0,
+                vmin=5.0,
                 vmax=self.beaver_max_mm,
                 interpolation="nearest",
             )
@@ -999,12 +1003,16 @@ class TeleopDashboard:
         for slot, (ax, artist) in enumerate(
             zip(self.beaver_axes, self.beaver_artists)
         ):
+            slot_distance = distance[slot]
+            # A zero distance with a valid status is a real reading: keep it
+            # unmasked so it takes the reserved under-range colour, while
+            # negative readings stay masked.
             valid = (
                 np.isin(status[slot], (5, 9))
-                & np.isfinite(distance[slot])
-                & (distance[slot] > 0)
+                & np.isfinite(slot_distance)
+                & (slot_distance >= 0)
             )
-            image = np.ma.masked_where(~valid, distance[slot])
+            image = np.ma.masked_where(~valid, slot_distance)
             artist.set_data(image)
             bus, sensor = (
                 self.beaver_layout[slot]
@@ -1014,7 +1022,7 @@ class TeleopDashboard:
             online = slot < present.size and present[slot]
             state = "stale" if stale and online else ("online" if online else "missing")
             average_text = (
-                f"avg {float(np.mean(distance[slot][valid])):.1f} mm"
+                f"avg {float(np.mean(slot_distance[valid])):.1f} mm"
                 if np.any(valid)
                 else "avg --"
             )

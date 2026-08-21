@@ -1,4 +1,4 @@
-"""Train original DP, Beaver DP, or the two-stage RDP-like policy."""
+"""Train the diffusion, flow-matching, RDP, and RFM baselines."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 import torch
+import wandb
 import yaml
 from torch import Tensor, nn
 from torch.utils.data import DataLoader
@@ -26,7 +27,12 @@ from policies.realman_beaver.dataset import (
     RealmanPolicyDataset,
     episode_split,
 )
-from policies.realman_beaver.modeling import RDPPolicy, build_policy, build_tokenizer
+from policies.realman_beaver.modeling import (
+    RDPPolicy,
+    RFMPolicy,
+    build_policy,
+    build_tokenizer,
+)
 
 LossFunction = Callable[[dict[str, Tensor]], tuple[Tensor, dict[str, float]]]
 
@@ -84,6 +90,16 @@ def _resolve_device(requested: str) -> torch.device:
 
 def _to_device(batch: dict[str, Tensor], device: torch.device) -> dict[str, Tensor]:
     return {key: value.to(device, non_blocking=True) for key, value in batch.items()}
+
+
+def _wandb_log(kind: str, step: int, values: dict[str, float]) -> None:
+    """Log step/epoch metrics to W&B, no-op when W&B is not initialized."""
+    if wandb.run is None:
+        return
+    wandb.log(
+        {f"{kind}/{key}": value for key, value in values.items()},
+        step=step,
+    )
 
 
 def _mean_metrics(metrics: Iterable[dict[str, float]]) -> dict[str, float]:
@@ -247,18 +263,23 @@ def _train_stage(
             epoch_metrics.append(values)
             progress.set_postfix(loss=f"{values['loss']:.4f}")
             if global_step % training.log_every_steps == 0:
+                log_values = {
+                    "epoch": epoch,
+                    "global_step": global_step,
+                    "lr": scheduler.get_last_lr()[0],
+                    **values,
+                }
                 with metrics_path.open("a", encoding="utf-8") as stream:
-                    stream.write(
-                        json.dumps(
-                            {
-                                "epoch": epoch,
-                                "global_step": global_step,
-                                "lr": scheduler.get_last_lr()[0],
-                                **values,
-                            }
-                        )
-                        + "\n"
-                    )
+                    stream.write(json.dumps(log_values) + "\n")
+                _wandb_log(
+                    kind,
+                    global_step,
+                    {
+                        key: value
+                        for key, value in log_values.items()
+                        if key != "global_step"
+                    },
+                )
             if global_step % training.checkpoint_every_steps == 0:
                 milestone_metrics = {
                     f"train_{key}": value for key, value in values.items()
@@ -295,6 +316,7 @@ def _train_stage(
         record = {"epoch": epoch, "global_step": global_step, **combined}
         with metrics_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record) + "\n")
+        _wandb_log(kind, global_step, record)
         print(json.dumps({"stage": kind, **record}, sort_keys=True))
 
         finished = (max_steps is not None and global_step >= max_steps) or (
@@ -325,9 +347,7 @@ def _load_tokenizer_checkpoint(
         Path(path).expanduser(), map_location=device, weights_only=True
     )
     if checkpoint.get("kind") != "tokenizer":
-        raise ValueError(
-            "rdp.tokenizer_checkpoint must point to a tokenizer checkpoint"
-        )
+        raise ValueError("tokenizer_checkpoint must point to a tokenizer checkpoint")
     model.load_state_dict(checkpoint["model"])
     parameters = dict(model.named_parameters())
     for name, value in checkpoint.get("ema", {}).items():
@@ -363,7 +383,8 @@ def _fit_latent_normalizer(
     frame_indices = np.concatenate(frame_parts)
 
     windows = []
-    horizon = config.rdp.action_horizon
+    reactive = config.rdp if config.model.variant == "rdp_like" else config.rfm
+    horizon = reactive.action_horizon
     for episode in episodes:
         selected = np.flatnonzero(episode_indices == episode)
         selected = selected[np.argsort(frame_indices[selected])]
@@ -373,7 +394,7 @@ def _fit_latent_normalizer(
     action_windows = torch.cat(windows)
 
     chunks = []
-    batch_size = max(config.rdp.tokenizer_batch_size, 512)
+    batch_size = max(reactive.tokenizer_batch_size, 512)
     starts = range(0, len(action_windows), batch_size)
     for start in tqdm(starts, desc="latent statistics", leave=False):
         action = normalizer.normalize_action(
@@ -393,6 +414,18 @@ def train(config: RealmanBeaverConfig) -> Path:
     with (output_dir / "resolved_config.yaml").open("w", encoding="utf-8") as stream:
         yaml.safe_dump(config.to_dict(), stream, sort_keys=False)
 
+    if config.training.wandb_project:
+        try:
+            wandb.init(
+                project=config.training.wandb_project,
+                name=config.training.wandb_run_name or config.model.variant,
+                dir=str(output_dir),
+                config=config.to_dict(),
+            )
+            print(f"wandb: logging to {wandb.run.url}")
+        except Exception as exc:  # W&B must never block training
+            print(f"wandb: init failed, continuing without W&B: {exc}")
+
     train_episodes, val_episodes = episode_split(config.dataset)
     normalizer = ObservationNormalizer.from_lerobot_dataset(config).to(device)
     print(
@@ -400,7 +433,7 @@ def train(config: RealmanBeaverConfig) -> Path:
         f"train_episodes={len(train_episodes)} val_episodes={len(val_episodes)}"
     )
 
-    if config.model.variant in {"original_dp", "dp_beaver"}:
+    if config.model.variant in {"original_dp", "dp_beaver", "fm", "fm_beaver"}:
         train_dataset = RealmanPolicyDataset(config, train_episodes, stage="policy")
         val_dataset = (
             RealmanPolicyDataset(config, val_episodes, stage="policy")
@@ -447,9 +480,11 @@ def train(config: RealmanBeaverConfig) -> Path:
         )
         return output_dir / "last.pt"
 
+    reactive = config.rdp if config.model.variant == "rdp_like" else config.rfm
+    is_rfm = config.model.variant == "rfm"
     if config.training.resume_from:
         raise ValueError(
-            "RDP resume uses rdp.tokenizer_checkpoint and rdp.latent_resume_from"
+            "Reactive policy resume uses its tokenizer_checkpoint and latent_resume_from"
         )
     tokenizer_train = RealmanPolicyDataset(config, train_episodes, stage="tokenizer")
     tokenizer_val = (
@@ -459,7 +494,7 @@ def train(config: RealmanBeaverConfig) -> Path:
     )
     tokenizer_loader = _make_loader(
         tokenizer_train,
-        config.rdp.tokenizer_batch_size,
+        reactive.tokenizer_batch_size,
         config.training.num_workers,
         device,
         True,
@@ -468,7 +503,7 @@ def train(config: RealmanBeaverConfig) -> Path:
     tokenizer_val_loader = (
         _make_loader(
             tokenizer_val,
-            config.rdp.tokenizer_batch_size,
+            reactive.tokenizer_batch_size,
             config.training.num_workers,
             device,
             False,
@@ -483,18 +518,18 @@ def train(config: RealmanBeaverConfig) -> Path:
         action = normalizer.normalize_action(batch["action"])
         present = batch["beaver_present"]
         distance = normalizer.normalize_beaver(
-            batch["beaver_distance"], present, batch.get("beaver_status")
+            batch["beaver_distance"], present, batch["beaver_status"]
         )
         return tokenizer.compute_loss(
             action,
             batch["action_is_pad"],
             distance,
             present,
-            config.rdp.kl_weight,
+            reactive.kl_weight,
         )
 
-    if config.rdp.tokenizer_checkpoint:
-        _load_tokenizer_checkpoint(tokenizer, config.rdp.tokenizer_checkpoint, device)
+    if reactive.tokenizer_checkpoint:
+        _load_tokenizer_checkpoint(tokenizer, reactive.tokenizer_checkpoint, device)
     else:
         tokenizer_ema = _train_stage(
             kind="tokenizer",
@@ -505,10 +540,10 @@ def train(config: RealmanBeaverConfig) -> Path:
             val_loader=tokenizer_val_loader,
             device=device,
             output_dir=output_dir,
-            epochs=config.rdp.tokenizer_epochs,
-            max_steps=config.training.max_steps or config.rdp.tokenizer_max_steps,
-            learning_rate=config.rdp.tokenizer_learning_rate,
-            weight_decay=config.rdp.tokenizer_weight_decay,
+            epochs=reactive.tokenizer_epochs,
+            max_steps=config.training.max_steps or reactive.tokenizer_max_steps,
+            learning_rate=reactive.tokenizer_learning_rate,
+            weight_decay=reactive.tokenizer_weight_decay,
             metrics_name="tokenizer_metrics.jsonl",
             last_name="tokenizer_last.pt",
         )
@@ -531,7 +566,7 @@ def train(config: RealmanBeaverConfig) -> Path:
     )
     latent_loader = _make_loader(
         latent_train,
-        config.rdp.latent_batch_size,
+        reactive.latent_batch_size,
         config.training.num_workers,
         device,
         True,
@@ -540,7 +575,7 @@ def train(config: RealmanBeaverConfig) -> Path:
     latent_val_loader = (
         _make_loader(
             latent_val,
-            config.rdp.latent_batch_size,
+            reactive.latent_batch_size,
             config.training.num_workers,
             device,
             False,
@@ -549,12 +584,13 @@ def train(config: RealmanBeaverConfig) -> Path:
         if latent_val
         else None
     )
-    policy = RDPPolicy(config, normalizer, latent_normalizer, tokenizer=tokenizer).to(
-        device
-    )
+    policy_class = RFMPolicy if is_rfm else RDPPolicy
+    policy = policy_class(
+        config, normalizer, latent_normalizer, tokenizer=tokenizer
+    ).to(device)
     policy.freeze_tokenizer()
     _train_stage(
-        kind="latent_dp",
+        kind="latent_fm" if is_rfm else "latent_dp",
         config=config,
         model=policy,
         loss_function=policy.latent_loss,
@@ -562,13 +598,13 @@ def train(config: RealmanBeaverConfig) -> Path:
         val_loader=latent_val_loader,
         device=device,
         output_dir=output_dir,
-        epochs=config.rdp.latent_epochs,
-        max_steps=config.training.max_steps or config.rdp.latent_max_steps,
+        epochs=reactive.latent_epochs,
+        max_steps=config.training.max_steps or reactive.latent_max_steps,
         learning_rate=config.training.learning_rate,
         weight_decay=config.training.weight_decay,
-        metrics_name="latent_dp_metrics.jsonl",
+        metrics_name="latent_fm_metrics.jsonl" if is_rfm else "latent_dp_metrics.jsonl",
         last_name="last.pt",
-        resume_from=config.rdp.latent_resume_from,
+        resume_from=reactive.latent_resume_from,
     )
     return output_dir / "last.pt"
 
@@ -576,10 +612,16 @@ def train(config: RealmanBeaverConfig) -> Path:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--config", required=True, help="Path to one of the three policy YAML files"
+        "--config", required=True, help="Path to one of the six policy YAML files"
     )
     parser.add_argument(
         "--device", help="Override training.device (for example cuda:0 or cpu)"
+    )
+    parser.add_argument(
+        "--dataset-root", help="Override dataset.root with a local LeRobot dataset"
+    )
+    parser.add_argument(
+        "--dataset-repo-id", help="Override dataset.repo_id for the selected root"
     )
     parser.add_argument("--batch-size", type=int, help="Override all stage batch sizes")
     parser.add_argument("--num-workers", type=int, help="Override training.num_workers")
@@ -591,16 +633,23 @@ def _parser() -> argparse.ArgumentParser:
         "--val-fraction", type=float, help="Override dataset.val_fraction"
     )
     parser.add_argument(
-        "--tokenizer-checkpoint", help="Skip RDP tokenizer training and load this file"
+        "--tokenizer-checkpoint",
+        help="Skip reactive tokenizer training and load this file",
     )
     parser.add_argument(
         "--latent-resume-from",
-        help="Resume the RDP latent-DP stage from this 'latent_dp' checkpoint",
+        help="Resume the reactive latent stage from a matching checkpoint",
     )
     parser.add_argument(
         "--latent-epochs",
         type=int,
-        help="Override rdp.latent_epochs (the new TOTAL when resuming)",
+        help="Override reactive latent_epochs (the new TOTAL when resuming)",
+    )
+    parser.add_argument(
+        "--wandb-project", help="Enable W&B logging with this project name"
+    )
+    parser.add_argument(
+        "--wandb-run-name", help="W&B run name (defaults to the model variant)"
     )
     return parser
 
@@ -608,6 +657,10 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = _parser().parse_args()
     config = load_config(args.config)
+    if args.dataset_root is not None:
+        config.dataset.root = args.dataset_root
+    if args.dataset_repo_id is not None:
+        config.dataset.repo_id = args.dataset_repo_id
     for argument, attribute in (
         (args.device, "device"),
         (args.num_workers, "num_workers"),
@@ -620,14 +673,23 @@ def main() -> None:
         config.training.batch_size = args.batch_size
         config.rdp.tokenizer_batch_size = args.batch_size
         config.rdp.latent_batch_size = args.batch_size
+        config.rfm.tokenizer_batch_size = args.batch_size
+        config.rfm.latent_batch_size = args.batch_size
     if args.val_fraction is not None:
         config.dataset.val_fraction = args.val_fraction
     if args.tokenizer_checkpoint is not None:
-        config.rdp.tokenizer_checkpoint = args.tokenizer_checkpoint
+        reactive = config.rdp if config.model.variant == "rdp_like" else config.rfm
+        reactive.tokenizer_checkpoint = args.tokenizer_checkpoint
     if args.latent_resume_from is not None:
-        config.rdp.latent_resume_from = args.latent_resume_from
+        reactive = config.rdp if config.model.variant == "rdp_like" else config.rfm
+        reactive.latent_resume_from = args.latent_resume_from
     if args.latent_epochs is not None:
-        config.rdp.latent_epochs = args.latent_epochs
+        reactive = config.rdp if config.model.variant == "rdp_like" else config.rfm
+        reactive.latent_epochs = args.latent_epochs
+    if args.wandb_project is not None:
+        config.training.wandb_project = args.wandb_project
+    if args.wandb_run_name is not None:
+        config.training.wandb_run_name = args.wandb_run_name
     config.validate()
     checkpoint = train(config)
     print(f"checkpoint={checkpoint}")

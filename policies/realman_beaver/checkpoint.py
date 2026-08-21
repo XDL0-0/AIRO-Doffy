@@ -21,13 +21,14 @@ def load_policy(
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
     if checkpoint.get("kind") == "tokenizer":
         raise ValueError(
-            "A tokenizer-only checkpoint is not deployable; use the final RDP last.pt"
+            "A tokenizer-only checkpoint is not deployable; use the final reactive-policy last.pt"
         )
     config = RealmanBeaverConfig.from_dict(checkpoint["config"])
     normalizer = ObservationNormalizer.identity(
         config.model.state_dim, config.model.action_dim
     )
-    latent_normalizer = LatentNormalizer.identity(config.rdp.latent_dim)
+    reactive = config.rdp if config.model.variant == "rdp_like" else config.rfm
+    latent_normalizer = LatentNormalizer.identity(reactive.latent_dim)
     policy = build_policy(config, normalizer, latent_normalizer)
     policy.load_state_dict(checkpoint["model"])
     if use_ema and checkpoint.get("ema"):
