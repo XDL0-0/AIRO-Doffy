@@ -1,4 +1,4 @@
-"""LeRobot dataset adapters and normalization for all six baselines."""
+"""LeRobot dataset adapters and normalization for Realman-Beaver policies."""
 
 from __future__ import annotations
 
@@ -14,7 +14,17 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from torch import Tensor, nn
 from torch.utils.data import Dataset
 
-from policies.realman_beaver.configuration import DatasetConfig, RealmanBeaverConfig
+from policies.realman_beaver.configuration import (
+    STRUCTURED_BEAVER_DP_VARIANTS,
+    DatasetConfig,
+    RealmanBeaverConfig,
+)
+
+_DIRECT_BEAVER_VARIANTS = {
+    "dp_beaver",
+    "fm_beaver",
+    *STRUCTURED_BEAVER_DP_VARIANTS,
+}
 
 
 class ObservationNormalizer(nn.Module):
@@ -311,7 +321,7 @@ class RealmanPolicyDataset(Dataset[dict[str, Tensor]]):
                     )
                 ],
             }
-            if model.variant in {"dp_beaver", "fm_beaver"}:
+            if model.variant in _DIRECT_BEAVER_VARIANTS:
                 delta_timestamps[dataset.beaver_distance_key] = [
                     step / dataset.fps for step in history
                 ]
@@ -433,10 +443,7 @@ class RealmanPolicyDataset(Dataset[dict[str, Tensor]]):
         if self.stage in {"policy", "latent"}:
             required[config.dataset.image_key] = None
             required[config.dataset.state_key] = (7,)
-        if self.stage == "tokenizer" or config.model.variant in {
-            "dp_beaver",
-            "fm_beaver",
-        }:
+        if self.stage == "tokenizer" or config.model.variant in _DIRECT_BEAVER_VARIANTS:
             required[config.dataset.beaver_distance_key] = (9, 4, 4)
             required[config.dataset.beaver_present_key] = (9,)
             required[config.dataset.beaver_status_key] = (9, 4, 4)
@@ -477,10 +484,10 @@ class RealmanPolicyDataset(Dataset[dict[str, Tensor]]):
         if self.stage in {"policy", "latent"}:
             sample["image"] = item[dataset.image_key].float()
             sample["state"] = item[dataset.state_key].float()
-        if self.stage == "tokenizer" or self.config.model.variant in {
-            "dp_beaver",
-            "fm_beaver",
-        }:
+        if (
+            self.stage == "tokenizer"
+            or self.config.model.variant in _DIRECT_BEAVER_VARIANTS
+        ):
             sample["beaver_distance"] = item[dataset.beaver_distance_key].float()
             sample["beaver_present"] = item[dataset.beaver_present_key].float()
             sample["beaver_status"] = item[dataset.beaver_status_key].float()

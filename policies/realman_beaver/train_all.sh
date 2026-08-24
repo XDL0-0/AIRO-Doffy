@@ -21,7 +21,7 @@ usage() {
     echo "  CYLINDER_DATASET_ROOT=path MERGED_DATASET_ROOT=path"
     echo "  TRAIN_DATASET_ROOT=path TRAIN_DATASET_NAME=name (run one dataset only)"
     echo "  MAX_PARALLEL=2 WANDB_PROJECT=project-name"
-    echo "Default: train six policies on each of the cylinder and merged datasets sequentially."
+    echo "Default: train nine policies on each of the cylinder and merged datasets sequentially."
     echo "--parallel runs at most MAX_PARALLEL trainers concurrently."
 }
 
@@ -133,10 +133,23 @@ run_policy() {
     )
 }
 
-NAMES=("original_dp" "dp_beaver" "rdp_like" "fm" "fm_beaver" "rfm")
+NAMES=(
+    "original_dp"
+    "dp_beaver"
+    "dp_beaver_enc"
+    "dp_beaver_near"
+    "dp_beaver_near_gate"
+    "rdp_like"
+    "fm"
+    "fm_beaver"
+    "rfm"
+)
 CONFIGS=(
     "policies/realman_beaver/configs/original_dp.yaml"
     "policies/realman_beaver/configs/dp_beaver.yaml"
+    "policies/realman_beaver/configs/dp_beaver_enc.yaml"
+    "policies/realman_beaver/configs/dp_beaver_near.yaml"
+    "policies/realman_beaver/configs/dp_beaver_near_gate.yaml"
     "policies/realman_beaver/configs/rdp_like.yaml"
     "policies/realman_beaver/configs/fm.yaml"
     "policies/realman_beaver/configs/fm_beaver.yaml"

@@ -1,13 +1,16 @@
 # Realman–Beaver policy baselines
 
-This package trains and deploys six baselines from the local LeRobot dataset.
-The original diffusion models remain available; three flow-matching models are
-provided alongside them.
+This package trains and deploys nine baselines from the local LeRobot dataset.
+The original diffusion and flow-matching models remain available alongside
+three additive structured Beaver Diffusion Policy variants.
 
 | config | observations | trajectory model |
 | --- | --- | --- |
 | `original_dp.yaml` | camera + 7 joints | native LeRobot `DiffusionPolicy` |
 | `dp_beaver.yaml` | camera + 7 joints + Beaver | native LeRobot `DiffusionPolicy` |
+| `dp_beaver_enc.yaml` | camera + 7 joints + structured Beaver | shared sensor encoder + native DP |
+| `dp_beaver_near.yaml` | camera + 7 joints + structured near-field Beaver | shared sensor encoder + native DP |
+| `dp_beaver_near_gate.yaml` | camera + 7 joints + gated near-field Beaver | gated shared sensor encoder + native DP |
 | `rdp_like.yaml` | camera + 7 joints + Beaver | asymmetric tokenizer + latent diffusion |
 | `fm.yaml` | camera + 7 joints | conditional flow matching |
 | `fm_beaver.yaml` | camera + 7 joints + Beaver | conditional flow matching |
@@ -55,6 +58,15 @@ mask still zeroes the complete grid of a disconnected sensor.
 the masked distance grids only to their fast tokenizer decoder; their slow
 visual trajectory models do not consume Beaver data.
 
+The three structured DP variants instead preserve the nine-sensor axis. One
+shared MLP maps every sensor's 4×4 cells to a 32-D token, a physical sensor
+embedding preserves identity, and mean/max aggregation produces a 64-D Beaver
+feature. `dp_beaver_near` adds a cell-wise 0–300 mm proximity channel;
+`dp_beaver_near_gate` additionally learns independent sigmoid sensor gates.
+The 64-D feature is concatenated with normalized 7-D joints to give the native
+Diffusion Policy a 71-D state. These paths use a masked `[0,1]` global distance
+representation and do not change the old `dp_beaver` 160-D flat baseline.
+
 ## Training
 
 Run one baseline from the repository root:
@@ -81,7 +93,18 @@ python -m policies.realman_beaver.train \
   --config policies/realman_beaver/configs/rdp_like.yaml
 ```
 
-Train all six sequentially (the safe default for one GPU), or explicitly launch
+The structured Beaver configs are independent entry points:
+
+```bash
+python -m policies.realman_beaver.train \
+  --config policies/realman_beaver/configs/dp_beaver_enc.yaml
+python -m policies.realman_beaver.train \
+  --config policies/realman_beaver/configs/dp_beaver_near.yaml
+python -m policies.realman_beaver.train \
+  --config policies/realman_beaver/configs/dp_beaver_near_gate.yaml
+```
+
+Train all nine sequentially (the safe default for one GPU), or explicitly launch
 them in parallel:
 
 ```bash
@@ -131,9 +154,10 @@ silently reaching a model.
 ## Verification
 
 ```bash
-python -m unittest policies.realman_beaver.tests.test_policy -v
+python -m unittest discover -s policies/realman_beaver/tests -v
 ```
 
-The tests cover all six model constructors, loss/backpropagation, diffusion and
-flow sampling, both reactive pipelines, online action selection, and per-pixel
-status masking.
+The tests cover all nine model constructors, loss/backpropagation, diffusion and
+flow sampling, both reactive pipelines, structured Beaver preprocessing and
+gradient flow, checkpoint reconstruction, online action selection, and
+per-pixel status masking.

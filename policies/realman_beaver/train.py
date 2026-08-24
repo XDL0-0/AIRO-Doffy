@@ -20,7 +20,11 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from policies.realman_beaver.configuration import RealmanBeaverConfig, load_config
+from policies.realman_beaver.configuration import (
+    STRUCTURED_BEAVER_DP_VARIANTS,
+    RealmanBeaverConfig,
+    load_config,
+)
 from policies.realman_beaver.dataset import (
     LatentNormalizer,
     ObservationNormalizer,
@@ -36,6 +40,16 @@ from policies.realman_beaver.modeling import (
 
 LossFunction = Callable[[dict[str, Tensor]], tuple[Tensor, dict[str, float]]]
 _WANDB_METRIC_KINDS: set[str] = set()
+_WANDB_POLICY_METRICS: set[str] = set()
+POLICY_TRAINER_VARIANTS = frozenset(
+    {
+        "original_dp",
+        "dp_beaver",
+        *STRUCTURED_BEAVER_DP_VARIANTS,
+        "fm",
+        "fm_beaver",
+    }
+)
 
 
 class ExponentialMovingAverage:
@@ -93,10 +107,30 @@ def _to_device(batch: dict[str, Tensor], device: torch.device) -> dict[str, Tens
     return {key: value.to(device, non_blocking=True) for key, value in batch.items()}
 
 
-def _wandb_log(kind: str, step: int, values: dict[str, float]) -> None:
-    """Log metrics against a stage-local step without rewinding W&B's step."""
+def _define_policy_wandb_metrics(metric_names: Iterable[str] = ()) -> None:
+    """Define shared policy metrics against the real optimizer-update step."""
     if wandb.run is None:
         return
+    names = ("global_step", "epoch", "train_loss", "val_loss", "lr", *metric_names)
+    for name in names:
+        if name in _WANDB_POLICY_METRICS:
+            continue
+        if name == "global_step":
+            wandb.define_metric(name)
+        else:
+            wandb.define_metric(name, step_metric="global_step")
+        _WANDB_POLICY_METRICS.add(name)
+
+
+def _wandb_log(kind: str, step: int, values: dict[str, float]) -> None:
+    """Log policy metrics uniformly, retaining stage axes for reactive trainers."""
+    if wandb.run is None:
+        return
+    if kind in POLICY_TRAINER_VARIANTS:
+        _define_policy_wandb_metrics(values)
+        wandb.log({"global_step": step, **values})
+        return
+
     step_key = f"{kind}/global_step"
     if kind not in _WANDB_METRIC_KINDS:
         wandb.define_metric(step_key)
@@ -107,6 +141,14 @@ def _wandb_log(kind: str, step: int, values: dict[str, float]) -> None:
     # Do not pass W&B's global step: tokenizer and latent training each start
     # from zero, while the stage-local custom axes remain independent.
     wandb.log(payload)
+
+
+def _training_metrics(values: dict[str, float]) -> dict[str, float]:
+    return {f"train_{key}": float(value) for key, value in values.items()}
+
+
+def _validation_metrics(values: dict[str, float]) -> dict[str, float]:
+    return {f"val_{key}": float(value) for key, value in values.items()}
 
 
 def _parse_episode_spec(value: str) -> tuple[int, ...]:
@@ -303,12 +345,20 @@ def _train_stage(
             epoch_metrics.append(values)
             progress.set_postfix(loss=f"{values['loss']:.4f}")
             if global_step % training.log_every_steps == 0:
-                log_values = {
-                    "epoch": epoch,
-                    "global_step": global_step,
-                    "lr": scheduler.get_last_lr()[0],
-                    **values,
-                }
+                if kind in POLICY_TRAINER_VARIANTS:
+                    log_values = {
+                        "epoch": epoch,
+                        "global_step": global_step,
+                        **_training_metrics(values),
+                        "lr": optimizer.param_groups[0]["lr"],
+                    }
+                else:
+                    log_values = {
+                        "epoch": epoch,
+                        "global_step": global_step,
+                        "lr": scheduler.get_last_lr()[0],
+                        **values,
+                    }
                 with metrics_path.open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps(log_values) + "\n")
                 _wandb_log(
@@ -341,22 +391,25 @@ def _train_stage(
             if max_steps is not None and global_step >= max_steps:
                 break
 
-        combined = {
-            f"train_{key}": value for key, value in _mean_metrics(epoch_metrics).items()
-        }
+        combined = _training_metrics(_mean_metrics(epoch_metrics))
+        validation_metrics: dict[str, float] = {}
         if val_loader is not None:
-            combined.update(
-                {
-                    f"val_{key}": value
-                    for key, value in _evaluate(
-                        model, loss_function, val_loader, device
-                    ).items()
-                }
+            validation_metrics = _validation_metrics(
+                _evaluate(model, loss_function, val_loader, device)
             )
+            combined.update(validation_metrics)
         record = {"epoch": epoch, "global_step": global_step, **combined}
         with metrics_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record) + "\n")
-        _wandb_log(kind, global_step, record)
+        if kind in POLICY_TRAINER_VARIANTS:
+            if validation_metrics:
+                _wandb_log(
+                    kind,
+                    global_step,
+                    {"epoch": epoch, **validation_metrics},
+                )
+        else:
+            _wandb_log(kind, global_step, record)
         print(json.dumps({"stage": kind, **record}, sort_keys=True))
 
         finished = (max_steps is not None and global_step >= max_steps) or (
@@ -456,12 +509,18 @@ def train(config: RealmanBeaverConfig) -> Path:
 
     if config.training.wandb_project:
         try:
+            wandb_config = config.to_dict()
+            wandb_config["policy"] = config.model.variant
             wandb.init(
                 project=config.training.wandb_project,
                 name=config.training.wandb_run_name or config.model.variant,
                 dir=str(output_dir),
-                config=config.to_dict(),
+                config=wandb_config,
             )
+            _WANDB_METRIC_KINDS.clear()
+            _WANDB_POLICY_METRICS.clear()
+            if config.model.variant in POLICY_TRAINER_VARIANTS:
+                _define_policy_wandb_metrics()
             print(f"wandb: logging to {wandb.run.url}")
         except Exception as exc:  # W&B must never block training
             print(f"wandb: init failed, continuing without W&B: {exc}")
@@ -477,7 +536,7 @@ def train(config: RealmanBeaverConfig) -> Path:
     print(f"train_episode_indices={train_episodes}")
     print(f"val_episode_indices={val_episodes}")
 
-    if config.model.variant in {"original_dp", "dp_beaver", "fm", "fm_beaver"}:
+    if config.model.variant in POLICY_TRAINER_VARIANTS:
         train_dataset = RealmanPolicyDataset(config, train_episodes, stage="policy")
         val_dataset = (
             RealmanPolicyDataset(config, val_episodes, stage="policy")
@@ -656,7 +715,7 @@ def train(config: RealmanBeaverConfig) -> Path:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--config", required=True, help="Path to one of the six policy YAML files"
+        "--config", required=True, help="Path to a Realman-Beaver policy YAML file"
     )
     parser.add_argument(
         "--device", help="Override training.device (for example cuda:0 or cpu)"

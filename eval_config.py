@@ -33,6 +33,9 @@ class EvalConfig:
             for name in (
                 "original_dp",
                 "dp_beaver",
+                "dp_beaver_enc",
+                "dp_beaver_near",
+                "dp_beaver_near_gate",
                 "rdp_like",
                 "fm",
                 "fm_beaver",

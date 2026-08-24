@@ -1,0 +1,32 @@
+{
+  "name": "airo-doffy-lerobot-upgrade-check-c5",
+  "description": "Ephemeral LeRobot 0.4.4 compatibility preflight",
+  "request": {
+    "resources": {
+      "gpus": 0,
+      "cpus": 1,
+      "cpuMemoryGb": 4,
+      "clusterId": 5
+    },
+    "docker": {
+      "image": "ramantalwarnr2/mt-lerobot:latest",
+      "command": [
+        "bash",
+        "-lc",
+        "/opt/conda/envs/lerobot/bin/python -m pip install --disable-pip-version-check --no-deps lerobot==0.4.4 && /opt/conda/envs/lerobot/bin/python -c \"import inspect, lerobot; from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig; signature=inspect.signature(DiffusionConfig); assert 'resize_shape' in signature.parameters and 'crop_ratio' in signature.parameters; print('lerobot_version', lerobot.__version__); print('resize_api', signature.parameters['resize_shape'], signature.parameters['crop_ratio'])\""
+      ],
+      "environment": {},
+      "storage": [
+        {
+          "hostPath": "/project_ghent",
+          "containerPath": "/project_ghent"
+        }
+      ],
+      "portMappings": []
+    },
+    "scheduling": {
+      "interactive": false,
+      "maxDuration": "30 minutes"
+    }
+  }
+}

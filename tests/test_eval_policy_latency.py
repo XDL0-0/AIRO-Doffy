@@ -63,8 +63,8 @@ class InferenceLatencyTest(unittest.TestCase):
         self.assertEqual(policy.last_latency_steps, 0)
 
 
-class SixPolicyCompatibilityTest(unittest.TestCase):
-    def test_checkpoint_kind_mapping_accepts_all_six_policies(self) -> None:
+class PolicyCompatibilityTest(unittest.TestCase):
+    def test_checkpoint_kind_mapping_accepts_all_policies(self) -> None:
         for variant, kind in EXPECTED_CHECKPOINT_KINDS.items():
             with self.subTest(variant=variant):
                 self.assertEqual(
@@ -88,6 +88,9 @@ class SixPolicyCompatibilityTest(unittest.TestCase):
         expected = {
             "original_dp": False,
             "dp_beaver": True,
+            "dp_beaver_enc": True,
+            "dp_beaver_near": True,
+            "dp_beaver_near_gate": True,
             "rdp_like": True,
             "fm": False,
             "fm_beaver": True,
@@ -103,7 +106,15 @@ class SixPolicyCompatibilityTest(unittest.TestCase):
             RDP_SLOW_REPLAN_STEPS=6,
             RFM_SLOW_REPLAN_STEPS=7,
         )
-        for variant in ("original_dp", "dp_beaver", "fm", "fm_beaver"):
+        for variant in (
+            "original_dp",
+            "dp_beaver",
+            "dp_beaver_enc",
+            "dp_beaver_near",
+            "dp_beaver_near_gate",
+            "fm",
+            "fm_beaver",
+        ):
             policy = self._policy(variant, action_steps=8)
             with self.subTest(variant=variant):
                 self.assertEqual(

@@ -6,6 +6,7 @@ from policies.realman_beaver.modeling import (
     LeRobotDPPolicy,
     RDPPolicy,
     RFMPolicy,
+    StructuredBeaverDPPolicy,
     build_policy,
     build_tokenizer,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "RDPPolicy",
     "RFMPolicy",
     "RealmanBeaverConfig",
+    "StructuredBeaverDPPolicy",
     "build_policy",
     "build_tokenizer",
     "load_config",

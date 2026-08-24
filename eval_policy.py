@@ -1,8 +1,8 @@
 """Evaluate the trained RealMan-Beaver policies on the RM75 robot.
 
-Loads one of the six DP/FM checkpoints from ``policies/output`` and closes the
+Loads a DP/FM checkpoint from ``policies/output`` and closes the
 loop on hardware: Realsense camera + joint configuration (+ Beaver distance
-grids for ``dp_beaver`` / ``rdp_like`` / ``fm_beaver`` / ``rfm``) in, joint
+grids for Beaver-aware variants) in, joint
 targets out, commanded at the dataset rate (24 Hz default).
 
 Beaver is initialized once at startup — before any policy is loaded — as soon
@@ -52,14 +52,35 @@ from inference import InferenceCameraManager
 from robot_backend import make_robot_backend
 
 SUPPORTED_POLICY_VARIANTS = frozenset(
-    {"original_dp", "dp_beaver", "rdp_like", "fm", "fm_beaver", "rfm"}
+    {
+        "original_dp",
+        "dp_beaver",
+        "dp_beaver_enc",
+        "dp_beaver_near",
+        "dp_beaver_near_gate",
+        "rdp_like",
+        "fm",
+        "fm_beaver",
+        "rfm",
+    }
 )
 BEAVER_POLICY_VARIANTS = frozenset(
-    {"dp_beaver", "rdp_like", "fm_beaver", "rfm"}
+    {
+        "dp_beaver",
+        "dp_beaver_enc",
+        "dp_beaver_near",
+        "dp_beaver_near_gate",
+        "rdp_like",
+        "fm_beaver",
+        "rfm",
+    }
 )
 EXPECTED_CHECKPOINT_KINDS = {
     "original_dp": "original_dp",
     "dp_beaver": "dp_beaver",
+    "dp_beaver_enc": "dp_beaver_enc",
+    "dp_beaver_near": "dp_beaver_near",
+    "dp_beaver_near_gate": "dp_beaver_near_gate",
     "rdp_like": "latent_dp",
     "fm": "fm",
     "fm_beaver": "fm_beaver",
@@ -994,7 +1015,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint-root",
         default=None,
-        help="Use ROOT/<policy>/last.pt for all six default policy paths",
+        help="Use ROOT/<policy>/last.pt for all default policy paths",
     )
     parser.add_argument("--fps", type=int, default=None, help="Control rate in Hz")
     parser.add_argument(

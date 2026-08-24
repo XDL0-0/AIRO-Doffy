@@ -19,9 +19,15 @@ from lerobot.policies.diffusion.modeling_diffusion import (
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
 from torch import Tensor, nn
 
-from policies.realman_beaver.configuration import RealmanBeaverConfig
+from policies.realman_beaver.configuration import (
+    STRUCTURED_BEAVER_DP_VARIANTS,
+    RealmanBeaverConfig,
+)
 from policies.realman_beaver.dataset import LatentNormalizer, ObservationNormalizer
-from policies.realman_beaver.modules import AsymmetricBeaverTokenizer
+from policies.realman_beaver.modules import (
+    AsymmetricBeaverTokenizer,
+    StructuredBeaverEncoder,
+)
 
 
 def build_native_diffusion_config(
@@ -39,7 +45,12 @@ def build_native_diffusion_config(
         scheduler_type = rdp.latent_noise_scheduler_type
         inference_steps = rdp.latent_num_inference_steps
     else:
-        state_dim = model.state_dim + (153 if model.variant == "dp_beaver" else 0)
+        if model.variant == "dp_beaver":
+            state_dim = model.state_dim + 153
+        elif model.variant in STRUCTURED_BEAVER_DP_VARIANTS:
+            state_dim = model.state_dim + model.beaver_feature_dim
+        else:
+            state_dim = model.state_dim
         action_dim = model.action_dim
         horizon = model.horizon
         n_action_steps = model.n_action_steps
@@ -283,6 +294,97 @@ class LeRobotDPPolicy(nn.Module):
                 batch["beaver_status"],
             )
         return self.normalizer.normalize_state(batch["state"])
+
+    def _prepare(
+        self, batch: dict[str, Tensor], include_action: bool
+    ) -> dict[str, Tensor]:
+        prepared = {
+            OBS_STATE: self._state(batch),
+            self.config.dataset.image_key: self.normalizer.normalize_image(
+                batch["image"]
+            ),
+        }
+        if include_action:
+            prepared[ACTION] = self.normalizer.normalize_action(batch["action"])
+            prepared["action_is_pad"] = batch["action_is_pad"]
+        return prepared
+
+    def compute_loss(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict[str, float]]:
+        loss, _ = self.native_policy(self._prepare(batch, include_action=True))
+        return loss, {"loss": float(loss.detach())}
+
+    @torch.no_grad()
+    def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
+        prepared = self._prepare(batch, include_action=False)
+        prepared[OBS_IMAGES] = torch.stack(
+            [prepared[self.config.dataset.image_key]], dim=-4
+        )
+        normalized = self.native_policy.diffusion.generate_actions(prepared)
+        return self.normalizer.denormalize_action(normalized)
+
+    @torch.no_grad()
+    def predict_actions(self, batch: dict[str, Tensor]) -> Tensor:
+        return self.predict_action_chunk(batch)
+
+    @torch.no_grad()
+    def select_action(self, observation: dict[str, Tensor]) -> Tensor:
+        batch = _ensure_observation_batch(observation)
+        queue = getattr(self.native_policy, "_queues", None)
+        before = len(queue[ACTION]) if queue is not None and ACTION in queue else 0
+        replanned = before == 0
+        normalized = self.native_policy.select_action(
+            self._prepare(batch, include_action=False)
+        )
+        after = len(queue[ACTION]) if queue is not None and ACTION in queue else 0
+        if replanned:
+            self._chunk_len = after + 1
+        self.last_replanned = replanned
+        self.last_chunk_step = max(0, self._chunk_len - 1 - after)
+        return self.normalizer.denormalize_action(normalized)
+
+    def reset(self) -> None:
+        self.last_replanned = True
+        self.last_chunk_step = 0
+        self._chunk_len = 0
+        self.native_policy.reset()
+
+
+class StructuredBeaverDPPolicy(nn.Module):
+    """Native LeRobot DP conditioned on a trainable structured Beaver feature."""
+
+    def __init__(
+        self, config: RealmanBeaverConfig, normalizer: ObservationNormalizer
+    ) -> None:
+        super().__init__()
+        if config.model.variant not in STRUCTURED_BEAVER_DP_VARIANTS:
+            raise ValueError(
+                "StructuredBeaverDPPolicy requires a structured Beaver DP variant"
+            )
+        self.config = config
+        self.normalizer = normalizer
+        model, dataset = config.model, config.dataset
+        self.beaver_encoder = StructuredBeaverEncoder(
+            variant=model.variant,
+            n_sensors=model.beaver_shape[0],
+            distance_max_mm=dataset.distance_max_mm,
+            valid_statuses=dataset.beaver_valid_statuses,
+            output_dim=model.beaver_feature_dim,
+            sensor_hidden_dim=model.beaver_sensor_hidden_dim,
+            sensor_feature_dim=model.beaver_sensor_feature_dim,
+            near_threshold_mm=model.beaver_near_threshold_mm,
+            gate_hidden_dim=model.beaver_gate_hidden_dim,
+        )
+        self.native_policy = DiffusionPolicy(build_native_diffusion_config(config))
+
+    def _state(self, batch: dict[str, Tensor]) -> Tensor:
+        beaver_feature = self.beaver_encoder(
+            batch["beaver_distance"],
+            batch["beaver_status"],
+            batch["beaver_present"],
+        )
+        return torch.cat(
+            (self.normalizer.normalize_state(batch["state"]), beaver_feature), dim=-1
+        )
 
     def _prepare(
         self, batch: dict[str, Tensor], include_action: bool
@@ -793,9 +895,11 @@ def build_policy(
     config: RealmanBeaverConfig,
     normalizer: ObservationNormalizer,
     latent_normalizer: LatentNormalizer | None = None,
-) -> LeRobotDPPolicy | RDPPolicy | FMPolicy | RFMPolicy:
+) -> LeRobotDPPolicy | StructuredBeaverDPPolicy | RDPPolicy | FMPolicy | RFMPolicy:
     if config.model.variant in {"original_dp", "dp_beaver"}:
         return LeRobotDPPolicy(config, normalizer)
+    if config.model.variant in STRUCTURED_BEAVER_DP_VARIANTS:
+        return StructuredBeaverDPPolicy(config, normalizer)
     if config.model.variant == "rdp_like":
         latent_normalizer = latent_normalizer or LatentNormalizer.identity(
             config.rdp.latent_dim

@@ -8,9 +8,14 @@ from typing import Any
 
 import yaml
 
+STRUCTURED_BEAVER_DP_VARIANTS = frozenset(
+    {"dp_beaver_enc", "dp_beaver_near", "dp_beaver_near_gate"}
+)
+
 SUPPORTED_VARIANTS = {
     "original_dp",
     "dp_beaver",
+    *STRUCTURED_BEAVER_DP_VARIANTS,
     "rdp_like",
     "fm",
     "fm_beaver",
@@ -57,6 +62,15 @@ class ModelConfig:
     state_dim: int = 7
     action_dim: int = 7
     beaver_shape: tuple[int, int, int] = (9, 4, 4)
+
+    # Structured Beaver DP settings. These fields are only consumed by the
+    # three additive structured variants; the existing flat and reactive
+    # Beaver paths retain their original representations.
+    beaver_feature_dim: int = 64
+    beaver_sensor_hidden_dim: int = 64
+    beaver_sensor_feature_dim: int = 32
+    beaver_near_threshold_mm: float = 300.0
+    beaver_gate_hidden_dim: int = 32
 
     # Shared visual encoder and conditional 1D U-Net settings.
     n_obs_steps: int = 2
@@ -198,10 +212,10 @@ class TrainingConfig:
     log_every_steps: int = 20
     checkpoint_every_steps: int = 25_000
     resume_from: str | None = None
-    # W&B visualization. When set, wandb.init(project=wandb_project) runs
-    # every stage's step/epoch metrics through one run, with keys prefixed
-    # by the stage kind (tokenizer/latent_fm/fm/...). Leave None
-    # to train without W&B.
+    # W&B visualization. Direct policy trainers use shared metric names
+    # (train_loss/val_loss/lr/epoch/global_step) so runs can be overlaid.
+    # Reactive trainers retain stage-local metrics for their two optimizers.
+    # Leave None to train without W&B.
     wandb_project: str | None = None
     wandb_run_name: str | None = None
 
@@ -279,7 +293,12 @@ class RealmanBeaverConfig:
             raise ValueError(
                 "policy horizon must be divisible by the U-Net downsampling factor"
             )
-        if model.variant in {"original_dp", "dp_beaver", "rdp_like"}:
+        if model.variant in {
+            "original_dp",
+            "dp_beaver",
+            *STRUCTURED_BEAVER_DP_VARIANTS,
+            "rdp_like",
+        }:
             if model.noise_scheduler_type not in {"DDPM", "DDIM"}:
                 raise ValueError("noise_scheduler_type must be DDPM or DDIM")
             if model.prediction_type not in {"epsilon", "sample"}:
@@ -288,6 +307,26 @@ class RealmanBeaverConfig:
                 raise ValueError(
                     "num_inference_steps must be within the diffusion training schedule"
                 )
+        if model.variant in STRUCTURED_BEAVER_DP_VARIANTS:
+            if (
+                model.beaver_feature_dim <= 0
+                or model.beaver_sensor_hidden_dim <= 0
+                or model.beaver_sensor_feature_dim <= 0
+            ):
+                raise ValueError(
+                    "structured Beaver feature and sensor dimensions must be positive"
+                )
+            if not dataset.beaver_valid_statuses:
+                raise ValueError(
+                    "structured Beaver policies require beaver_valid_statuses"
+                )
+        if (
+            model.variant in {"dp_beaver_near", "dp_beaver_near_gate"}
+            and model.beaver_near_threshold_mm <= 0
+        ):
+            raise ValueError("beaver_near_threshold_mm must be positive")
+        if model.variant == "dp_beaver_near_gate" and model.beaver_gate_hidden_dim <= 0:
+            raise ValueError("beaver_gate_hidden_dim must be positive")
         if model.variant in {"fm", "fm_beaver", "rfm"}:
             if model.flow_time_embed_dim <= 0 or model.flow_time_embedding_scale <= 0:
                 raise ValueError(

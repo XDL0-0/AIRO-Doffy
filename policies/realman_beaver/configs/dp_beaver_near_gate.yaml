@@ -1,0 +1,65 @@
+dataset:
+  root: /home/yuyuan/AIRO-Doffy/datasets/WRM_grasp_lero
+  repo_id: WRM_grasp_lero
+  video_backend: pyav
+  fps: 24
+  image_key: observation.images.camera_0
+  image_shape: [3, 480, 640]
+  state_key: observation.state
+  action_key: action
+  beaver_distance_key: observation.beaver.distance_mm
+  beaver_present_key: observation.beaver.present
+  beaver_status_key: observation.beaver.target_status
+  beaver_valid_statuses: [5, 9]
+  val_fraction: 0.1
+  split_seed: 42
+  normalization_source: parquet
+  distance_max_mm: 2550.0
+  normalization_floor: 0.0001
+
+model:
+  variant: dp_beaver_near_gate
+  state_dim: 7
+  action_dim: 7
+  beaver_shape: [9, 4, 4]
+  beaver_feature_dim: 64
+  beaver_sensor_hidden_dim: 64
+  beaver_sensor_feature_dim: 32
+  beaver_near_threshold_mm: 300.0
+  beaver_gate_hidden_dim: 32
+  n_obs_steps: 2
+  horizon: 16
+  n_action_steps: 8
+  vision_backbone: resnet18
+  resize_shape: [128, 128]
+  crop_ratio: 0.9
+  down_dims: [256, 512, 1024]
+  kernel_size: 5
+  n_groups: 8
+  diffusion_step_embed_dim: 128
+  noise_scheduler_type: DDPM
+  num_train_timesteps: 100
+  num_inference_steps: 100
+  beta_schedule: squaredcos_cap_v2
+  prediction_type: epsilon
+  clip_sample_range: 1.0
+
+training:
+  output_dir: outputs/realman_beaver/dp_beaver_near_gate
+  device: auto
+  seed: 42
+  batch_size: 8
+  num_workers: 4
+  epochs: 200
+  max_steps: 100000
+  learning_rate: 0.0001
+  weight_decay: 0.000001
+  betas: [0.95, 0.999]
+  eps: 0.00000001
+  warmup_steps: 500
+  gradient_clip_norm: 1.0
+  amp: true
+  ema_decay: 0.999
+  log_every_steps: 20
+  checkpoint_every_steps: 25000
+  resume_from: null
