@@ -5,7 +5,11 @@ set -Eeuo pipefail
 : "${POLICY_NAME:?POLICY_NAME must be set}"
 : "${HF_REPO_ID:?HF_REPO_ID must be set}"
 case "${POLICY_NAME}" in
-    dp_beaver_enc|dp_beaver_near)
+    dp_beaver_enc)
+        wandb_run_id="nxxwem8z"
+        ;;
+    dp_beaver_near)
+        wandb_run_id="dquog6xu"
         ;;
     *)
         echo "Unsupported local policy: ${POLICY_NAME}" >&2
@@ -24,12 +28,20 @@ cd "${repo_root}"
 export PYTHONUNBUFFERED=1
 
 if [[ ! -f "${output_dir}/last.pt" ]]; then
+    resume_args=()
+    latest_checkpoint="$(find "${output_dir}" -maxdepth 1 -type f -name "${POLICY_NAME}_step_*.pt" -print | sort | tail -1)"
+    if [[ -n "${latest_checkpoint}" ]]; then
+        echo "Resuming ${POLICY_NAME} from ${latest_checkpoint}"
+        resume_args=(--resume-from "${latest_checkpoint}")
+    fi
     set -o pipefail
     "${python_bin}" -m policies.realman_beaver.train \
         --config "policies/realman_beaver/configs/${POLICY_NAME}.yaml" \
+        "${resume_args[@]}" \
         --val-episodes 50-74 \
         --wandb-project AIRO-Doffy-WRM-Grasp \
         --wandb-run-name "WRM_grasp_cylinder_different_sizes_lero/${POLICY_NAME}-local" \
+        --wandb-run-id "${wandb_run_id}" \
         --dataset-root "${dataset_root}" \
         --dataset-repo-id WRM_grasp_cylinder_different_sizes_lero \
         --device cuda:0 \

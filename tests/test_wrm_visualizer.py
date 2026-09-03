@@ -22,6 +22,9 @@ class CapturingAxis:
     def set_title(self, value, **_kwargs):
         self.title = str(value)
 
+    def tick_params(self, **_kwargs):
+        pass
+
 
 class CapturingArtist:
     def __init__(self):
@@ -36,11 +39,28 @@ class CapturingCanvas:
         pass
 
 
+class CapturingColorbar:
+    def __init__(self):
+        self.ax = CapturingAxis()
+
+    def set_label(self, *_args, **_kwargs):
+        pass
+
+    def set_ticks(self, *_args, **_kwargs):
+        pass
+
+
 class CapturingFigure:
     def __init__(self):
         self.canvas = CapturingCanvas()
 
     def suptitle(self, *_args, **_kwargs):
+        pass
+
+    def colorbar(self, *_args, **_kwargs):
+        return CapturingColorbar()
+
+    def text(self, *_args, **_kwargs):
         pass
 
 
@@ -100,6 +120,8 @@ class WrmVisualizerTest(unittest.TestCase):
         status = np.zeros((9, 4, 4), dtype=np.uint8)
         distance[0, 0, :4] = [100.0, 200.0, 300.0, np.nan]
         status[0, 0, :4] = [5, 9, 5, 5]
+        distance[0, 1, 0] = 0.0
+        status[0, 1, 0] = 5
         distance[1, 0, 0] = 999.0
         status[1, 0, 0] = 1
         sample = TeleopSample(
@@ -116,40 +138,50 @@ class WrmVisualizerTest(unittest.TestCase):
 
         dashboard._update_beaver(sample)
 
-        self.assertIn("avg 200.0 mm", dashboard.beaver_axes[0].title)
+        self.assertIn("min 0.0 mm", dashboard.beaver_axes[0].title)
+        self.assertIn("avg 150.0 mm", dashboard.beaver_axes[0].title)
         self.assertIn("avg --", dashboard.beaver_axes[1].title)
         self.assertEqual(
             int(np.ma.count(dashboard.beaver_artists[0].data)),
             3,
         )
 
-    def test_beaver_zero_distance_reserves_magenta_under_colour(self):
+    def test_beaver_colormap_blue_ramp_within_400mm(self):
         dashboard = TeleopDashboard.__new__(TeleopDashboard)
         dashboard.beaver_layout = tuple((0, slot) for slot in range(9))
-        dashboard.beaver_max_mm = 2500.0
+        dashboard.beaver_max_mm = 400.0
         dashboard.beaver_axes = []
         dashboard.beaver_artists = []
         dashboard._build_beaver_figure()
         try:
             for artist in dashboard.beaver_artists:
                 cmap = artist.get_cmap()
-                # Invalid pixels keep the original masked grey.
+                # Invalid pixels keep the masked slate grey.
                 np.testing.assert_allclose(cmap.get_bad(), to_rgba("#343c49"))
-                # The wire encodes positive distances in 10 mm increments,
-                # so every valid positive reading stays in the normal range
-                # and only a zero can fall into the under-range slot.
-                self.assertGreater(artist.norm.vmin, 0.0)
-                self.assertLessEqual(artist.norm.vmin, 10.0)
-                # The reserved under-range colour is conspicuous magenta.
+                # Beyond the 400 mm focus zone everything is uniform grey.
+                np.testing.assert_allclose(cmap.get_over(), to_rgba("#6e6e6e"))
                 np.testing.assert_allclose(
-                    cmap.get_under(), (1.0, 0.0, 1.0, 1.0)
+                    cmap(artist.norm(401.0)), to_rgba("#6e6e6e")
                 )
+                # A valid zero reading (contact) is flagged red via the
+                # under-range slot; the wire encodes positive distances in
+                # 10 mm increments, so nothing valid falls between 0 and 5.
+                self.assertEqual(artist.norm.vmin, 5.0)
+                self.assertEqual(artist.norm.vmax, 400.0)
+                np.testing.assert_allclose(cmap.get_under(), to_rgba("#ff1a1a"))
                 np.testing.assert_allclose(
-                    cmap(artist.norm(0.0)), (1.0, 0.0, 1.0, 1.0)
+                    cmap(artist.norm(0.0)), to_rgba("#ff1a1a")
                 )
-                # A 10 mm reading stays on the turbo_r scale.
-                self.assertGreaterEqual(artist.norm(10.0), 0.0)
-                self.assertLessEqual(artist.norm(10.0), 1.0)
+                # 10-400 mm: 40 ten-mm bins, every one blue (blue channel
+                # dominates red).
+                self.assertEqual(len(cmap.colors), 40)
+                for color in cmap.colors:
+                    self.assertGreater(color[2], color[0])
+                # Near is light, far is dark.
+                self.assertGreater(
+                    np.sum(cmap(artist.norm(10.0))),
+                    np.sum(cmap(artist.norm(400.0))),
+                )
         finally:
             plt.close(dashboard.beaver_fig)
 

@@ -1,0 +1,34 @@
+{
+  "name": "airo-doffy-wrm-codex-selection",
+  "description": "WRM_codex 100-train/25-validation episode-stratified architecture-selection run",
+  "request": {
+    "resources": {
+      "gpus": 1,
+      "cpus": 8,
+      "cpuMemoryGb": 32,
+      "clusterId": 12
+    },
+    "docker": {
+      "image": "ramantalwarnr2/mt-lerobot:latest",
+      "command": [
+        "bash",
+        "-lc",
+        "set -Eeuo pipefail; stage_dir=/tmp/airo_wrm_codex_stage; for attempt in $(seq 1 900); do if [ -f \"${stage_dir}/READY\" ]; then exec bash \"${stage_dir}/run-wrm-codex-gpulab.sh\" selection; fi; sleep 2; done; echo 'Timed out waiting for staged WRM_codex inputs' >&2; exit 2"
+      ],
+      "environment": {
+        "WANDB_MODE": "offline"
+      },
+      "storage": [
+        {
+          "hostPath": "/project_ghent",
+          "containerPath": "/project_ghent"
+        }
+      ],
+      "portMappings": []
+    },
+    "scheduling": {
+      "interactive": false,
+      "maxDuration": "3 days"
+    }
+  }
+}

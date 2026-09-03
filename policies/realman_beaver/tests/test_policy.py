@@ -162,6 +162,37 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(actions.shape, (2, 8, 7))
         self.assertTrue(torch.isfinite(actions).all())
 
+    def test_rdp_key4_decoder_ignores_unselected_sensors(self) -> None:
+        config = tiny_config("rdp_like")
+        config.rdp.beaver_sensors = ("01", "02", "10", "11")
+        config.validate()
+        policy = build_policy(
+            config,
+            ObservationNormalizer.identity(),
+            LatentNormalizer.identity(config.rdp.latent_dim),
+        ).eval()
+        encoder = policy.tokenizer.beaver_encoder
+
+        self.assertEqual(encoder.sensor_index.tolist(), [1, 2, 5, 6])
+        self.assertEqual(encoder.sensor_embedding.shape[0], 4)
+        distance = torch.randn(2, 8, 9, 4, 4)
+        present = torch.ones(2, 8, 9)
+        baseline = encoder(distance, present)
+
+        changed = distance.clone()
+        changed[:, :, [0, 3, 4, 7, 8]] += 1000.0
+        torch.testing.assert_close(encoder(changed, present), baseline)
+
+        changed = distance.clone()
+        changed[:, :, 1] += 1000.0
+        self.assertFalse(torch.equal(encoder(changed, present), baseline))
+
+    def test_rdp_sensor_subset_validation(self) -> None:
+        config = tiny_config("rdp_like")
+        config.rdp.beaver_sensors = ("01", "01")
+        with self.assertRaisesRegex(ValueError, "unique physical sensor names"):
+            config.validate()
+
     def test_fm_and_fm_beaver_use_flow_matching(self) -> None:
         for variant in ("fm", "fm_beaver"):
             with self.subTest(variant=variant):

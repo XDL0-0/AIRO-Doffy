@@ -1,0 +1,32 @@
+{
+  "name": "airo-doffy-download-wrm-models-c5",
+  "description": "Ephemeral SSH bridge for downloading completed WRM_delta and WRM_adaptive checkpoints",
+  "request": {
+    "resources": {
+      "gpus": 0,
+      "cpus": 1,
+      "cpuMemoryGb": 4,
+      "clusterId": 5
+    },
+    "docker": {
+      "image": "ramantalwarnr2/mt-lerobot:latest",
+      "command": [
+        "bash",
+        "-lc",
+        "set -Eeuo pipefail; echo 'checkpoint download bridge ready'; sleep 7200"
+      ],
+      "environment": {},
+      "storage": [
+        {
+          "hostPath": "/project_ghent",
+          "containerPath": "/project_ghent"
+        }
+      ],
+      "portMappings": []
+    },
+    "scheduling": {
+      "interactive": false,
+      "maxDuration": "2 hours"
+    }
+  }
+}

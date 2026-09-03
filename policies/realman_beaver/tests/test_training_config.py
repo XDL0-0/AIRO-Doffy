@@ -11,7 +11,11 @@ import pyarrow.parquet as pq
 import torch
 
 from policies.realman_beaver.configuration import DatasetConfig, RealmanBeaverConfig
-from policies.realman_beaver.dataset import ObservationNormalizer, episode_split
+from policies.realman_beaver.dataset import (
+    ObservationNormalizer,
+    episode_split,
+    fit_key4_pca,
+)
 from policies.realman_beaver.train import (
     _WANDB_METRIC_KINDS,
     _WANDB_POLICY_METRICS,
@@ -80,6 +84,54 @@ class TrainingConfigTest(unittest.TestCase):
         torch.testing.assert_close(normalizer.action_offset, torch.ones(7))
         torch.testing.assert_close(normalizer.action_scale, torch.ones(7))
 
+    def test_key4_pca_uses_only_training_episodes_and_normalized_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "data" / "chunk-000").mkdir(parents=True)
+            distances = []
+            episode_indices = []
+            for episode, millimetres in ((0, [0.0, 300.0] * 4), (1, [3000.0] * 8)):
+                for distance in millimetres:
+                    distances.append(
+                        [[[distance for _ in range(4)] for _ in range(4)] for _ in range(9)]
+                    )
+                    episode_indices.append(episode)
+            present = [[1.0] * 9 for _ in distances]
+            status = [
+                [[[5 for _ in range(4)] for _ in range(4)] for _ in range(9)]
+                for _ in distances
+            ]
+            pq.write_table(
+                pa.table(
+                    {
+                        "observation.beaver.distance_mm": distances,
+                        "observation.beaver.present": present,
+                        "observation.beaver.target_status": status,
+                        "episode_index": episode_indices,
+                    }
+                ),
+                root / "data" / "chunk-000" / "file-000.parquet",
+            )
+            config = RealmanBeaverConfig()
+            config.dataset.root = str(root)
+            config.model.variant = "dp_beaver_key4_pca"
+            config.model.beaver_feature_dim = 16
+
+            training_only = fit_key4_pca(config, [0])
+            leaked = fit_key4_pca(config, [0, 1])
+
+        torch.testing.assert_close(
+            training_only["mean"][:, :16], torch.full((4, 16), 0.5)
+        )
+        self.assertLess(leaked["mean"][:, :16].mean().item(), 0.5)
+        self.assertTrue(torch.isfinite(training_only["basis"]).all())
+        self.assertTrue(
+            torch.all(
+                (training_only["explained_variance_ratio"] >= 0.0)
+                & (training_only["explained_variance_ratio"] <= 1.0)
+            )
+        )
+
     @patch("policies.realman_beaver.train.wandb")
     def test_wandb_uses_independent_stage_steps(self, wandb: Mock) -> None:
         wandb.run = object()
@@ -102,8 +154,11 @@ class TrainingConfigTest(unittest.TestCase):
         variants = (
             "original_dp",
             "dp_beaver",
+            "dp_beaver_closure",
             "dp_beaver_enc",
             "dp_beaver_near",
+            "dp_beaver_key4",
+            "dp_beaver_key4_pca",
             "fm",
             "fm_beaver",
         )

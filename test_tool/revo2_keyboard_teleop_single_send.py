@@ -547,7 +547,7 @@ class Revo2Teleop:
                     self.grab()
                     continue
 
-                if key == "3":
+                if key == "0":
                     self.notcool()
                     continue
 

@@ -21,15 +21,30 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from policies.realman_beaver.configuration import (
+    ADAPTIVE_BEAVER_VARIANT,
+    ANTIGRAVITY_BEAVER_VARIANT,
+    BEAVER_CLOSURE_VARIANT,
+    CLAUDE_BEAVER_VARIANT,
+    COMPETITION_BEAVER_VARIANTS,
+    DELTA_BEAVER_VARIANT,
+    HISTORY_BEAVER_VARIANTS,
+    QWEN_BEAVER_VARIANT,
+    RELATIVE_ACTION_VARIANTS,
     STRUCTURED_BEAVER_DP_VARIANTS,
+    TEMPORAL_BEAVER_VARIANT,
+    WRAP_BEAVER_VARIANTS,
     RealmanBeaverConfig,
     load_config,
 )
 from policies.realman_beaver.dataset import (
+    BottleStratifiedBatchSampler,
     LatentNormalizer,
     ObservationNormalizer,
     RealmanPolicyDataset,
+    bottle_id_from_episode,
     episode_split,
+    fit_key4_pca,
+    history_beaver_sensor_names,
 )
 from policies.realman_beaver.modeling import (
     RDPPolicy,
@@ -45,7 +60,13 @@ POLICY_TRAINER_VARIANTS = frozenset(
     {
         "original_dp",
         "dp_beaver",
+        BEAVER_CLOSURE_VARIANT,
         *STRUCTURED_BEAVER_DP_VARIANTS,
+        TEMPORAL_BEAVER_VARIANT,
+        DELTA_BEAVER_VARIANT,
+        ADAPTIVE_BEAVER_VARIANT,
+        *COMPETITION_BEAVER_VARIANTS,
+        *WRAP_BEAVER_VARIANTS,
         "fm",
         "fm_beaver",
     }
@@ -201,7 +222,16 @@ def _make_loader(
     device: torch.device,
     shuffle: bool,
     seed: int,
+    batch_sampler=None,
 ) -> DataLoader:
+    if batch_sampler is not None:
+        return DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            num_workers=workers,
+            pin_memory=device.type == "cuda",
+            persistent_workers=workers > 0,
+        )
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -514,6 +544,8 @@ def train(config: RealmanBeaverConfig) -> Path:
             wandb.init(
                 project=config.training.wandb_project,
                 name=config.training.wandb_run_name or config.model.variant,
+                id=config.training.wandb_run_id,
+                resume="must" if config.training.wandb_run_id else None,
                 dir=str(output_dir),
                 config=wandb_config,
             )
@@ -524,11 +556,15 @@ def train(config: RealmanBeaverConfig) -> Path:
             print(f"wandb: logging to {wandb.run.url}")
         except Exception as exc:  # W&B must never block training
             print(f"wandb: init failed, continuing without W&B: {exc}")
+            if os.environ.get("WANDB_REQUIRED") == "1":
+                raise RuntimeError(
+                    f"WANDB_REQUIRED=1 but wandb.init failed: {exc}"
+                ) from exc
 
     train_episodes, val_episodes = episode_split(config.dataset)
-    normalizer = ObservationNormalizer.from_lerobot_dataset(
-        config, train_episodes
-    ).to(device)
+    normalizer = ObservationNormalizer.from_lerobot_dataset(config, train_episodes).to(
+        device
+    )
     print(
         f"variant={config.model.variant} device={device} "
         f"train_episodes={len(train_episodes)} val_episodes={len(val_episodes)}"
@@ -543,6 +579,22 @@ def train(config: RealmanBeaverConfig) -> Path:
             if val_episodes
             else None
         )
+        train_batch_sampler = None
+        if config.dataset.stratified_bottle_batch:
+            train_batch_sampler = BottleStratifiedBatchSampler(
+                bottle_id_from_episode(
+                    train_dataset.episode_index,
+                    config.dataset.episodes_per_bottle,
+                ),
+                config.training.batch_size,
+                seed=config.training.seed,
+            )
+            print(
+                "stratified_bottle_batch="
+                f"groups={len(train_batch_sampler.groups)} "
+                f"base={train_batch_sampler.base} extra={train_batch_sampler.extra} "
+                f"batches={len(train_batch_sampler)}"
+            )
         train_loader = _make_loader(
             train_dataset,
             config.training.batch_size,
@@ -550,6 +602,7 @@ def train(config: RealmanBeaverConfig) -> Path:
             device,
             True,
             config.training.seed,
+            batch_sampler=train_batch_sampler,
         )
         val_loader = (
             _make_loader(
@@ -563,7 +616,104 @@ def train(config: RealmanBeaverConfig) -> Path:
             if val_dataset
             else None
         )
-        policy = build_policy(config, normalizer).to(device)
+        policy = build_policy(config, normalizer)
+        if (
+            config.model.variant in HISTORY_BEAVER_VARIANTS
+            and config.model.variant not in WRAP_BEAVER_VARIANTS
+        ):
+            if not normalizer.has_temporal_beaver_statistics:
+                raise RuntimeError(
+                    f"{config.model.variant} requires train-split Beaver "
+                    "normalization statistics"
+                )
+            if config.model.variant in {
+                TEMPORAL_BEAVER_VARIANT,
+                ANTIGRAVITY_BEAVER_VARIANT,
+                QWEN_BEAVER_VARIANT,
+            }:
+                policy.set_temporal_statistics(
+                    p5=normalizer.beaver_temporal_p5,
+                    p95=normalizer.beaver_temporal_p95,
+                    median=normalizer.beaver_temporal_median,
+                )
+            if config.model.variant == CLAUDE_BEAVER_VARIANT:
+                if not normalizer.has_action_delta_statistics:
+                    raise RuntimeError(
+                        "WRM_claude requires train-split action delta scales"
+                    )
+                policy.set_claude_statistics(
+                    p5=normalizer.beaver_temporal_p5,
+                    p95=normalizer.beaver_temporal_p95,
+                    median=normalizer.beaver_temporal_median,
+                    action_delta_scale=normalizer.action_delta_scale,
+                )
+                print(
+                    "claude_train_only_action_delta_scales="
+                    + ",".join(
+                        f"joint{index}:{scale:.6f}"
+                        for index, scale in enumerate(
+                            normalizer.action_delta_scale.detach().cpu().tolist()
+                        )
+                    )
+                )
+            sensor_names = history_beaver_sensor_names(config.model)
+            sensor_statistics = zip(
+                sensor_names,
+                normalizer.beaver_temporal_p5.detach().cpu().tolist(),
+                normalizer.beaver_temporal_p95.detach().cpu().tolist(),
+                normalizer.beaver_temporal_median.detach().cpu().tolist(),
+            )
+            print(
+                f"{config.model.variant}_beaver_train_only_statistics="
+                + ",".join(
+                    f"{sensor}:p5={p5:.3f}:p95={p95:.3f}:median={median:.3f}"
+                    for sensor, p5, p95, median in sensor_statistics
+                )
+            )
+        if config.model.variant in RELATIVE_ACTION_VARIANTS:
+            if not normalizer.has_delta_action_statistics:
+                raise RuntimeError(
+                    f"{config.model.variant} requires train-split relative-action "
+                    "normalization statistics"
+                )
+            print(
+                f"{config.model.variant}_delta_action_train_only_statistics="
+                + ",".join(
+                    f"joint{i}:offset={offset:.4f}:scale={scale:.4f}"
+                    for i, (offset, scale) in enumerate(
+                        zip(
+                            normalizer.delta_action_offset.detach().cpu().tolist(),
+                            normalizer.delta_action_scale.detach().cpu().tolist(),
+                        )
+                    )
+                )
+            )
+        if config.model.variant == DELTA_BEAVER_VARIANT:
+            if not normalizer.has_delta_beaver_statistics:
+                raise RuntimeError(
+                    "WRM_delta requires train-split Beaver normalization statistics"
+                )
+            sensor_statistics = zip(
+                config.model.beaver_delta_sensors,
+                normalizer.beaver_delta_mean.detach().cpu().tolist(),
+                normalizer.beaver_delta_std.detach().cpu().tolist(),
+            )
+            print(
+                "delta_beaver_train_only_statistics="
+                + ",".join(
+                    f"{sensor}:mean={mean:.3f}:std={std:.3f}"
+                    for sensor, mean, std in sensor_statistics
+                )
+            )
+        if config.model.variant == "dp_beaver_key4_pca":
+            pca_statistics = fit_key4_pca(config, train_episodes)
+            policy.beaver_encoder.set_pca_statistics(**pca_statistics)
+            explained = policy.beaver_encoder.pca_explained_variance_ratio.sum(dim=-1)
+            print(
+                "key4_pca_train_only_explained_variance="
+                + ",".join(f"{value:.6f}" for value in explained.tolist())
+            )
+        policy = policy.to(device)
         _train_stage(
             kind=config.model.variant,
             config=config,
@@ -733,6 +883,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output-dir", help="Override training.output_dir")
     parser.add_argument(
+        "--resume-from",
+        help="Resume a direct policy trainer from a matching checkpoint",
+    )
+    parser.add_argument(
         "--val-fraction", type=float, help="Override dataset.val_fraction"
     )
     parser.add_argument(
@@ -762,6 +916,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--wandb-run-name", help="W&B run name (defaults to the model variant)"
     )
+    parser.add_argument(
+        "--wandb-run-id",
+        help="Resume the existing W&B run with this exact ID",
+    )
     return parser
 
 
@@ -777,6 +935,7 @@ def main() -> None:
         (args.num_workers, "num_workers"),
         (args.max_steps, "max_steps"),
         (args.output_dir, "output_dir"),
+        (args.resume_from, "resume_from"),
     ):
         if argument is not None:
             setattr(config.training, attribute, argument)
@@ -803,6 +962,8 @@ def main() -> None:
         config.training.wandb_project = args.wandb_project
     if args.wandb_run_name is not None:
         config.training.wandb_run_name = args.wandb_run_name
+    if args.wandb_run_id is not None:
+        config.training.wandb_run_id = args.wandb_run_id
     config.validate()
     checkpoint = train(config)
     print(f"checkpoint={checkpoint}")

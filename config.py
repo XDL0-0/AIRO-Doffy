@@ -216,8 +216,8 @@ class Config:
     FORCE_ENABLE: bool = True
     FORCE_PORT: int = 8012
     FORCE_SEND_RATE: float = 30.0
-    # RealMan 基座 → Unity 显示: (X前,Y左,Z上) → (X右,Y前,Z上)
-    # 独立于 VR_TO_ROBOT_AXES, 使 RGB=XYZ 校准时 TCP 显示即对齐.
+    # RealMan base -> Unity display: (X_forward, Y_left, Z_up) -> (X_right, Y_forward, Z_up)
+    # Independent of VR_TO_ROBOT_AXES, so TCP display aligns when RGB=XYZ calibration is active.
     TCP_DISPLAY_AXES: np.ndarray = field(
         default_factory=lambda: np.array([[0, -1, 0], [0, 0, 1], [1, 0, 0]], dtype=float)
     )
@@ -259,7 +259,9 @@ class Config:
         (0, 0), (0, 1), (0, 2), (0, 3), (0, 4),
         (1, 0), (1, 1), (1, 2), (1, 3),
     )
-    BEAVER_VISUALIZER_MAX_MM: int = 2500
+    # Blue focus zone of the Beaver distance visualizer: 0-400 mm in 10 mm
+    # steps (light = near, dark = far); anything beyond is uniform grey.
+    BEAVER_VISUALIZER_MAX_MM: int = 400
 
     def __post_init__(self):
         from airo_spatial_algebra.se3 import SE3Container

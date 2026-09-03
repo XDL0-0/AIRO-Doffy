@@ -1,0 +1,32 @@
+{
+  "name": "airo-doffy-structured-beaver-serial-c12-bs32",
+  "description": "Sequential batch-size-32 training of dp_beaver_enc, dp_beaver_near, and dp_beaver_near_gate with 8 data workers, W&B, and HF uploads",
+  "request": {
+    "resources": {
+      "gpus": 1,
+      "cpus": 8,
+      "cpuMemoryGb": 32,
+      "clusterId": 12
+    },
+    "docker": {
+      "image": "ramantalwarnr2/mt-lerobot:latest",
+      "command": [
+        "bash",
+        "-lc",
+        "set -Eeuo pipefail; stage_dir=/tmp/airo_structured_beaver_stage; ready_file=${stage_dir}/READY; echo 'Waiting for authenticated source/data staging...'; for stage_attempt in $(seq 1 900); do if [ -f \"${ready_file}\" ]; then exec bash \"${stage_dir}/run-structured-beaver-sequential-cluster12-bs32.sh\"; fi; sleep 2; done; echo 'Timed out waiting for staged inputs' >&2; exit 2"
+      ],
+      "environment": {},
+      "storage": [
+        {
+          "hostPath": "/project_ghent",
+          "containerPath": "/project_ghent"
+        }
+      ],
+      "portMappings": []
+    },
+    "scheduling": {
+      "interactive": false,
+      "maxDuration": "3 days"
+    }
+  }
+}

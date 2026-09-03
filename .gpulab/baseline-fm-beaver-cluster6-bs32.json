@@ -1,0 +1,15 @@
+{
+  "name": "airo-doffy-fm-beaver-c6-bs32",
+  "description": "Cluster6 batch-size-32 fm_beaver training with 1 GPU, 4 CPUs, W&B, and HF upload",
+  "request": {
+    "resources": {"gpus": 1, "cpus": 4, "cpuMemoryGb": 32, "clusterId": 6},
+    "docker": {
+      "image": "ramantalwarnr2/mt-lerobot:latest",
+      "command": ["bash", "-lc", "set -Eeuo pipefail; stage_dir=/tmp/airo_baseline_cluster6_stage; ready_file=${stage_dir}/READY; for stage_attempt in $(seq 1 900); do if [ -f \"${ready_file}\" ]; then exec bash \"${stage_dir}/run-baseline-policy-single-cluster6-bs32.sh\"; fi; sleep 2; done; echo 'Timed out waiting for staged inputs' >&2; exit 2"],
+      "environment": {"POLICY_NAME": "fm_beaver", "HF_REPO_ID": "IXDLI/AIRO-Doffy-WRM-Grasp-fm-beaver"},
+      "storage": [{"hostPath": "/project_ghent", "containerPath": "/project_ghent"}],
+      "portMappings": []
+    },
+    "scheduling": {"interactive": false, "maxDuration": "3 days"}
+  }
+}

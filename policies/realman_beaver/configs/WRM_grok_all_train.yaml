@@ -1,0 +1,79 @@
+dataset:
+  root: /home/yuyuan/AIRO-Doffy/datasets/WRM_grasp_cylinder_different_sizes_lero_tightness
+  repo_id: WRM_grasp_cylinder_different_sizes_lero_tightness
+  video_backend: pyav
+  fps: 24
+  image_key: observation.images.camera_0
+  image_shape: [3, 480, 640]
+  state_key: observation.state
+  action_key: action
+  beaver_distance_key: observation.beaver.distance_mm
+  beaver_present_key: observation.beaver.present
+  beaver_status_key: observation.beaver.target_status
+  grasp_state_key: tightness
+  beaver_sensor_layout: ["00", "01", "02", "03", "04", "10", "11", "12", "13"]
+  beaver_valid_statuses: [5, 9]
+  val_fraction: 0.0
+  val_episodes: null
+  split_seed: 42
+  normalization_source: parquet
+  distance_max_mm: 2550.0
+  normalization_floor: 0.0001
+
+model:
+  variant: WRM_grok
+  state_dim: 7
+  action_dim: 7
+  beaver_shape: [9, 4, 4]
+  beaver_grok_sensors: ["01", "02", "10", "11"]
+  beaver_grok_history_steps: 12
+  beaver_grok_motion_delta_steps: 6
+  beaver_grok_near_scales_mm: [50.0, 150.0, 300.0]
+  beaver_grok_wrap_threshold_mm: 150.0
+  beaver_grok_min_near_sensors: 2
+  beaver_grok_feature_dim: 64
+  beaver_grok_enclosure_dim: 16
+  beaver_grok_frame_hidden_dim: 64
+  beaver_grok_frame_feature_dim: 32
+  beaver_grok_temporal_hidden_dim: 64
+  beaver_grok_phase_hidden_dim: 64
+  beaver_grok_phase_loss_weight: 0.3
+  beaver_grok_smooth_loss_weight: 0.05
+  beaver_grok_hold_loss_weight: 0.2
+  beaver_grok_overlap_blend_steps: 4
+  beaver_grok_noise_std_mm: 3.0
+  n_obs_steps: 2
+  horizon: 16
+  n_action_steps: 8
+  vision_backbone: resnet18
+  resize_shape: [128, 128]
+  crop_ratio: 0.9
+  down_dims: [256, 512, 1024]
+  kernel_size: 5
+  n_groups: 8
+  flow_time_embed_dim: 128
+  flow_time_embedding_scale: 100.0
+  flow_num_inference_steps: 10
+  clip_sample_range: 1.0
+
+training:
+  output_dir: outputs/realman_beaver/WRM_grok_all_train
+  device: auto
+  seed: 42
+  batch_size: 32
+  num_workers: 8
+  epochs: 200
+  max_steps: 100000
+  learning_rate: 0.0001
+  weight_decay: 0.000001
+  betas: [0.95, 0.999]
+  eps: 0.00000001
+  warmup_steps: 500
+  gradient_clip_norm: 1.0
+  amp: true
+  ema_decay: 0.999
+  log_every_steps: 20
+  checkpoint_every_steps: 10000
+  resume_from: null
+  wandb_project: AIRO-Doffy-WRM-Grasp
+  wandb_run_name: WRM_grasp_cylinder_different_sizes_lero_tightness/WRM_grok-all125

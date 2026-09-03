@@ -1,0 +1,45 @@
+dataset:
+  root: /home/yuyuan/AIRO-Doffy/datasets/WRM_grasp_cylinder_different_sizes_lero_tightness
+  repo_id: WRM_grasp_cylinder_different_sizes_lero_tightness
+  fps: 24
+  image_key: observation.images.camera_0
+  image_shape: [3, 480, 640]
+  state_key: observation.state
+  action_key: action
+  beaver_distance_key: observation.beaver.distance_mm
+  beaver_present_key: observation.beaver.present
+  beaver_status_key: observation.beaver.target_status
+  grasp_state_key: tightness
+  beaver_sensor_layout: ["00", "01", "02", "03", "04", "10", "11", "12", "13"]
+  beaver_valid_statuses: [5, 9]
+
+model:
+  variant: WRM_lobo_monitor
+  state_dim: 7
+  action_dim: 7
+  beaver_shape: [9, 4, 4]
+  beaver_wrap_history_steps: 12
+  beaver_wrap_sensors: ["01", "02", "10", "11"]
+  beaver_wrap_j3_sensors: ["01", "02"]
+  beaver_wrap_j4_sensors: ["10", "11"]
+  beaver_wrap_near_threshold_mm: 0.0
+  beaver_wrap_closing_scale_mm: 50.0
+  beaver_wrap_range_scale_mm: 300.0
+  beaver_wrap_stop_close_j3_wrap: 0.5
+  beaver_wrap_stop_close_j4_wrap: 0.5
+  beaver_wrap_stop_close_wrap: 0.5
+  beaver_monitor_hidden_dims: [64, 32]
+  beaver_monitor_lag_steps: [0]
+  beaver_monitor_proximity_scales_mm: [50.0, 150.0, 300.0]
+  beaver_monitor_range_scale_mm: 300.0
+  beaver_monitor_dropout: 0.05
+  n_obs_steps: 2
+  horizon: 16
+  n_action_steps: 8
+
+training:
+  seed: 42
+  batch_size: 512
+  learning_rate: 0.0003
+  weight_decay: 0.00001
+  amp: true

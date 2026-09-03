@@ -1,0 +1,38 @@
+{
+  "name": "airo-doffy-wrm_grok-select-c14-bs32",
+  "description": "WRM_grok official 100/25 architecture-selection run, batch size 32, W&B, and HF upload",
+  "request": {
+    "resources": {
+      "gpus": 1,
+      "cpus": 8,
+      "cpuMemoryGb": 32,
+      "clusterId": 14
+    },
+    "docker": {
+      "image": "ramantalwarnr2/mt-lerobot:latest",
+      "command": [
+        "bash",
+        "-lc",
+        "set -Eeuo pipefail; stage_dir=/tmp/airo_wrm_competition_select_stage; ready_file=${stage_dir}/READY; echo 'Waiting for authenticated source/data staging...'; for stage_attempt in $(seq 1 900); do if [ -f \"${ready_file}\" ]; then exec bash \"${stage_dir}/run-wrm-competition-select.sh\"; fi; sleep 2; done; echo 'Timed out waiting for staged inputs' >&2; exit 2"
+      ],
+      "environment": {
+        "WRM_VARIANT": "WRM_grok",
+        "WRM_CONFIG": "policies/realman_beaver/configs/WRM_grok.yaml",
+        "HF_REPO_ID": "IXDLI/AIRO-Doffy-WRM-Grasp-WRM-grok",
+        "UPLOAD_HF": "1",
+        "BLACKWELL_TORCH": "1"
+      },
+      "storage": [
+        {
+          "hostPath": "/project_ghent",
+          "containerPath": "/project_ghent"
+        }
+      ],
+      "portMappings": []
+    },
+    "scheduling": {
+      "interactive": false,
+      "maxDuration": "3 days"
+    }
+  }
+}

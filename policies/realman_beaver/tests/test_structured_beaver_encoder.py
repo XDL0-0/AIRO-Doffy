@@ -5,7 +5,7 @@ import unittest
 import torch
 from torch import nn
 
-from policies.realman_beaver.modules import StructuredBeaverEncoder
+from policies.realman_beaver.modules import Key4BeaverEncoder, StructuredBeaverEncoder
 
 
 def beaver_inputs(
@@ -167,6 +167,69 @@ class StructuredBeaverEncoderTest(unittest.TestCase):
             StructuredBeaverEncoder("dp_beaver_enc", output_dim=0)
         with self.assertRaises(ValueError):
             StructuredBeaverEncoder("dp_beaver_near", near_threshold_mm=0.0)
+
+
+class Key4BeaverEncoderTest(unittest.TestCase):
+    def test_learned_key4_concatenates_independent_tokens_then_layer_norm(self) -> None:
+        encoder = Key4BeaverEncoder("dp_beaver_key4")
+        distance, status, present = beaver_inputs(2, 3)
+
+        output, values = encoder(
+            distance, status, present, return_intermediates=True
+        )
+
+        self.assertEqual(values["sensor_input"].shape, (2, 3, 4, 33))
+        self.assertEqual(values["sensor_tokens"].shape, (2, 3, 4, 32))
+        self.assertEqual(values["concatenated"].shape, (2, 3, 128))
+        self.assertEqual(output.shape, (2, 3, 128))
+        self.assertEqual(len(encoder.sensor_mlps), 4)
+        self.assertLess(output.mean(dim=-1).abs().max().item(), 1e-6)
+
+    def test_only_physical_slots_01_02_10_11_affect_key4(self) -> None:
+        encoder = Key4BeaverEncoder("dp_beaver_key4").eval()
+        distance, status, present = beaver_inputs(1)
+        baseline = encoder(distance, status, present)
+        distance[:, [0, 3, 4, 7, 8]] = 2500.0
+        status[:, [0, 3, 4, 7, 8]] = 255
+
+        torch.testing.assert_close(encoder(distance, status, present), baseline)
+
+    def test_pca_input_uses_normalized_proximity_not_raw_millimetres(self) -> None:
+        encoder = Key4BeaverEncoder("dp_beaver_key4_pca")
+        distance, status, present = beaver_inputs(1)
+        distance[0, 1, 0] = torch.tensor([0.0, 150.0, 300.0, 3000.0])
+        status[0, 1, 0, 3] = 255
+
+        _, values = encoder(distance, status, present, return_intermediates=True)
+
+        torch.testing.assert_close(
+            values["proximity"][0, 0, 0],
+            torch.tensor([1.0, 0.5, 0.0, 0.0]),
+        )
+        self.assertGreaterEqual(values["pca_input"].min().item(), 0.0)
+        self.assertLessEqual(values["pca_input"].max().item(), 1.0)
+
+    def test_pca_statistics_are_fixed_buffers_and_round_trip(self) -> None:
+        encoder = Key4BeaverEncoder("dp_beaver_key4_pca")
+        generator = torch.Generator().manual_seed(7)
+        mean = torch.rand(4, 32, generator=generator)
+        scale = torch.rand(4, 32, generator=generator) + 0.1
+        basis = torch.rand(4, 4, 32, generator=generator)
+        ratio = torch.rand(4, 4, generator=generator)
+        encoder.set_pca_statistics(
+            mean=mean,
+            scale=scale,
+            basis=basis,
+            explained_variance_ratio=ratio,
+        )
+        restored = Key4BeaverEncoder("dp_beaver_key4_pca")
+        restored.load_state_dict(encoder.state_dict())
+
+        self.assertTrue(restored.pca_fitted.item())
+        torch.testing.assert_close(restored.pca_mean, mean)
+        torch.testing.assert_close(restored.pca_scale, scale)
+        torch.testing.assert_close(restored.pca_basis, basis)
+        self.assertFalse(any("pca_" in name for name, _ in encoder.named_parameters()))
 
 
 if __name__ == "__main__":

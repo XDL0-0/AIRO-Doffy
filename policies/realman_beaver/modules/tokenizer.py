@@ -10,20 +10,38 @@ from torch import Tensor, nn
 
 
 class BeaverFrameEncoder(nn.Module):
-    """Encode each 9 x 4 x 4 Beaver frame while preserving sensor identity."""
+    """Encode a selected subset of each Beaver frame with sensor identity."""
 
-    def __init__(self, n_sensors: int, output_dim: int) -> None:
+    def __init__(
+        self,
+        n_sensors: int,
+        output_dim: int,
+        sensor_indices: tuple[int, ...] | None = None,
+    ) -> None:
         super().__init__()
+        selected = tuple(range(n_sensors)) if sensor_indices is None else sensor_indices
+        if not selected or len(set(selected)) != len(selected):
+            raise ValueError("sensor_indices must contain unique sensor slots")
+        if any(index < 0 or index >= n_sensors for index in selected):
+            raise ValueError("sensor_indices contains an out-of-range sensor slot")
         sensor_dim = max(16, output_dim // 2)
         self.n_sensors = n_sensors
+        self.selected_sensors = len(selected)
+        self.register_buffer(
+            "sensor_index",
+            torch.tensor(selected, dtype=torch.long),
+            persistent=False,
+        )
         self.sensor_mlp = nn.Sequential(
             nn.Linear(17, sensor_dim),
             nn.SiLU(),
             nn.Linear(sensor_dim, sensor_dim),
         )
-        self.sensor_embedding = nn.Parameter(torch.randn(n_sensors, sensor_dim) * 0.02)
+        self.sensor_embedding = nn.Parameter(
+            torch.randn(self.selected_sensors, sensor_dim) * 0.02
+        )
         self.output = nn.Sequential(
-            nn.Linear(n_sensors * sensor_dim, output_dim),
+            nn.Linear(self.selected_sensors * sensor_dim, output_dim),
             nn.SiLU(),
         )
 
@@ -36,6 +54,8 @@ class BeaverFrameEncoder(nn.Module):
             raise ValueError(
                 f"Present mask {present.shape} does not match distance {distance.shape}"
             )
+        distance = distance.index_select(-3, self.sensor_index)
+        present = present.index_select(-1, self.sensor_index)
         mask = present.to(distance.dtype).clamp(0.0, 1.0)
         sensor_input = torch.cat(
             (distance.flatten(start_dim=-2), mask.unsqueeze(-1)), dim=-1
@@ -63,6 +83,7 @@ class AsymmetricBeaverTokenizer(nn.Module):
         gru_layers: int,
         n_sensors: int,
         beaver_feature_dim: int,
+        sensor_indices: tuple[int, ...] | None = None,
     ) -> None:
         super().__init__()
         if downsample_ratio <= 0 or downsample_ratio & (downsample_ratio - 1):
@@ -91,7 +112,11 @@ class AsymmetricBeaverTokenizer(nn.Module):
         self.action_encoder = nn.Sequential(*encoder)
         self.latent_mean = nn.Conv1d(hidden_dim, latent_dim, kernel_size=1)
         self.latent_logvar = nn.Conv1d(hidden_dim, latent_dim, kernel_size=1)
-        self.beaver_encoder = BeaverFrameEncoder(n_sensors, beaver_feature_dim)
+        self.beaver_encoder = BeaverFrameEncoder(
+            n_sensors,
+            beaver_feature_dim,
+            sensor_indices=sensor_indices,
+        )
         self.decoder = nn.GRU(
             latent_dim + beaver_feature_dim,
             hidden_dim,

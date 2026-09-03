@@ -482,8 +482,12 @@ class BeaverReader:
                 utils.logger.warning("Beaver serial error: %s", exc)
             except Exception as exc:
                 # pyserial is imported lazily, so keep this thread optional.
-                self._publish_error(f"Beaver reader error: {exc}")
-                utils.logger.warning("Beaver reader error: %s", exc)
+                # close() may invalidate pyserial's file descriptor while a
+                # blocking read is finishing. That exception is expected on
+                # shutdown and should not be reported as a sensor failure.
+                if not self._stopped(stop_event):
+                    self._publish_error(f"Beaver reader error: {exc}")
+                    utils.logger.warning("Beaver reader error: %s", exc)
             finally:
                 serial_port = self._serial
                 self._serial = None

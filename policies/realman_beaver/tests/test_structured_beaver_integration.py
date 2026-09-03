@@ -21,9 +21,16 @@ from policies.realman_beaver.train import ExponentialMovingAverage
 
 
 def tiny_config(variant: str) -> RealmanBeaverConfig:
+    if variant == "dp_beaver_key4":
+        beaver_feature_dim = 128
+    elif variant == "dp_beaver_key4_pca":
+        beaver_feature_dim = 16
+    else:
+        beaver_feature_dim = 64
     config = RealmanBeaverConfig(
         model=ModelConfig(
             variant=variant,
+            beaver_feature_dim=beaver_feature_dim,
             n_obs_steps=2,
             horizon=8,
             n_action_steps=2,
@@ -163,19 +170,34 @@ class StructuredBeaverIntegrationTest(unittest.TestCase):
                     policy.native_policy.config.input_features[
                         "observation.state"
                     ].shape,
-                    (71,),
+                    (7 + config.model.beaver_feature_dim,),
                 )
 
                 batch = policy_batch()
-                self.assertEqual(policy._state(batch).shape, (2, 2, 71))
+                self.assertEqual(
+                    policy._state(batch).shape,
+                    (2, 2, 7 + config.model.beaver_feature_dim),
+                )
                 loss, metrics = policy.compute_loss(batch)
                 self.assertTrue(torch.isfinite(loss))
                 self.assertGreater(metrics["loss"], 0.0)
                 loss.backward()
 
-                self._assert_nonzero_gradient(policy, "beaver_encoder.sensor_mlp")
-                self._assert_nonzero_gradient(policy, "beaver_encoder.sensor_embedding")
-                self._assert_nonzero_gradient(policy, "beaver_encoder.fusion_mlp")
+                if variant == "dp_beaver_key4":
+                    self._assert_nonzero_gradient(policy, "beaver_encoder.sensor_mlps")
+                    self._assert_nonzero_gradient(policy, "beaver_encoder.layer_norm")
+                elif variant == "dp_beaver_key4_pca":
+                    self._assert_nonzero_gradient(policy, "beaver_encoder.layer_norm")
+                    self.assertFalse(
+                        any(
+                            "pca_" in name
+                            for name, _ in policy.beaver_encoder.named_parameters()
+                        )
+                    )
+                else:
+                    self._assert_nonzero_gradient(policy, "beaver_encoder.sensor_mlp")
+                    self._assert_nonzero_gradient(policy, "beaver_encoder.sensor_embedding")
+                    self._assert_nonzero_gradient(policy, "beaver_encoder.fusion_mlp")
                 if variant == "dp_beaver_near_gate":
                     self._assert_nonzero_gradient(policy, "beaver_encoder.gate_mlp")
 
@@ -213,6 +235,29 @@ class StructuredBeaverIntegrationTest(unittest.TestCase):
             restored.beaver_encoder.sensor_embedding,
             ema.shadow["beaver_encoder.sensor_embedding"],
         )
+
+    def test_checkpoint_loader_accepts_pre_temporal_structured_checkpoint(self) -> None:
+        config = tiny_config("dp_beaver_near_gate")
+        policy = build_policy(config, ObservationNormalizer.identity())
+        legacy_state = policy.state_dict()
+        for name in ObservationNormalizer._TEMPORAL_BUFFER_NAMES:
+            legacy_state.pop(f"normalizer.{name}")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.pt"
+            torch.save(
+                {
+                    "kind": config.model.variant,
+                    "config": config.to_dict(),
+                    "model": legacy_state,
+                    "ema": {},
+                },
+                path,
+            )
+            restored = load_policy(path)
+
+        self.assertIsInstance(restored, StructuredBeaverDPPolicy)
+        self.assertFalse(restored.normalizer.has_temporal_beaver_statistics)
 
     def test_online_select_action_accepts_one_structured_beaver_frame(self) -> None:
         source = policy_batch(batch_size=1)
@@ -256,12 +301,21 @@ class StructuredBeaverIntegrationTest(unittest.TestCase):
         gated = build_policy(
             tiny_config("dp_beaver_near_gate"), ObservationNormalizer.identity()
         ).beaver_encoder
+        key4 = build_policy(
+            tiny_config("dp_beaver_key4"), ObservationNormalizer.identity()
+        ).beaver_encoder
+        pca = build_policy(
+            tiny_config("dp_beaver_key4_pca"), ObservationNormalizer.identity()
+        ).beaver_encoder
         self.assertFalse(enc.uses_near)
         self.assertFalse(hasattr(enc, "gate_mlp"))
         self.assertTrue(near.uses_near)
         self.assertFalse(hasattr(near, "gate_mlp"))
         self.assertTrue(gated.uses_near)
         self.assertIsNotNone(gated.gate_mlp)
+        self.assertFalse(key4.uses_pca)
+        self.assertTrue(pca.uses_pca)
+        self.assertFalse(any("pca_" in name for name, _ in pca.named_parameters()))
 
     def _assert_nonzero_gradient(
         self, policy: StructuredBeaverDPPolicy, name_fragment: str

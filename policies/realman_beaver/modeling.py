@@ -20,13 +20,38 @@ from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
 from torch import Tensor, nn
 
 from policies.realman_beaver.configuration import (
+    ADAPTIVE_BEAVER_VARIANT,
+    ANTIGRAVITY_BEAVER_VARIANT,
+    BEAVER_CLOSURE_VARIANT,
+    CLAUDE_BEAVER_VARIANT,
+    CODEX_BEAVER_VARIANT,
+    DELTA_BEAVER_VARIANT,
+    GROK_BEAVER_VARIANT,
+    KEY4_BEAVER_DP_VARIANTS,
+    QWEN_BEAVER_VARIANT,
     STRUCTURED_BEAVER_DP_VARIANTS,
+    TEMPORAL_BEAVER_VARIANT,
+    WRAP_BEAVER_VARIANT,
+    WRAP_BEAVER_VARIANTS,
+    WRAP_DELTA_BEAVER_VARIANT,
+    WRAP_MONITOR_BEAVER_VARIANTS,
     RealmanBeaverConfig,
 )
-from policies.realman_beaver.dataset import LatentNormalizer, ObservationNormalizer
+from policies.realman_beaver.dataset import (
+    LatentNormalizer,
+    ObservationNormalizer,
+    resolve_beaver_sensor_indices,
+)
+from policies.realman_beaver.modeling_wrm_antigravity import AntigravityDPPolicy
+from policies.realman_beaver.modeling_wrm_claude import ClaudeBeaverDPPolicy
+from policies.realman_beaver.modeling_wrm_qwen import QwenBeaverDPPolicy
 from policies.realman_beaver.modules import (
+    AdaptiveBeaverEncoder,
     AsymmetricBeaverTokenizer,
+    DeltaBeaverEncoder,
+    Key4BeaverEncoder,
     StructuredBeaverEncoder,
+    TemporalBeaverEncoder,
 )
 
 
@@ -49,6 +74,24 @@ def build_native_diffusion_config(
             state_dim = model.state_dim + 153
         elif model.variant in STRUCTURED_BEAVER_DP_VARIANTS:
             state_dim = model.state_dim + model.beaver_feature_dim
+        elif model.variant == TEMPORAL_BEAVER_VARIANT:
+            state_dim = model.state_dim + model.beaver_temporal_feature_dim + 1
+        elif model.variant in WRAP_BEAVER_VARIANTS:
+            state_dim = (
+                model.state_dim
+                + model.beaver_wrap_feature_dim
+                + model.beaver_wrap_enclosure_dim
+            )
+        elif model.variant == DELTA_BEAVER_VARIANT:
+            state_dim = model.state_dim + model.beaver_delta_feature_dim
+        elif model.variant == ADAPTIVE_BEAVER_VARIANT:
+            state_dim = 2 * model.state_dim + model.beaver_adaptive_feature_dim + 1
+        elif model.variant == ANTIGRAVITY_BEAVER_VARIANT:
+            state_dim = 2 * model.state_dim + model.beaver_antigravity_feature_dim + 2
+        elif model.variant == CLAUDE_BEAVER_VARIANT:
+            state_dim = 2 * model.state_dim + model.claude_feature_dim + 1
+        elif model.variant == QWEN_BEAVER_VARIANT:
+            state_dim = 3 * model.state_dim + model.beaver_temporal_feature_dim + 1
         else:
             state_dim = model.state_dim
         action_dim = model.action_dim
@@ -111,7 +154,16 @@ def build_flow_network_config(
         down_dims = rfm.latent_down_dims
         kernel_size = rfm.latent_kernel_size
     else:
-        state_dim = model.state_dim + (153 if model.variant == "fm_beaver" else 0)
+        if model.variant == "fm_beaver":
+            state_dim = model.state_dim + 153
+        elif model.variant == GROK_BEAVER_VARIANT:
+            from policies.realman_beaver.modules.grok_phase_encoder import (
+                grok_conditioned_state_dim,
+            )
+
+            state_dim = grok_conditioned_state_dim(model)
+        else:
+            state_dim = model.state_dim
         action_dim = model.action_dim
         horizon = model.horizon
         n_action_steps = model.n_action_steps
@@ -259,6 +311,11 @@ class FlowMatchingModel(nn.Module):
 def build_tokenizer(config: RealmanBeaverConfig) -> AsymmetricBeaverTokenizer:
     model = config.model
     reactive = config.rdp if model.variant == "rdp_like" else config.rfm
+    sensor_indices = None
+    if model.variant == "rdp_like" and config.rdp.beaver_sensors is not None:
+        sensor_indices = resolve_beaver_sensor_indices(
+            config.dataset, config.rdp.beaver_sensors
+        )
     return AsymmetricBeaverTokenizer(
         action_dim=model.action_dim,
         latent_dim=reactive.latent_dim,
@@ -267,6 +324,7 @@ def build_tokenizer(config: RealmanBeaverConfig) -> AsymmetricBeaverTokenizer:
         hidden_dim=reactive.tokenizer_hidden_dim,
         gru_layers=reactive.tokenizer_layers,
         n_sensors=model.beaver_shape[0],
+        sensor_indices=sensor_indices,
         beaver_feature_dim=reactive.beaver_feature_dim,
     )
 
@@ -363,17 +421,30 @@ class StructuredBeaverDPPolicy(nn.Module):
         self.config = config
         self.normalizer = normalizer
         model, dataset = config.model, config.dataset
-        self.beaver_encoder = StructuredBeaverEncoder(
-            variant=model.variant,
-            n_sensors=model.beaver_shape[0],
-            distance_max_mm=dataset.distance_max_mm,
-            valid_statuses=dataset.beaver_valid_statuses,
-            output_dim=model.beaver_feature_dim,
-            sensor_hidden_dim=model.beaver_sensor_hidden_dim,
-            sensor_feature_dim=model.beaver_sensor_feature_dim,
-            near_threshold_mm=model.beaver_near_threshold_mm,
-            gate_hidden_dim=model.beaver_gate_hidden_dim,
-        )
+        if model.variant in KEY4_BEAVER_DP_VARIANTS:
+            self.beaver_encoder = Key4BeaverEncoder(
+                variant=model.variant,
+                n_sensors=model.beaver_shape[0],
+                key_sensor_indices=model.beaver_key_sensor_indices,
+                valid_statuses=dataset.beaver_valid_statuses,
+                output_dim=model.beaver_feature_dim,
+                sensor_hidden_dim=model.beaver_sensor_hidden_dim,
+                sensor_feature_dim=model.beaver_sensor_feature_dim,
+                near_threshold_mm=model.beaver_near_threshold_mm,
+                pca_components=model.beaver_pca_components,
+            )
+        else:
+            self.beaver_encoder = StructuredBeaverEncoder(
+                variant=model.variant,
+                n_sensors=model.beaver_shape[0],
+                distance_max_mm=dataset.distance_max_mm,
+                valid_statuses=dataset.beaver_valid_statuses,
+                output_dim=model.beaver_feature_dim,
+                sensor_hidden_dim=model.beaver_sensor_hidden_dim,
+                sensor_feature_dim=model.beaver_sensor_feature_dim,
+                near_threshold_mm=model.beaver_near_threshold_mm,
+                gate_hidden_dim=model.beaver_gate_hidden_dim,
+            )
         self.native_policy = DiffusionPolicy(build_native_diffusion_config(config))
 
     def _state(self, batch: dict[str, Tensor]) -> Tensor:
@@ -437,6 +508,768 @@ class StructuredBeaverDPPolicy(nn.Module):
         self.last_replanned = True
         self.last_chunk_step = 0
         self._chunk_len = 0
+        self.native_policy.reset()
+
+
+class TemporalBeaverDPPolicy(nn.Module):
+    """Native DP with causal four-sensor temporal Beaver conditioning."""
+
+    def __init__(
+        self, config: RealmanBeaverConfig, normalizer: ObservationNormalizer
+    ) -> None:
+        super().__init__()
+        if config.model.variant != TEMPORAL_BEAVER_VARIANT:
+            raise ValueError(
+                f"TemporalBeaverDPPolicy requires model.variant="
+                f"{TEMPORAL_BEAVER_VARIANT}"
+            )
+        self.config = config
+        self.normalizer = normalizer
+        model, dataset = config.model, config.dataset
+        sensor_indices = resolve_beaver_sensor_indices(
+            dataset, model.beaver_temporal_sensors
+        )
+        self.beaver_encoder = TemporalBeaverEncoder(
+            n_sensors=model.beaver_shape[0],
+            sensor_indices=sensor_indices,
+            history_steps=model.beaver_history_steps,
+            valid_statuses=dataset.beaver_valid_statuses,
+            frame_hidden_dim=model.beaver_frame_hidden_dim,
+            frame_feature_dim=model.beaver_frame_feature_dim,
+            temporal_hidden_dim=model.beaver_temporal_hidden_dim,
+            output_dim=model.beaver_temporal_feature_dim,
+        )
+        if not normalizer.has_temporal_beaver_statistics:
+            raise ValueError(
+                "WRM_temporal requires per-sensor robust normalization statistics "
+                "fitted from explicit training episodes"
+            )
+        fitted_indices = tuple(
+            int(index) for index in normalizer.beaver_temporal_sensor_indices.tolist()
+        )
+        if fitted_indices != tuple(sensor_indices):
+            raise ValueError(
+                "Temporal Beaver normalizer sensor order does not match "
+                f"configured sensors: {fitted_indices} != {tuple(sensor_indices)}"
+            )
+        self.beaver_encoder.set_normalization_statistics(
+            p5=normalizer.beaver_temporal_p5,
+            p95=normalizer.beaver_temporal_p95,
+            median=normalizer.beaver_temporal_median,
+        )
+        self.grasp_state_head = nn.Sequential(
+            nn.Linear(model.beaver_temporal_feature_dim, 32),
+            nn.SiLU(),
+            nn.Linear(32, 1),
+        )
+        self.native_policy = DiffusionPolicy(build_native_diffusion_config(config))
+        self.reset()
+
+    @torch.no_grad()
+    def set_temporal_statistics(
+        self, *, p5: Tensor, p95: Tensor, median: Tensor
+    ) -> None:
+        """Install train-only robust Beaver statistics in checkpoint buffers."""
+        self.normalizer.set_temporal_beaver_statistics(
+            {
+                "p5": p5,
+                "p95": p95,
+                "median": median,
+                "sensor_indices": self.beaver_encoder.sensor_index,
+            }
+        )
+        self.beaver_encoder.set_normalization_statistics(p5=p5, p95=p95, median=median)
+
+    def _state_and_grasp_logit(
+        self, batch: dict[str, Tensor]
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        required = {
+            "beaver_history_distance",
+            "beaver_history_status",
+            "beaver_history_present",
+        }
+        missing = required - batch.keys()
+        if missing:
+            raise KeyError(
+                f"Temporal Beaver batch is missing history fields: {sorted(missing)}"
+            )
+        history_distance = batch["beaver_history_distance"]
+        history_status = batch["beaver_history_status"]
+        history_present = batch["beaver_history_present"]
+        if self.config.model.beaver_history_mode == "current":
+            history_distance = history_distance[..., -1:, :, :, :].expand_as(
+                history_distance
+            )
+            history_status = history_status[..., -1:, :, :, :].expand_as(
+                history_status
+            )
+            history_present = history_present[..., -1:, :].expand_as(
+                history_present
+            )
+        beaver_feature, encoder_intermediates = self.beaver_encoder(
+            history_distance,
+            history_status,
+            history_present,
+            return_intermediates=True,
+        )
+        sensor_tokens = encoder_intermediates["sensor_tokens"]
+        grasp_logit = self.grasp_state_head(beaver_feature).squeeze(-1)
+        grasp_probability = grasp_logit.sigmoid()
+        self.last_grasp_probability = float(grasp_probability.detach().mean())
+        self.last_beaver_feature_mean = float(beaver_feature.detach().mean())
+        self.last_beaver_feature_std = float(
+            beaver_feature.detach().std(unbiased=False)
+        )
+        self.last_sensor_token_std = {
+            sensor_name: float(
+                sensor_tokens[..., sensor_position, :].detach().std(unbiased=False)
+            )
+            for sensor_position, sensor_name in enumerate(
+                self.config.model.beaver_temporal_sensors
+            )
+        }
+        if not self.config.model.use_beaver_condition:
+            beaver_feature = torch.zeros_like(beaver_feature)
+        grasp_condition = grasp_probability.unsqueeze(-1)
+        if (
+            not self.config.model.use_beaver_condition
+            or not self.config.model.condition_on_grasp_probability
+        ):
+            grasp_condition = torch.zeros_like(grasp_condition)
+        conditioned_state = torch.cat(
+            (
+                self.normalizer.normalize_state(batch["state"]),
+                beaver_feature,
+                grasp_condition,
+            ),
+            dim=-1,
+        )
+        return conditioned_state, grasp_logit, beaver_feature, sensor_tokens
+
+    def _state(self, batch: dict[str, Tensor]) -> Tensor:
+        state, _, _, _ = self._state_and_grasp_logit(batch)
+        return state
+
+    def _prepare(
+        self,
+        batch: dict[str, Tensor],
+        include_action: bool,
+        *,
+        return_grasp_logit: bool = False,
+    ) -> dict[str, Tensor] | tuple[dict[str, Tensor], Tensor, Tensor, Tensor]:
+        state, grasp_logit, beaver_feature, sensor_tokens = self._state_and_grasp_logit(
+            batch
+        )
+        image = self.normalizer.normalize_image(batch["image"])
+        if not self.config.model.use_visual_condition:
+            image = torch.zeros_like(image)
+        prepared = {
+            OBS_STATE: state,
+            self.config.dataset.image_key: image,
+        }
+        if include_action:
+            prepared[ACTION] = self.normalizer.normalize_action(batch["action"])
+            prepared["action_is_pad"] = batch["action_is_pad"]
+        if return_grasp_logit:
+            return prepared, grasp_logit, beaver_feature, sensor_tokens
+        return prepared
+
+    def compute_loss(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict[str, float]]:
+        if "grasp_state" not in batch:
+            raise KeyError("Temporal Beaver training batch is missing grasp_state")
+        prepared, grasp_logit, beaver_feature, sensor_tokens = self._prepare(
+            batch, include_action=True, return_grasp_logit=True
+        )
+        diffusion_loss, _ = self.native_policy(prepared)
+        grasp_target = batch["grasp_state"].to(
+            device=grasp_logit.device, dtype=grasp_logit.dtype
+        )
+        if grasp_target.shape == (*grasp_logit.shape, 1):
+            grasp_target = grasp_target.squeeze(-1)
+        if grasp_target.shape != grasp_logit.shape:
+            raise ValueError(
+                f"grasp_state shape {tuple(grasp_target.shape)} must match temporal "
+                f"observations {tuple(grasp_logit.shape)}"
+            )
+        grasp_loss = F.binary_cross_entropy_with_logits(grasp_logit, grasp_target)
+        total_loss = (
+            diffusion_loss + self.config.model.beaver_grasp_loss_weight * grasp_loss
+        )
+        with torch.no_grad():
+            grasp_probability = grasp_logit.sigmoid()
+            grasp_accuracy = (
+                ((grasp_probability >= 0.5) == (grasp_target >= 0.5)).float().mean()
+            )
+        return total_loss, {
+            "loss": float(total_loss.detach()),
+            "diffusion_loss": float(diffusion_loss.detach()),
+            "grasp_loss": float(grasp_loss.detach()),
+            "grasp_accuracy": float(grasp_accuracy),
+            "grasp_positive_rate": float((grasp_target >= 0.5).float().mean()),
+            "predicted_grasp_positive_rate": float(
+                (grasp_probability >= 0.5).float().mean()
+            ),
+            "beaver_feature_std": float(beaver_feature.detach().std(unbiased=False)),
+            **{
+                f"beaver_sensor_{sensor_name}_token_std": float(
+                    sensor_tokens[..., sensor_position, :].detach().std(unbiased=False)
+                )
+                for sensor_position, sensor_name in enumerate(
+                    self.config.model.beaver_temporal_sensors
+                )
+            },
+        }
+
+    @torch.no_grad()
+    def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
+        prepared = self._prepare(batch, include_action=False)
+        prepared[OBS_IMAGES] = torch.stack(
+            [prepared[self.config.dataset.image_key]], dim=-4
+        )
+        normalized = self.native_policy.diffusion.generate_actions(prepared)
+        return self.normalizer.denormalize_action(normalized)
+
+    @torch.no_grad()
+    def predict_actions(self, batch: dict[str, Tensor]) -> Tensor:
+        return self.predict_action_chunk(batch)
+
+    def _append_online_history(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
+        signature = tuple(
+            batch[key].data_ptr()
+            for key in ("beaver_distance", "beaver_status", "beaver_present")
+        )
+        frame = {
+            "distance": batch["beaver_distance"],
+            "status": batch["beaver_status"],
+            "present": batch["beaver_present"],
+        }
+        if signature != self._last_online_frame_signature:
+            self._beaver_history.append(frame)
+            self._last_online_frame_signature = signature
+        frames = list(self._beaver_history)
+        padded_frames = [frames[0]] * (
+            self.config.model.beaver_history_steps - len(frames)
+        ) + frames
+        temporal_batch = dict(batch)
+        for output_key, frame_key in (
+            ("beaver_history_distance", "distance"),
+            ("beaver_history_status", "status"),
+            ("beaver_history_present", "present"),
+        ):
+            temporal_batch[output_key] = torch.stack(
+                [history_frame[frame_key] for history_frame in padded_frames],
+                dim=1,
+            )
+        return temporal_batch
+
+    @torch.no_grad()
+    def select_action(self, observation: dict[str, Tensor]) -> Tensor:
+        batch = _ensure_observation_batch(observation)
+        batch_size = batch["state"].shape[0]
+        if self._batch_size is not None and self._batch_size != batch_size:
+            self.reset()
+        self._batch_size = batch_size
+        temporal_batch = self._append_online_history(batch)
+
+        queue = getattr(self.native_policy, "_queues", None)
+        before = len(queue[ACTION]) if queue is not None and ACTION in queue else 0
+        replanned = before == 0
+        prepared = self._prepare(temporal_batch, include_action=False)
+        normalized = self.native_policy.select_action(prepared)
+        after = len(queue[ACTION]) if queue is not None and ACTION in queue else 0
+        if replanned:
+            self._chunk_len = after + 1
+        self.last_replanned = replanned
+        self.last_chunk_step = max(0, self._chunk_len - 1 - after)
+        return self.normalizer.denormalize_action(normalized)
+
+    def reset(self) -> None:
+        self._beaver_history: deque[dict[str, Tensor]] = deque(
+            maxlen=self.config.model.beaver_history_steps
+        )
+        self._batch_size: int | None = None
+        self._last_online_frame_signature: tuple[int, ...] | None = None
+        self.last_replanned = True
+        self.last_chunk_step = 0
+        self.last_grasp_probability = 0.0
+        self.last_beaver_feature_mean = 0.0
+        self.last_beaver_feature_std = 0.0
+        self.last_sensor_token_std = {
+            sensor_name: 0.0
+            for sensor_name in self.config.model.beaver_temporal_sensors
+        }
+        self._chunk_len = 0
+        self.native_policy.reset()
+
+
+class DeltaBeaverDPPolicy(nn.Module):
+    """Single native Diffusion Policy conditioned on current and t-k changes."""
+
+    def __init__(
+        self, config: RealmanBeaverConfig, normalizer: ObservationNormalizer
+    ) -> None:
+        super().__init__()
+        if config.model.variant != DELTA_BEAVER_VARIANT:
+            raise ValueError(f"DeltaBeaverDPPolicy requires {DELTA_BEAVER_VARIANT}")
+        self.config = config
+        self.normalizer = normalizer
+        model, dataset = config.model, config.dataset
+        sensor_indices = resolve_beaver_sensor_indices(
+            dataset, model.beaver_delta_sensors
+        )
+        if not normalizer.has_delta_beaver_statistics:
+            raise ValueError(
+                "WRM_delta requires per-sensor training-set normalization statistics"
+            )
+        fitted_indices = tuple(
+            int(index) for index in normalizer.beaver_delta_sensor_indices.tolist()
+        )
+        if fitted_indices != tuple(sensor_indices):
+            raise ValueError(
+                "WRM_delta normalizer sensor order does not match configured sensors: "
+                f"{fitted_indices} != {tuple(sensor_indices)}"
+            )
+        self.beaver_encoder = DeltaBeaverEncoder(
+            n_sensors=model.beaver_shape[0],
+            sensor_indices=sensor_indices,
+            valid_statuses=dataset.beaver_valid_statuses,
+            sensor_hidden_dim=model.beaver_delta_sensor_hidden_dim,
+            sensor_feature_dim=model.beaver_delta_sensor_feature_dim,
+            fusion_hidden_dim=model.beaver_delta_fusion_hidden_dim,
+            output_dim=model.beaver_delta_feature_dim,
+        )
+        self.beaver_encoder.set_normalization_statistics(
+            mean=normalizer.beaver_delta_mean,
+            std=normalizer.beaver_delta_std,
+        )
+        grasp_input_dim = model.beaver_delta_feature_dim + 2 * model.state_dim
+        self.grasp_state_head = nn.Sequential(
+            nn.Linear(grasp_input_dim, model.beaver_delta_grasp_hidden_dim),
+            nn.SiLU(),
+            nn.Linear(model.beaver_delta_grasp_hidden_dim, 1),
+        )
+        self.native_policy = DiffusionPolicy(build_native_diffusion_config(config))
+        self.reset()
+
+    def _state_and_grasp_logit(
+        self, batch: dict[str, Tensor]
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        required = {
+            "delta_q",
+            "beaver_distance",
+            "beaver_previous_distance",
+            "beaver_status",
+            "beaver_previous_status",
+            "beaver_present",
+            "beaver_previous_present",
+        }
+        missing = required - batch.keys()
+        if missing:
+            raise KeyError(f"WRM_delta batch is missing fields: {sorted(missing)}")
+        z_beaver = self.beaver_encoder(
+            batch["beaver_distance"],
+            batch["beaver_previous_distance"],
+            batch["beaver_status"],
+            batch["beaver_previous_status"],
+            batch["beaver_present"],
+            batch["beaver_previous_present"],
+        )
+        normalized_qpos = self.normalizer.normalize_state(batch["state"])
+        normalized_delta_q = batch["delta_q"] / self.normalizer.state_scale
+        grasp_input = torch.cat((z_beaver, normalized_qpos, normalized_delta_q), dim=-1)
+        grasp_logit = self.grasp_state_head(grasp_input).squeeze(-1)
+        self.last_grasp_probability = float(grasp_logit.detach().sigmoid().mean())
+        self.last_z_beaver_std = float(z_beaver.detach().std(unbiased=False))
+        conditioned_state = torch.cat((normalized_qpos, z_beaver), dim=-1)
+        return conditioned_state, grasp_logit, z_beaver
+
+    def _prepare(
+        self,
+        batch: dict[str, Tensor],
+        include_action: bool,
+        *,
+        return_auxiliary: bool = False,
+    ) -> dict[str, Tensor] | tuple[dict[str, Tensor], Tensor, Tensor]:
+        state, grasp_logit, z_beaver = self._state_and_grasp_logit(batch)
+        prepared = {
+            OBS_STATE: state,
+            self.config.dataset.image_key: self.normalizer.normalize_image(
+                batch["image"]
+            ),
+        }
+        if include_action:
+            prepared[ACTION] = self.normalizer.normalize_action(batch["action"])
+            prepared["action_is_pad"] = batch["action_is_pad"]
+        if return_auxiliary:
+            return prepared, grasp_logit, z_beaver
+        return prepared
+
+    def compute_loss(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict[str, float]]:
+        if "grasp_state" not in batch:
+            raise KeyError("WRM_delta training batch is missing grasp_state")
+        prepared, grasp_logit, z_beaver = self._prepare(
+            batch, include_action=True, return_auxiliary=True
+        )
+        diffusion_loss, _ = self.native_policy(prepared)
+        grasp_target = batch["grasp_state"].to(
+            device=grasp_logit.device, dtype=grasp_logit.dtype
+        )
+        if grasp_target.shape == (*grasp_logit.shape, 1):
+            grasp_target = grasp_target.squeeze(-1)
+        if grasp_target.shape != grasp_logit.shape:
+            raise ValueError(
+                f"grasp_state shape {tuple(grasp_target.shape)} must match "
+                f"grasp logits {tuple(grasp_logit.shape)}"
+            )
+        grasp_loss = F.binary_cross_entropy_with_logits(grasp_logit, grasp_target)
+        total_loss = diffusion_loss + self.config.model.lambda_grasp * grasp_loss
+        with torch.no_grad():
+            grasp_accuracy = (
+                ((grasp_logit.sigmoid() >= 0.5) == (grasp_target >= 0.5)).float().mean()
+            )
+        return total_loss, {
+            "loss": float(total_loss.detach()),
+            "diffusion_loss": float(diffusion_loss.detach()),
+            "grasp_loss": float(grasp_loss.detach()),
+            "grasp_accuracy": float(grasp_accuracy),
+            "z_beaver_std": float(z_beaver.detach().std(unbiased=False)),
+        }
+
+    @torch.no_grad()
+    def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
+        prepared = self._prepare(batch, include_action=False)
+        prepared[OBS_IMAGES] = torch.stack(
+            [prepared[self.config.dataset.image_key]], dim=-4
+        )
+        normalized = self.native_policy.diffusion.generate_actions(prepared)
+        return self.normalizer.denormalize_action(normalized)
+
+    @torch.no_grad()
+    def predict_actions(self, batch: dict[str, Tensor]) -> Tensor:
+        return self.predict_action_chunk(batch)
+
+    def _append_online_history(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
+        signature = tuple(
+            batch[key].data_ptr()
+            for key in ("state", "beaver_distance", "beaver_status", "beaver_present")
+        )
+        current = {
+            "state": batch["state"],
+            "distance": batch["beaver_distance"],
+            "status": batch["beaver_status"],
+            "present": batch["beaver_present"],
+        }
+        if signature != self._last_online_frame_signature:
+            self._delta_history.append(current)
+            self._last_online_frame_signature = signature
+        frames = list(self._delta_history)
+        previous = (
+            frames[0]
+            if len(frames) <= self.config.model.beaver_delta_steps
+            else frames[-self.config.model.beaver_delta_steps - 1]
+        )
+        delta_batch = dict(batch)
+        delta_batch["delta_q"] = batch["state"] - previous["state"]
+        delta_batch["beaver_previous_distance"] = previous["distance"]
+        delta_batch["beaver_previous_status"] = previous["status"]
+        delta_batch["beaver_previous_present"] = previous["present"]
+        return delta_batch
+
+    @torch.no_grad()
+    def select_action(self, observation: dict[str, Tensor]) -> Tensor:
+        batch = _ensure_observation_batch(observation)
+        batch_size = batch["state"].shape[0]
+        if self._batch_size is not None and self._batch_size != batch_size:
+            self.reset()
+        self._batch_size = batch_size
+        delta_batch = self._append_online_history(batch)
+        queue = getattr(self.native_policy, "_queues", None)
+        before = len(queue[ACTION]) if queue is not None and ACTION in queue else 0
+        replanned = before == 0
+        normalized = self.native_policy.select_action(
+            self._prepare(delta_batch, include_action=False)
+        )
+        after = len(queue[ACTION]) if queue is not None and ACTION in queue else 0
+        if replanned:
+            self._chunk_len = after + 1
+        self.last_replanned = replanned
+        self.last_chunk_step = max(0, self._chunk_len - 1 - after)
+        return self.normalizer.denormalize_action(normalized)
+
+    def reset(self) -> None:
+        self._delta_history: deque[dict[str, Tensor]] = deque(
+            maxlen=self.config.model.beaver_delta_steps + 1
+        )
+        self._batch_size: int | None = None
+        self._last_online_frame_signature: tuple[int, ...] | None = None
+        self._chunk_len = 0
+        self.last_replanned = True
+        self.last_chunk_step = 0
+        self.last_grasp_probability = 0.0
+        self.last_z_beaver_std = 0.0
+        self.native_policy.reset()
+
+
+class AdaptiveBeaverDPPolicy(nn.Module):
+    """Diffusion Policy conditioned on size-agnostic Beaver contact geometry."""
+
+    def __init__(
+        self, config: RealmanBeaverConfig, normalizer: ObservationNormalizer
+    ) -> None:
+        super().__init__()
+        if config.model.variant != ADAPTIVE_BEAVER_VARIANT:
+            raise ValueError(
+                f"AdaptiveBeaverDPPolicy requires {ADAPTIVE_BEAVER_VARIANT}"
+            )
+        self.config = config
+        self.normalizer = normalizer
+        model, dataset = config.model, config.dataset
+        sensor_indices = resolve_beaver_sensor_indices(
+            dataset, model.beaver_adaptive_sensors
+        )
+        if not normalizer.has_temporal_beaver_statistics:
+            raise ValueError(
+                "WRM_adaptive requires robust training-set Beaver statistics"
+            )
+        fitted_indices = tuple(
+            int(index) for index in normalizer.beaver_temporal_sensor_indices.tolist()
+        )
+        if fitted_indices != tuple(sensor_indices):
+            raise ValueError(
+                "WRM_adaptive normalizer sensor order does not match config: "
+                f"{fitted_indices} != {tuple(sensor_indices)}"
+            )
+        self.beaver_encoder = AdaptiveBeaverEncoder(
+            n_sensors=model.beaver_shape[0],
+            sensor_indices=sensor_indices,
+            history_steps=model.beaver_adaptive_history_steps,
+            lag_steps=model.beaver_adaptive_lag_steps,
+            valid_statuses=dataset.beaver_valid_statuses,
+            proximity_scales_mm=model.beaver_adaptive_proximity_scales_mm,
+            sensor_hidden_dim=model.beaver_adaptive_sensor_hidden_dim,
+            token_dim=model.beaver_adaptive_token_dim,
+            transformer_layers=model.beaver_adaptive_transformer_layers,
+            attention_heads=model.beaver_adaptive_attention_heads,
+            output_dim=model.beaver_adaptive_feature_dim,
+            noise_std_mm=model.beaver_adaptive_noise_std_mm,
+            pixel_dropout=model.beaver_adaptive_pixel_dropout,
+            sensor_dropout=model.beaver_adaptive_sensor_dropout,
+        )
+        self.beaver_encoder.set_normalization_statistics(
+            p5=normalizer.beaver_temporal_p5,
+            p95=normalizer.beaver_temporal_p95,
+            median=normalizer.beaver_temporal_median,
+        )
+        grasp_input_dim = model.beaver_adaptive_feature_dim + 2 * model.state_dim
+        self.grasp_state_head = nn.Sequential(
+            nn.Linear(grasp_input_dim, model.beaver_adaptive_grasp_hidden_dim),
+            nn.SiLU(),
+            nn.Linear(model.beaver_adaptive_grasp_hidden_dim, 1),
+        )
+        self.native_policy = DiffusionPolicy(build_native_diffusion_config(config))
+        self.reset()
+
+    def _state_and_grasp_logit(
+        self, batch: dict[str, Tensor]
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        required = {
+            "delta_q",
+            "beaver_history_distance",
+            "beaver_history_status",
+            "beaver_history_present",
+        }
+        missing = required - batch.keys()
+        if missing:
+            raise KeyError(f"WRM_adaptive batch is missing fields: {sorted(missing)}")
+        z_beaver, intermediates = self.beaver_encoder(
+            batch["beaver_history_distance"],
+            batch["beaver_history_status"],
+            batch["beaver_history_present"],
+            return_intermediates=True,
+        )
+        normalized_qpos = self.normalizer.normalize_state(batch["state"])
+        normalized_delta_q = batch["delta_q"] / self.normalizer.state_scale
+        grasp_input = torch.cat((z_beaver, normalized_qpos, normalized_delta_q), dim=-1)
+        grasp_logit = self.grasp_state_head(grasp_input).squeeze(-1)
+        grasp_probability = grasp_logit.sigmoid()
+        # Unlike WRM_delta, both motion delta and inferred contact state directly
+        # condition the action generator, so they can break replan limit cycles.
+        conditioned_state = torch.cat(
+            (
+                normalized_qpos,
+                normalized_delta_q,
+                z_beaver,
+                grasp_probability.unsqueeze(-1),
+            ),
+            dim=-1,
+        )
+        attention = intermediates["sensor_attention"]
+        entropy = -(attention.clamp_min(1e-8) * attention.clamp_min(1e-8).log()).sum(
+            dim=-1
+        )
+        proximity = intermediates["proximity"]
+        self.last_grasp_probability = float(grasp_probability.detach().mean())
+        self.last_z_beaver_std = float(z_beaver.detach().std(unbiased=False))
+        self.last_sensor_attention_entropy = float(entropy.detach().mean())
+        self.last_near_field_fraction = float(
+            (proximity[..., 0] > torch.exp(torch.tensor(-1.0, device=proximity.device)))
+            .float()
+            .mean()
+        )
+        self.last_sensor_attention = {
+            sensor_name: float(attention[..., sensor_position].detach().mean())
+            for sensor_position, sensor_name in enumerate(
+                self.config.model.beaver_adaptive_sensors
+            )
+        }
+        return conditioned_state, grasp_logit, z_beaver, attention
+
+    def _prepare(
+        self,
+        batch: dict[str, Tensor],
+        include_action: bool,
+        *,
+        return_auxiliary: bool = False,
+    ) -> dict[str, Tensor] | tuple[dict[str, Tensor], Tensor, Tensor, Tensor]:
+        state, grasp_logit, z_beaver, attention = self._state_and_grasp_logit(batch)
+        prepared = {
+            OBS_STATE: state,
+            self.config.dataset.image_key: self.normalizer.normalize_image(
+                batch["image"]
+            ),
+        }
+        if include_action:
+            prepared[ACTION] = self.normalizer.normalize_action(batch["action"])
+            prepared["action_is_pad"] = batch["action_is_pad"]
+        if return_auxiliary:
+            return prepared, grasp_logit, z_beaver, attention
+        return prepared
+
+    def compute_loss(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict[str, float]]:
+        if "grasp_state" not in batch:
+            raise KeyError("WRM_adaptive training batch is missing grasp_state")
+        prepared, grasp_logit, z_beaver, attention = self._prepare(
+            batch, include_action=True, return_auxiliary=True
+        )
+        diffusion_loss, _ = self.native_policy(prepared)
+        grasp_target = batch["grasp_state"].to(
+            device=grasp_logit.device, dtype=grasp_logit.dtype
+        )
+        if grasp_target.shape == (*grasp_logit.shape, 1):
+            grasp_target = grasp_target.squeeze(-1)
+        if grasp_target.shape != grasp_logit.shape:
+            raise ValueError(
+                f"grasp_state shape {tuple(grasp_target.shape)} must match "
+                f"grasp logits {tuple(grasp_logit.shape)}"
+            )
+        grasp_loss = F.binary_cross_entropy_with_logits(grasp_logit, grasp_target)
+        total_loss = (
+            diffusion_loss
+            + self.config.model.beaver_adaptive_grasp_loss_weight * grasp_loss
+        )
+        with torch.no_grad():
+            probability = grasp_logit.sigmoid()
+            accuracy = ((probability >= 0.5) == (grasp_target >= 0.5)).float().mean()
+            entropy = (
+                -(attention.clamp_min(1e-8) * attention.clamp_min(1e-8).log())
+                .sum(dim=-1)
+                .mean()
+            )
+        return total_loss, {
+            "loss": float(total_loss.detach()),
+            "diffusion_loss": float(diffusion_loss.detach()),
+            "grasp_loss": float(grasp_loss.detach()),
+            "grasp_accuracy": float(accuracy),
+            "grasp_positive_rate": float((grasp_target >= 0.5).float().mean()),
+            "predicted_grasp_positive_rate": float((probability >= 0.5).float().mean()),
+            "z_beaver_std": float(z_beaver.detach().std(unbiased=False)),
+            "sensor_attention_entropy": float(entropy),
+        }
+
+    @torch.no_grad()
+    def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
+        prepared = self._prepare(batch, include_action=False)
+        prepared[OBS_IMAGES] = torch.stack(
+            [prepared[self.config.dataset.image_key]], dim=-4
+        )
+        normalized = self.native_policy.diffusion.generate_actions(prepared)
+        return self.normalizer.denormalize_action(normalized)
+
+    @torch.no_grad()
+    def predict_actions(self, batch: dict[str, Tensor]) -> Tensor:
+        return self.predict_action_chunk(batch)
+
+    def _append_online_history(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
+        signature = tuple(
+            batch[key].data_ptr()
+            for key in ("state", "beaver_distance", "beaver_status", "beaver_present")
+        )
+        current = {
+            "state": batch["state"],
+            "distance": batch["beaver_distance"],
+            "status": batch["beaver_status"],
+            "present": batch["beaver_present"],
+        }
+        if signature != self._last_online_frame_signature:
+            self._adaptive_history.append(current)
+            self._last_online_frame_signature = signature
+        frames = list(self._adaptive_history)
+        history_steps = self.config.model.beaver_adaptive_history_steps
+        padded = [frames[0]] * (history_steps - len(frames)) + frames[-history_steps:]
+        delta_steps = self.config.model.beaver_adaptive_motion_delta_steps
+        previous = frames[0] if len(frames) <= delta_steps else frames[-delta_steps - 1]
+        adaptive_batch = dict(batch)
+        adaptive_batch["delta_q"] = batch["state"] - previous["state"]
+        for output_key, frame_key in (
+            ("beaver_history_distance", "distance"),
+            ("beaver_history_status", "status"),
+            ("beaver_history_present", "present"),
+        ):
+            adaptive_batch[output_key] = torch.stack(
+                [history_frame[frame_key] for history_frame in padded], dim=1
+            )
+        return adaptive_batch
+
+    @torch.no_grad()
+    def select_action(self, observation: dict[str, Tensor]) -> Tensor:
+        batch = _ensure_observation_batch(observation)
+        batch_size = batch["state"].shape[0]
+        if self._batch_size is not None and self._batch_size != batch_size:
+            self.reset()
+        self._batch_size = batch_size
+        adaptive_batch = self._append_online_history(batch)
+        queue = getattr(self.native_policy, "_queues", None)
+        before = len(queue[ACTION]) if queue is not None and ACTION in queue else 0
+        replanned = before == 0
+        normalized = self.native_policy.select_action(
+            self._prepare(adaptive_batch, include_action=False)
+        )
+        after = len(queue[ACTION]) if queue is not None and ACTION in queue else 0
+        if replanned:
+            self._chunk_len = after + 1
+        self.last_replanned = replanned
+        self.last_chunk_step = max(0, self._chunk_len - 1 - after)
+        return self.normalizer.denormalize_action(normalized)
+
+    def reset(self) -> None:
+        history_length = max(
+            self.config.model.beaver_adaptive_history_steps,
+            self.config.model.beaver_adaptive_motion_delta_steps + 1,
+        )
+        self._adaptive_history: deque[dict[str, Tensor]] = deque(maxlen=history_length)
+        self._batch_size: int | None = None
+        self._last_online_frame_signature: tuple[int, ...] | None = None
+        self._chunk_len = 0
+        self.last_replanned = True
+        self.last_chunk_step = 0
+        self.last_grasp_probability = 0.0
+        self.last_z_beaver_std = 0.0
+        self.last_sensor_attention_entropy = 0.0
+        self.last_near_field_fraction = 0.0
+        self.last_sensor_attention = {
+            sensor_name: 0.0
+            for sensor_name in self.config.model.beaver_adaptive_sensors
+        }
         self.native_policy.reset()
 
 
@@ -895,11 +1728,53 @@ def build_policy(
     config: RealmanBeaverConfig,
     normalizer: ObservationNormalizer,
     latent_normalizer: LatentNormalizer | None = None,
-) -> LeRobotDPPolicy | StructuredBeaverDPPolicy | RDPPolicy | FMPolicy | RFMPolicy:
+):
     if config.model.variant in {"original_dp", "dp_beaver"}:
         return LeRobotDPPolicy(config, normalizer)
+    if config.model.variant == BEAVER_CLOSURE_VARIANT:
+        from policies.realman_beaver.modeling_dp_beaver_closure import (
+            DPBeaverClosurePolicy,
+        )
+
+        return DPBeaverClosurePolicy(config, normalizer)
     if config.model.variant in STRUCTURED_BEAVER_DP_VARIANTS:
         return StructuredBeaverDPPolicy(config, normalizer)
+    if config.model.variant == TEMPORAL_BEAVER_VARIANT:
+        return TemporalBeaverDPPolicy(config, normalizer)
+    if config.model.variant == WRAP_BEAVER_VARIANT:
+        from policies.realman_beaver.modeling_wrm_wrap import WrapBeaverDPPolicy
+
+        return WrapBeaverDPPolicy(config, normalizer)
+    if config.model.variant in WRAP_MONITOR_BEAVER_VARIANTS:
+        from policies.realman_beaver.modeling_wrm_wrap_monitor import (
+            MonitorWrapBeaverDPPolicy,
+        )
+
+        return MonitorWrapBeaverDPPolicy(config, normalizer)
+    if config.model.variant == WRAP_DELTA_BEAVER_VARIANT:
+        from policies.realman_beaver.modeling_wrm_wrap_delta import (
+            WrapDeltaBeaverDPPolicy,
+        )
+
+        return WrapDeltaBeaverDPPolicy(config, normalizer)
+    if config.model.variant == DELTA_BEAVER_VARIANT:
+        return DeltaBeaverDPPolicy(config, normalizer)
+    if config.model.variant == ADAPTIVE_BEAVER_VARIANT:
+        return AdaptiveBeaverDPPolicy(config, normalizer)
+    if config.model.variant == ANTIGRAVITY_BEAVER_VARIANT:
+        return AntigravityDPPolicy(config, normalizer)
+    if config.model.variant == GROK_BEAVER_VARIANT:
+        from policies.realman_beaver.modeling_wrm_grok import WRMGrokPolicy
+
+        return WRMGrokPolicy(config, normalizer)
+    if config.model.variant == CODEX_BEAVER_VARIANT:
+        from policies.realman_beaver.codex_policy import WRMCodexPolicy
+
+        return WRMCodexPolicy(config, normalizer)
+    if config.model.variant == CLAUDE_BEAVER_VARIANT:
+        return ClaudeBeaverDPPolicy(config, normalizer)
+    if config.model.variant == QWEN_BEAVER_VARIANT:
+        return QwenBeaverDPPolicy(config, normalizer)
     if config.model.variant == "rdp_like":
         latent_normalizer = latent_normalizer or LatentNormalizer.identity(
             config.rdp.latent_dim

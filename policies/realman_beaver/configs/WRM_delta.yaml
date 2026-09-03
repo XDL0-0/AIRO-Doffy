@@ -1,0 +1,73 @@
+dataset:
+  root: /home/yuyuan/AIRO-Doffy/datasets/WRM_grasp_cylinder_different_sizes_lero_tightness
+  repo_id: WRM_grasp_cylinder_different_sizes_lero_tightness
+  video_backend: pyav
+  fps: 24
+  image_key: observation.images.camera_0
+  image_shape: [3, 480, 640]
+  state_key: observation.state
+  action_key: action
+  beaver_distance_key: observation.beaver.distance_mm
+  beaver_present_key: observation.beaver.present
+  beaver_status_key: observation.beaver.target_status
+  grasp_state_key: tightness
+  beaver_sensor_layout: ["00", "01", "02", "03", "04", "10", "11", "12", "13"]
+  beaver_valid_statuses: [5, 9]
+  val_fraction: 0.1
+  val_episodes: [50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74]
+  split_seed: 42
+  normalization_source: parquet
+  distance_max_mm: 2550.0
+  normalization_floor: 0.0001
+
+model:
+  variant: WRM_delta
+  state_dim: 7
+  action_dim: 7
+  beaver_shape: [9, 4, 4]
+  beaver_delta_steps: 6
+  beaver_delta_sensors: ["01", "02", "10", "11"]
+  beaver_delta_feature_dim: 64
+  beaver_delta_sensor_hidden_dim: 64
+  beaver_delta_sensor_feature_dim: 32
+  beaver_delta_fusion_hidden_dim: 128
+  beaver_delta_grasp_hidden_dim: 64
+  lambda_grasp: 0.2
+  n_obs_steps: 2
+  horizon: 16
+  n_action_steps: 8
+  vision_backbone: resnet18
+  resize_shape: [128, 128]
+  crop_ratio: 0.9
+  down_dims: [256, 512, 1024]
+  kernel_size: 5
+  n_groups: 8
+  diffusion_step_embed_dim: 128
+  noise_scheduler_type: DDPM
+  num_train_timesteps: 100
+  num_inference_steps: 100
+  beta_schedule: squaredcos_cap_v2
+  prediction_type: epsilon
+  clip_sample_range: 1.0
+
+training:
+  output_dir: outputs/realman_beaver/WRM_delta
+  device: auto
+  seed: 42
+  batch_size: 32
+  num_workers: 8
+  epochs: 200
+  max_steps: 100000
+  learning_rate: 0.0001
+  weight_decay: 0.000001
+  betas: [0.95, 0.999]
+  eps: 0.00000001
+  warmup_steps: 500
+  gradient_clip_norm: 1.0
+  amp: true
+  ema_decay: 0.999
+  log_every_steps: 20
+  checkpoint_every_steps: 25000
+  resume_from: null
+  wandb_project: AIRO-Doffy-WRM-Grasp
+  wandb_run_name: WRM_grasp_cylinder_different_sizes_lero_tightness/WRM_delta-cluster9-bs32

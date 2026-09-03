@@ -19,19 +19,54 @@ build/
 env/
 venv/
 
-# Project-specific
+# Model Weights and Checkpoints (NEVER upload to git)
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.onnx
+checkpoints/
+**/checkpoints/
+outputs/
+outputs/**
+
+# Datasets and Recordings (NEVER upload to git)
 datasets/
 datasets/**
+data/
+data/**
+*.parquet
 *.npz
+*.npy
+*.h5
 *.hdf5
 torque_log.npz
 eval_results/
+eval_dataset_plots/
+
+# Evaluation rollouts, videos, and logs
+policies/output/
+policies/output/**
+*.mp4
+*.avi
+*.log
+*.jsonl
+
+# Project-specific policies
 policies/*
 !policies/realman_beaver/
 !policies/realman_beaver/**
 policies/realman_beaver/**/__pycache__/
 policies/realman_beaver/**/*.py[cod]
-eval_dataset_plots/
+policies/realman_beaver/**/*.pt
+policies/realman_beaver/**/checkpoints/
+
+# Temporary and Scratch files
+scratch/
+scratch/**
+agent_deliverables/
+agent_tasks/
 upload_to_github.sh
 
 # Cache files and directories

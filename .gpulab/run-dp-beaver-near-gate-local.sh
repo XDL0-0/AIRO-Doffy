@@ -14,12 +14,20 @@ cd "${repo_root}"
 export PYTHONUNBUFFERED=1
 
 if [[ ! -f "${output_dir}/last.pt" ]]; then
+    resume_args=()
+    latest_checkpoint="$(find "${output_dir}" -maxdepth 1 -type f -name 'dp_beaver_near_gate_step_*.pt' -print | sort | tail -1)"
+    if [[ -n "${latest_checkpoint}" ]]; then
+        echo "Resuming dp_beaver_near_gate from ${latest_checkpoint}"
+        resume_args=(--resume-from "${latest_checkpoint}")
+    fi
     set -o pipefail
     "${python_bin}" -m policies.realman_beaver.train \
         --config policies/realman_beaver/configs/dp_beaver_near_gate.yaml \
+        "${resume_args[@]}" \
         --val-episodes 50-74 \
         --wandb-project AIRO-Doffy-WRM-Grasp \
         --wandb-run-name WRM_grasp_cylinder_different_sizes_lero/dp_beaver_near_gate-local \
+        --wandb-run-id nnlwfv1n \
         --dataset-root "${dataset_root}" \
         --dataset-repo-id WRM_grasp_cylinder_different_sizes_lero \
         --device cuda:0 \

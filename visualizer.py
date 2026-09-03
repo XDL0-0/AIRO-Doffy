@@ -113,6 +113,22 @@ class VisualizerHandle:
                 pass
 
 
+def _beaver_blue_ramp(n_steps: int = 40) -> list[tuple[float, float, float]]:
+    """Blue ramp for the Beaver distance focus zone.
+
+    Each step covers 10 mm of the focus zone (10-400 mm by default: the
+    nearest bin is light blue, the farthest dark blue). A zero-distance
+    contact reading is drawn red via the under-range slot, not as part of
+    this ramp.
+    """
+    near = np.array(matplotlib.colors.to_rgb("#d6eaff"))
+    far = np.array(matplotlib.colors.to_rgb("#081f66"))
+    return [
+        tuple(near + (far - near) * idx / max(1, n_steps - 1))
+        for idx in range(n_steps)
+    ]
+
+
 def _color_fader_rgb255(c1: str, c2: str, mix: float = 0.0) -> list[int]:
     mix = float(np.clip(mix, 0.0, 1.0))
     rgb1 = np.array(matplotlib.colors.to_rgb(c1))
@@ -316,7 +332,7 @@ class TeleopDashboard:
         show_tactile_panel: bool = True,
         beaver_enabled: bool = False,
         beaver_layout: tuple[tuple[int, int], ...] | None = None,
-        beaver_max_mm: float = 2500.0,
+        beaver_max_mm: float = 400.0,
     ) -> None:
         self.data_queue = data_queue
         self.command_queue = command_queue
@@ -622,14 +638,20 @@ class TeleopDashboard:
             3,
             figsize=(10.5, 9.0),
             facecolor="#080b10",
+            constrained_layout=True,
         )
         self.beaver_fig.canvas.manager.set_window_title("Beaver distance sensors")
-        cmap = plt.get_cmap("turbo_r").copy()
+        # Focus zone: 0-400 mm binned in 10 mm steps, light blue near to dark
+        # blue far, so distance within reach is readable at a glance. A valid
+        # zero reading (contact) is flagged red via the under-range slot; the
+        # wire encodes positive distances in 10 mm increments, so no valid
+        # positive reading can fall below the 5 mm vmin. Everything beyond
+        # the focus zone is uniformly grey (out of range); masked invalid
+        # cells keep the dark slate colour.
+        cmap = matplotlib.colors.ListedColormap(_beaver_blue_ramp())
         cmap.set_bad("#343c49")
-        # The wire encodes positive distances in 10 mm increments, so no
-        # valid positive reading can fall below 5 mm; the under-range slot
-        # is reserved to flag a valid zero-distance reading in bright magenta.
-        cmap.set_under("#ff00ff")
+        cmap.set_under("#ff1a1a")
+        cmap.set_over("#6e6e6e")
         layout = self.beaver_layout or tuple((0, idx) for idx in range(9))
         for slot, ax in enumerate(axes.flat):
             bus, sensor = layout[slot]
@@ -650,7 +672,26 @@ class TeleopDashboard:
             )
             self.beaver_axes.append(ax)
             self.beaver_artists.append(artist)
-        self.beaver_fig.tight_layout(rect=(0.02, 0.02, 0.98, 0.94))
+        # Reserve the bottom strip for the scheme legend text below.
+        self.beaver_fig.get_layout_engine().set(rect=(0.02, 0.04, 0.98, 0.98))
+        cbar = self.beaver_fig.colorbar(
+            self.beaver_artists[0],
+            ax=axes.ravel().tolist(),
+            extend="both",
+            pad=0.02,
+        )
+        cbar.set_label("distance (mm)", color="#e8f1ff", fontsize=10)
+        cbar.ax.tick_params(colors="#9fb0c5", labelsize=8)
+        cbar.set_ticks([10, 50, 100, 200, 300, 400])
+        self.beaver_fig.text(
+            0.5,
+            0.015,
+            "0 mm = red contact · 10-400 mm blue light→dark · >400 mm grey",
+            ha="center",
+            va="bottom",
+            color="#9fb0c5",
+            fontsize=9,
+        )
 
     @staticmethod
     def _camera_grid_shape(camera_slots: int) -> tuple[int, int]:
@@ -1004,11 +1045,13 @@ class TeleopDashboard:
             zip(self.beaver_axes, self.beaver_artists)
         ):
             slot_distance = distance[slot]
+            online = slot < present.size and bool(present[slot])
             # A zero distance with a valid status is a real reading: keep it
-            # unmasked so it takes the reserved under-range colour, while
+            # unmasked so it takes the reserved red contact colour, while
             # negative readings stay masked.
             valid = (
-                np.isin(status[slot], (5, 9))
+                online
+                & np.isin(status[slot], (5, 9))
                 & np.isfinite(slot_distance)
                 & (slot_distance >= 0)
             )
@@ -1019,15 +1062,19 @@ class TeleopDashboard:
                 if slot < len(self.beaver_layout)
                 else (0, slot)
             )
-            online = slot < present.size and present[slot]
             state = "stale" if stale and online else ("online" if online else "missing")
+            min_text = (
+                f"min {float(np.min(slot_distance[valid])):.1f} mm"
+                if np.any(valid)
+                else "min --"
+            )
             average_text = (
                 f"avg {float(np.mean(slot_distance[valid])):.1f} mm"
                 if np.any(valid)
                 else "avg --"
             )
             ax.set_title(
-                f"B{bus}S{sensor} · {state} · {average_text}",
+                f"B{bus}S{sensor} · {state} · {min_text} · {average_text}",
                 color="#47f091" if online and not stale else "#ff6b6b",
                 fontsize=10,
             )

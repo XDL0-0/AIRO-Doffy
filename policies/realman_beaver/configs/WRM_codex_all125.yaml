@@ -1,0 +1,70 @@
+dataset:
+  root: /home/yuyuan/AIRO-Doffy/datasets/WRM_grasp_cylinder_different_sizes_lero_tightness
+  repo_id: WRM_grasp_cylinder_different_sizes_lero_tightness
+  video_backend: pyav
+  fps: 24
+  image_key: observation.images.camera_0
+  image_shape: [3, 480, 640]
+  state_key: observation.state
+  action_key: action
+  beaver_distance_key: observation.beaver.distance_mm
+  beaver_present_key: observation.beaver.present
+  beaver_status_key: observation.beaver.target_status
+  grasp_state_key: tightness
+  beaver_sensor_layout: ["00", "01", "02", "03", "04", "10", "11", "12", "13"]
+  beaver_valid_statuses: [5, 9]
+  val_fraction: 0.0
+  val_episodes: null
+  split_seed: 42
+  normalization_source: parquet
+  distance_max_mm: 2550.0
+  normalization_floor: 0.0001
+
+model:
+  variant: WRM_codex
+  state_dim: 7
+  action_dim: 7
+  beaver_shape: [9, 4, 4]
+  codex_beaver_sensors: ["01", "02", "10", "11"]
+  codex_beaver_history_steps: 12
+  codex_token_dim: 128
+  codex_vision_width: 32
+  codex_contact_hidden_dim: 128
+  codex_fusion_layers: 2
+  codex_sensor_layers: 1
+  codex_decoder_layers: 2
+  codex_attention_heads: 4
+  codex_dropout: 0.1
+  codex_residual_scale: 2.0
+  codex_activity_scale_rad: 0.02
+  codex_activity_loss_weight: 0.2
+  codex_velocity_loss_weight: 0.1
+  codex_plan_ensemble: 3
+  codex_plan_decay: 0.7
+  n_obs_steps: 2
+  horizon: 16
+  n_action_steps: 4
+  resize_shape: [128, 128]
+  down_dims: [256, 512, 1024]
+
+training:
+  output_dir: outputs/realman_beaver/WRM_codex_all125
+  device: auto
+  seed: 42
+  batch_size: 32
+  num_workers: 8
+  epochs: 200
+  max_steps: 100000
+  learning_rate: 0.0001
+  weight_decay: 0.000001
+  betas: [0.95, 0.999]
+  eps: 0.00000001
+  warmup_steps: 500
+  gradient_clip_norm: 1.0
+  amp: true
+  ema_decay: 0.999
+  log_every_steps: 20
+  checkpoint_every_steps: 10000
+  resume_from: null
+  wandb_project: AIRO-Doffy-WRM-Grasp
+  wandb_run_name: WRM_grasp_cylinder_different_sizes_lero_tightness/WRM_codex-all125

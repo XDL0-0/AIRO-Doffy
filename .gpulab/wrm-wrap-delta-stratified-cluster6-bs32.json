@@ -1,0 +1,36 @@
+{
+  "name": "airo-doffy-wrm-wrap-delta-strat-c6-bs32",
+  "description": "WRM_wrap_delta controlled 100/25 ablation: replan-anchored delta-joint output with unchanged temporal Key4 encoder, stratified batches, and wrap/lift gate",
+  "request": {
+    "resources": {
+      "gpus": 1,
+      "cpus": 8,
+      "cpuMemoryGb": 32,
+      "clusterId": 6
+    },
+    "docker": {
+      "image": "ramantalwarnr2/mt-lerobot:latest",
+      "command": [
+        "bash",
+        "-lc",
+        "set -Eeuo pipefail; stage_dir=/tmp/airo_wrm_wrap_delta_cluster6_stage; ready_file=${stage_dir}/READY; echo 'Waiting for authenticated source/data staging...'; for stage_attempt in $(seq 1 900); do if [ -f \"${ready_file}\" ]; then exec bash \"${stage_dir}/run-wrm-wrap-delta-stratified-cluster6-bs32.sh\"; fi; sleep 2; done; echo 'Timed out waiting for staged inputs' >&2; exit 2"
+      ],
+      "environment": {
+        "HF_REPO_ID": "IXDLI/AIRO-Doffy-WRM-Grasp-WRM-wrap-delta",
+        "UPLOAD_HF": "1",
+        "WANDB_REQUIRED": "1"
+      },
+      "storage": [
+        {
+          "hostPath": "/project_ghent",
+          "containerPath": "/project_ghent"
+        }
+      ],
+      "portMappings": []
+    },
+    "scheduling": {
+      "interactive": false,
+      "maxDuration": "3 days"
+    }
+  }
+}

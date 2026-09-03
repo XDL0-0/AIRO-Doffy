@@ -418,20 +418,30 @@ python inference.py --policy username/my_act_policy
 python inference.py --policy ./checkpoints/my_policy --device cuda --fps 10
 ```
 
-### 5. Offline Policy Evaluation
-Evaluate a trained policy against recorded dataset:
+### 5. Real-robot Policy Evaluation
+Evaluate a downloaded checkpoint on the configured RM75 robot:
 ```bash
-python eval_policy.py --policy username/my_policy
+# Registered local policy (defaults to its last.pt)
+python eval_policy.py --policy dp_beaver_closure --episodes 5
+
+# A specific milestone
 python eval_policy.py \
-    --policy ./checkpoints/my_policy \
-    --dataset ./datasets/my_dataset_lero \
-    --episodes 0 1 2 \
-    --no-show
+    --policy WRM_wrap=policies/downloaded/WRM_wrap/checkpoints/WRM_wrap_step_050000.pt \
+    --episodes 5
+
+# ICRA matrix checkpoints can use distinct labels in one run
+python eval_policy.py \
+    --policy joint_only_seed42=policies/downloaded/icra_policy_matrix_v1_20260831/joint_only/seed_42/last.pt \
+    --policy joint_only_seed43=policies/downloaded/icra_policy_matrix_v1_20260831/joint_only/seed_43/last.pt \
+    --episodes 5
 ```
+
+`NAME=CHECKPOINT` accepts a custom safe label, so multiple checkpoints with the
+same internal policy variant remain separate in logs and output directories.
 
 `eval_policy.py` follows RDP's deployment-time latency matching: after each
 replan it discards the first `EvalConfig.INFERENCE_LATENCY_STEPS` predictions
-(default `4` at 24 Hz). Override it with `--latency-steps N`, or pass `0` to
+(default `0` at 24 Hz). Override it with `--latency-steps N`, or pass `0` to
 disable matching. This does not shift dataset labels a second time.
 
 ## VR Data Protocols

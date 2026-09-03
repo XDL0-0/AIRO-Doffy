@@ -21,12 +21,17 @@ Usage:
     python eval_policy.py --policy fm --policy rfm
     python eval_policy.py --checkpoint-root policies/output/WRM_grasp_cylinder_all
     python eval_policy.py --policy original_dp=path/to/step_050000.pt
+    python eval_policy.py --policy path/to/step_050000.pt
+    python eval_policy.py --policy WRM_wrap --wrap-near-mm 10 --wrap-lift-min 0.8 \
+        --wrap-stop-close-j3 1.0 --wrap-stop-close-j4 1.0 \
+        --wrap-contact-stop-mm 5
     python eval_policy.py --episodes 3 --max-steps 400 --no-video
 
 Interactive keys during a run:
-    Enter  pause (robot holds its pose)
+    Enter  pause (robot enters freedrive — move the arm by hand)
     while paused:  s = success (recorded, next episode)   f = failure (next)
                    r = restart episode    q = quit
+                   Enter resumes from the current joint configuration
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import queue
+import re
 import sys
 import threading
 import time
@@ -45,92 +51,40 @@ import numpy as np
 import torch
 
 import utils
-from beaver import BeaverReader
+from beaver import VALID_STATUSES, BeaverReader
 from config import Config
 from eval_config import EvalConfig
 from inference import InferenceCameraManager
 from robot_backend import make_robot_backend
 
-SUPPORTED_POLICY_VARIANTS = frozenset(
-    {
-        "original_dp",
-        "dp_beaver",
-        "dp_beaver_enc",
-        "dp_beaver_near",
-        "dp_beaver_near_gate",
-        "rdp_like",
-        "fm",
-        "fm_beaver",
-        "rfm",
-    }
+from policies.realman_beaver.eval_registry import (
+    BEAVER_POLICY_VARIANTS,
+    EXPECTED_CHECKPOINT_KINDS,
+    SUPPORTED_POLICY_VARIANTS,
+    policy_needs_beaver,
+    validate_deployable_checkpoint,
 )
-BEAVER_POLICY_VARIANTS = frozenset(
-    {
-        "dp_beaver",
-        "dp_beaver_enc",
-        "dp_beaver_near",
-        "dp_beaver_near_gate",
-        "rdp_like",
-        "fm_beaver",
-        "rfm",
-    }
-)
-EXPECTED_CHECKPOINT_KINDS = {
-    "original_dp": "original_dp",
-    "dp_beaver": "dp_beaver",
-    "dp_beaver_enc": "dp_beaver_enc",
-    "dp_beaver_near": "dp_beaver_near",
-    "dp_beaver_near_gate": "dp_beaver_near_gate",
-    "rdp_like": "latent_dp",
-    "fm": "fm",
-    "fm_beaver": "fm_beaver",
-    "rfm": "latent_fm",
-}
 
 
-def policy_needs_beaver(variant: str) -> bool:
-    """Return whether a deployment observation must contain Beaver fields."""
-    if variant not in SUPPORTED_POLICY_VARIANTS:
-        raise ValueError(f"Unsupported policy variant: {variant}")
-    return variant in BEAVER_POLICY_VARIANTS
-
-
-def validate_deployable_checkpoint(summary: dict[str, object]) -> str:
-    """Validate checkpoint metadata and return its six-policy variant."""
-    kind = str(summary.get("kind", "unknown"))
-    if kind == "tokenizer":
-        raise ValueError(
-            "tokenizer-only checkpoint is not deployable; use the final "
-            "reactive-policy last.pt"
-        )
-    variant = str(summary.get("variant", "unknown"))
-    if variant not in SUPPORTED_POLICY_VARIANTS:
-        raise ValueError(f"unsupported policy variant '{variant}'")
-    expected_kind = EXPECTED_CHECKPOINT_KINDS[variant]
-    if kind != expected_kind:
-        raise ValueError(
-            f"checkpoint kind '{kind}' does not match variant '{variant}' "
-            f"(expected '{expected_kind}')"
-        )
-    return variant
-
-
-def configure_policy_execution_window(policy, eval_cfg: EvalConfig) -> int:
-    """Apply reactive replan overrides and return the executable chunk size."""
+def policy_step_window(policy) -> tuple[int, int]:
+    """Return the configured (predicted steps, executed steps) pair."""
     variant = policy.config.model.variant
     if variant == "rdp_like":
-        reactive = policy.config.rdp
-        override = eval_cfg.RDP_SLOW_REPLAN_STEPS
+        return (
+            int(policy.config.rdp.action_horizon),
+            int(policy.config.rdp.slow_replan_steps),
+        )
     elif variant == "rfm":
-        reactive = policy.config.rfm
-        override = eval_cfg.RFM_SLOW_REPLAN_STEPS
+        return (
+            int(policy.config.rfm.action_horizon),
+            int(policy.config.rfm.slow_replan_steps),
+        )
     elif variant in SUPPORTED_POLICY_VARIANTS:
-        return int(policy.config.model.n_action_steps)
-    else:
-        raise ValueError(f"Unsupported policy variant: {variant}")
-    if override is not None:
-        reactive.slow_replan_steps = override
-    return int(reactive.slow_replan_steps)
+        return (
+            int(policy.config.model.horizon),
+            int(policy.config.model.n_action_steps),
+        )
+    raise ValueError(f"Unsupported policy variant: {variant}")
 
 
 def select_action_with_latency(
@@ -168,6 +122,7 @@ def select_action_with_latency(
 
 # ── Live monitor window ──────────────────────────────────────────────────
 
+
 class MonitorWindow:
     """Live cv2 monitor: camera feed + rolling joint plot + Beaver heatmaps.
 
@@ -175,9 +130,16 @@ class MonitorWindow:
     """
 
     JOINT_COLORS = [
-        (66, 133, 244), (219, 68, 55), (244, 180, 0),
-        (15, 157, 88), (171, 71, 188), (255, 112, 67), (38, 166, 154),
+        (66, 133, 244),
+        (219, 68, 55),
+        (244, 180, 0),
+        (15, 157, 88),
+        (171, 71, 188),
+        (255, 112, 67),
+        (38, 166, 154),
     ]
+    CANVAS_WIDTH = 1120
+    CANVAS_HEIGHT = 720
 
     def __init__(
         self,
@@ -199,14 +161,27 @@ class MonitorWindow:
     def _check_enabled(self) -> bool:
         if self._enabled is None:
             try:
-                cv2.namedWindow(self._window_name, cv2.WINDOW_NORMAL)
+                # WINDOW_GUI_NORMAL avoids Qt's zoom/pan toolbar and its
+                # occasionally stale viewport. Explicitly size the image
+                # area: WINDOW_NORMAL otherwise opens at a small backend-
+                # dependent default size (typically 400x300).
+                flags = cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO
+                flags |= getattr(cv2, "WINDOW_GUI_NORMAL", 0)
+                cv2.namedWindow(self._window_name, flags)
+                placeholder = self._compose(
+                    None,
+                    None,
+                    {"state": "STARTING", "beaver_ok": None},
+                )
+                cv2.imshow(self._window_name, placeholder)
+                cv2.resizeWindow(
+                    self._window_name, self.CANVAS_WIDTH, self.CANVAS_HEIGHT
+                )
                 cv2.waitKey(1)
                 self._enabled = True
             except cv2.error:
                 self._enabled = False
-                utils.logger.warning(
-                    "No display available; live monitor disabled."
-                )
+                utils.logger.warning("No display available; live monitor disabled.")
         return self._enabled
 
     @staticmethod
@@ -243,7 +218,7 @@ class MonitorWindow:
         *,
         camera: np.ndarray | None,
         joints: np.ndarray,
-        beaver: tuple[np.ndarray, np.ndarray] | None,
+        beaver: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
         status: dict[str, object],
     ) -> None:
         if not self._check_enabled():
@@ -271,7 +246,7 @@ class MonitorWindow:
     def _compose(
         self,
         camera: np.ndarray | None,
-        beaver: tuple[np.ndarray, np.ndarray] | None,
+        beaver: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
         status: dict[str, object],
     ) -> np.ndarray:
         # Layout: left camera (640x480), right joint plot (480x480) with
@@ -281,26 +256,106 @@ class MonitorWindow:
         if camera is not None:
             # Camera frames are RGB; cv2 displays and writes BGR.
             camera = cv2.cvtColor(camera, cv2.COLOR_RGB2BGR)
-            left[: camera.shape[0], : camera.shape[1]] = camera
+            # Fit arbitrary camera resolutions into the 640x480 panel. A
+            # direct slice assignment fails (and disables the monitor) when
+            # a camera is configured above 640x480.
+            src_h, src_w = camera.shape[:2]
+            scale = min(640 / src_w, 480 / src_h)
+            dst_w = max(1, round(src_w * scale))
+            dst_h = max(1, round(src_h * scale))
+            camera = cv2.resize(camera, (dst_w, dst_h), interpolation=cv2.INTER_AREA)
+            x0 = (640 - dst_w) // 2
+            y0 = (480 - dst_h) // 2
+            left[y0 : y0 + dst_h, x0 : x0 + dst_w] = camera
         joint_canvas = self._draw_joint_plot(np.zeros((480, 480, 3), np.uint8))
         beaver_canvas = self._draw_beaver_grid(
             np.zeros((240, 480, 3), np.uint8), beaver
         )
+        self._draw_gate_status(beaver_canvas, status)
         right = np.vstack([joint_canvas, beaver_canvas])
         canvas = np.hstack([left, right])
 
+        beaver_ok = status.get("beaver_ok")
+        beaver_text = "OFF" if beaver_ok is None else ("OK" if beaver_ok else "STALE")
         text = (
+            f"{status.get('state', 'RUNNING')}  "
             f"policy={status.get('policy', '?')} "
             f"ep={status.get('episode', '?')} step={status.get('step', '?')} "
             f"cmd={status.get('commanded', 0)} drop={status.get('dropped', 0)} "
             f"fps={status.get('fps', 0):.1f} "
-            f"beaver={'' if status.get('beaver_ok') else 'STALE'}"
+            f"beaver={beaver_text}"
         )
         cv2.rectangle(canvas, (0, 0), (canvas.shape[1], 22), (0, 0, 0), -1)
         cv2.putText(
-            canvas, text, (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-            (200, 200, 200), 1, cv2.LINE_AA,
+            canvas,
+            text,
+            (6, 16),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (200, 200, 200),
+            1,
+            cv2.LINE_AA,
         )
+        return canvas
+
+    @staticmethod
+    def _gate_value(status: dict[str, object], name: str) -> bool | None:
+        gate = status.get("gate")
+        values = gate if isinstance(gate, dict) else status
+        value = values.get(name)
+        if value is None:
+            return None
+        return bool(value)
+
+    def _draw_gate_status(
+        self, canvas: np.ndarray, status: dict[str, object]
+    ) -> np.ndarray:
+        """Draw the current inference gate states below the Beaver tiles."""
+        gate = status.get("gate")
+        if not isinstance(gate, dict):
+            return canvas
+        if "j3_stop" in gate or "j4_stop" in gate:
+            # Parameterized per-joint gate: show the two actual closure
+            # decisions and the shared lift decision. There is no separate
+            # overall contact-stop decision in this mode.
+            labels = (
+                ("J3_STOP", "j3_stop"),
+                ("J4_STOP", "j4_stop"),
+                ("LIFT_ENABLE", "lift_enabled"),
+            )
+        elif "contact_stop" in gate:
+            # Ordinary/monitor gate: contact is one overall decision, so do
+            # not display synthetic J3/J4 values.
+            labels = (
+                ("CONTACT_STOP", "contact_stop"),
+                ("LIFT_ENABLE", "lift_enabled"),
+            )
+        else:
+            return canvas
+        x = 8
+        y = canvas.shape[0] - 7
+        for label, key in labels:
+            value = self._gate_value(status, key)
+            if value is None:
+                text = f"{label}=--"
+                color = (150, 150, 150)
+            else:
+                text = f"{label}={int(value)}"
+                color = (80, 220, 80) if value else (80, 100, 255)
+            cv2.putText(
+                canvas,
+                text,
+                (x, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.38,
+                color,
+                1,
+                cv2.LINE_AA,
+            )
+            width = cv2.getTextSize(
+                text, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1
+            )[0][0]
+            x += width + 12
         return canvas
 
     def _draw_joint_plot(self, canvas: np.ndarray) -> np.ndarray:
@@ -312,11 +367,18 @@ class MonitorWindow:
             canvas,
             (margin_l, margin_t),
             (margin_l + plot_w, margin_t + plot_h),
-            (60, 60, 60), 1,
+            (60, 60, 60),
+            1,
         )
         cv2.putText(
-            canvas, "joints [rad]", (margin_l, 18),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 160, 160), 1, cv2.LINE_AA,
+            canvas,
+            "joints [rad]",
+            (margin_l, 18),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (160, 160, 160),
+            1,
+            cv2.LINE_AA,
         )
         if not self.history:
             return canvas
@@ -331,17 +393,18 @@ class MonitorWindow:
         for k in range(1, 5):
             y = margin_t + int(plot_h * k / 5)
             cv2.line(
-                canvas, (margin_l, y),
-                (margin_l + plot_w, y), (40, 40, 40), 1,
+                canvas,
+                (margin_l, y),
+                (margin_l + plot_w, y),
+                (40, 40, 40),
+                1,
             )
         for j in range(self.dof):
             color = self.JOINT_COLORS[j % len(self.JOINT_COLORS)]
             points = []
             for i in range(n):
                 x = margin_l + int(plot_w * i / max(1, n - 1))
-                y = margin_t + int(
-                    plot_h * (1.0 - (data[i, j] - lo) / (hi - lo))
-                )
+                y = margin_t + int(plot_h * (1.0 - (data[i, j] - lo) / (hi - lo)))
                 points.append((x, y))
             if len(points) > 1:
                 cv2.polylines(canvas, [np.array(points)], False, color, 1, cv2.LINE_AA)
@@ -350,32 +413,42 @@ class MonitorWindow:
             color = self.JOINT_COLORS[j % len(self.JOINT_COLORS)]
             lx = margin_l + int(plot_w * (j + 0.5) / self.dof)
             label = f"J{j + 1} {latest[j]:+.2f}"
-            (tw, _), _ = cv2.getTextSize(
-                label, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1
-            )
+            (tw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
             cv2.putText(
-                canvas, label,
-                (max(margin_l, min(margin_l + plot_w - tw, lx - tw // 2)),
-                 margin_t + plot_h + 18),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA,
+                canvas,
+                label,
+                (
+                    max(margin_l, min(margin_l + plot_w - tw, lx - tw // 2)),
+                    margin_t + plot_h + 18,
+                ),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.35,
+                color,
+                1,
+                cv2.LINE_AA,
             )
         return canvas
 
     def _draw_beaver_grid(
         self,
         canvas: np.ndarray,
-        beaver: tuple[np.ndarray, np.ndarray] | None,
+        beaver: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
     ) -> np.ndarray:
         cv2.putText(
-            canvas, "beaver distance [mm]  (grey = sensor absent)",
-            (10, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
-            (160, 160, 160), 1, cv2.LINE_AA,
+            canvas,
+            "beaver distance [mm]  (min/avg: status 5/9; 0 mm valid)",
+            (10, 18),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (160, 160, 160),
+            1,
+            cv2.LINE_AA,
         )
         if beaver is None:
             return canvas
-        distance, present = beaver
+        distance, present, status = beaver
         n_sensors, grid, _ = distance.shape
-        if n_sensors == 0:
+        if n_sensors == 0 or status.shape != distance.shape:
             return canvas
         cell = 14
         tile = grid * cell
@@ -390,22 +463,67 @@ class MonitorWindow:
             ox = x0 + c * (tile + gap)
             oy = y0 + r * (tile + gap)
             present_s = bool(present[s]) if s < len(present) else False
+            valid = (
+                present_s
+                & np.isin(status[s], VALID_STATUSES)
+                & np.isfinite(distance[s])
+                & (distance[s] >= 0)
+            )
+            if np.any(valid):
+                min_text = f"min {float(np.min(distance[s][valid])):.1f}"
+                avg_text = f"avg {float(np.mean(distance[s][valid])):.1f}"
+            else:
+                min_text = "min --"
+                avg_text = "avg --"
             heat = np.zeros((grid, grid), np.uint8)
             if present_s:
                 values = np.clip(distance[s] / norm * 255.0, 0, 255).astype(np.uint8)
                 heat = cv2.applyColorMap(values, cv2.COLORMAP_VIRIDIS)
+                heat[~valid] = (70, 70, 70)
             else:
                 heat = np.full((grid, grid, 3), 70, np.uint8)
             heat = cv2.resize(heat, (tile, tile), interpolation=cv2.INTER_NEAREST)
-            canvas[oy:oy + tile, ox:ox + tile] = heat
+            canvas[oy : oy + tile, ox : ox + tile] = heat
             border = (80, 220, 80) if present_s else (70, 70, 200)
             cv2.rectangle(
-                canvas, (ox, oy), (ox + tile - 1, oy + tile - 1), border, 1,
+                canvas,
+                (ox, oy),
+                (ox + tile - 1, oy + tile - 1),
+                border,
+                1,
             )
             cv2.putText(
-                canvas, str(s), (ox + 2, oy + 12),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1, cv2.LINE_AA,
+                canvas,
+                f"S{s}",
+                (ox + 2, oy + 12),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.35,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
             )
+            metric_height = 24
+            cv2.rectangle(
+                canvas,
+                (ox, oy + tile - metric_height),
+                (ox + tile - 1, oy + tile - 1),
+                (0, 0, 0),
+                -1,
+            )
+            for text, baseline in (
+                (min_text, oy + tile - 13),
+                (avg_text, oy + tile - 2),
+            ):
+                cv2.putText(
+                    canvas,
+                    text,
+                    (ox + 2, baseline),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.26,
+                    (255, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
         return canvas
 
 
@@ -464,25 +582,81 @@ class PolicyEvaluator:
         )
 
         # ── Policy ───────────────────────────────────────────────────────
-        from policies.realman_beaver.checkpoint import load_policy
+        from policies.realman_beaver.checkpoint import checkpoint_summary, load_policy
 
         utils.logger.info(f"Loading policy '{name}' from {self.checkpoint}")
+        checkpoint_variant = validate_deployable_checkpoint(
+            checkpoint_summary(self.checkpoint)
+        )
+        try:
+            requested_prediction_steps = eval_cfg.PREDICTION_STEPS[checkpoint_variant]
+            requested_action_steps = eval_cfg.ACTION_STEPS[checkpoint_variant]
+        except KeyError as exc:
+            raise ValueError(
+                f"Missing prediction/action step configuration for "
+                f"'{checkpoint_variant}' in eval_config.py"
+            ) from exc
         self.policy = load_policy(
-            self.checkpoint, device=self.device, use_ema=eval_cfg.USE_EMA
+            self.checkpoint,
+            device=self.device,
+            use_ema=eval_cfg.USE_EMA,
+            prediction_steps=requested_prediction_steps,
+            action_steps=requested_action_steps,
+            wrap_near_threshold_mm=(
+                eval_cfg.WRAP_NEAR_THRESHOLD_MM
+                if checkpoint_variant in {"WRM_wrap", "WRM_wrap_delta"}
+                else None
+            ),
+            wrap_range_scale_mm=(
+                eval_cfg.WRAP_RANGE_SCALE_MM
+                if checkpoint_variant in {"WRM_wrap", "WRM_wrap_delta"}
+                else None
+            ),
+            wrap_lift_min_wrap=(
+                eval_cfg.WRAP_LIFT_MIN_WRAP
+                if checkpoint_variant in {"WRM_wrap", "WRM_wrap_delta"}
+                else None
+            ),
+            wrap_stop_close_j3_wrap=(
+                eval_cfg.WRAP_STOP_CLOSE_J3_WRAP
+                if checkpoint_variant in {"WRM_wrap", "WRM_wrap_delta"}
+                else None
+            ),
+            wrap_stop_close_j4_wrap=(
+                eval_cfg.WRAP_STOP_CLOSE_J4_WRAP
+                if checkpoint_variant in {"WRM_wrap", "WRM_wrap_delta"}
+                else None
+            ),
+            wrap_stop_close_wrap=(
+                eval_cfg.WRAP_STOP_CLOSE_WRAP
+                if checkpoint_variant in {"WRM_wrap", "WRM_wrap_delta"}
+                else None
+            ),
+            wrap_contact_stop_mm=(
+                eval_cfg.WRAP_CONTACT_STOP_MM
+                if checkpoint_variant in {
+                    "WRM_wrap",
+                    "WRM_wrap_delta",
+                    "WRM_lobo_monitor",
+                    "WRM_wrap_monitor",
+                    "WRM_wrap_monitor_backup",
+                }
+                else None
+            ),
+            wrap_stop_hold_frames=(
+                eval_cfg.WRAP_STOP_HOLD_FRAMES
+                if checkpoint_variant in {"WRM_wrap", "WRM_wrap_delta"}
+                else None
+            ),
+            wrap_lift_hold_frames=(
+                eval_cfg.WRAP_LIFT_HOLD_FRAMES
+                if checkpoint_variant in {"WRM_wrap", "WRM_wrap_delta"}
+                else None
+            ),
         )
         self.variant = self.policy.config.model.variant
-        reactive = None
-        if self.variant == "rdp_like":
-            reactive = self.policy.config.rdp
-        elif self.variant == "rfm":
-            reactive = self.policy.config.rfm
-        old_replan_steps = reactive.slow_replan_steps if reactive else None
-        execution_window = configure_policy_execution_window(self.policy, eval_cfg)
-        if reactive is not None and old_replan_steps != reactive.slow_replan_steps:
-            utils.logger.info(
-                f"Policy '{name}': {self.variant} slow_replan_steps "
-                f"{old_replan_steps} -> {reactive.slow_replan_steps}"
-            )
+        self.prediction_steps, self.action_steps = policy_step_window(self.policy)
+        execution_window = self.action_steps
         if eval_cfg.INFERENCE_LATENCY_STEPS >= execution_window:
             raise ValueError(
                 "INFERENCE_LATENCY_STEPS must be smaller than the executable "
@@ -498,8 +672,38 @@ class PolicyEvaluator:
         utils.logger.info(
             f"Policy '{name}': variant={self.variant}, "
             f"needs_beaver={self.needs_beaver}, "
+            f"prediction_steps={self.prediction_steps}, "
+            f"action_steps={self.action_steps}, "
             f"inference_latency_steps={eval_cfg.INFERENCE_LATENCY_STEPS}"
         )
+        if self.variant in {"WRM_wrap", "WRM_wrap_delta"}:
+            model = self.policy.config.model
+            utils.logger.info(
+                "WRM_wrap gates: near_mm=%.3f closing_scale_mm=%.3f "
+                "range_scale_mm=%.3f "
+                "lift_min=%.3f stop_close_j3=%.3f stop_close_j4=%.3f "
+                "contact_stop_mm=%.3f stop_hold=%d lift_hold=%d",
+                model.beaver_wrap_near_threshold_mm,
+                model.beaver_wrap_closing_scale_mm,
+                model.beaver_wrap_range_scale_mm,
+                model.beaver_wrap_lift_min_wrap,
+                model.beaver_wrap_stop_close_j3_wrap
+                if model.beaver_wrap_stop_close_j3_wrap is not None
+                else model.beaver_wrap_stop_close_wrap,
+                model.beaver_wrap_stop_close_j4_wrap
+                if model.beaver_wrap_stop_close_j4_wrap is not None
+                else model.beaver_wrap_stop_close_wrap,
+                model.beaver_wrap_contact_stop_mm,
+                model.beaver_wrap_stop_hold_frames,
+                model.beaver_wrap_lift_hold_frames,
+            )
+        elif self.variant in {"WRM_wrap_monitor", "WRM_wrap_monitor_backup"}:
+            utils.logger.info(
+                "WRM_wrap learned gate: Beaver-only %s; fixed logit boundary=0",
+                "temporal MLP"
+                if self.variant == "WRM_wrap_monitor"
+                else "Key4 backup MLP",
+            )
 
         # ── Sensors ──────────────────────────────────────────────────────
         self.cameras = InferenceCameraManager()
@@ -520,9 +724,7 @@ class PolicyEvaluator:
             self.beaver = BeaverReader.from_config(hw_cfg)
             self.beaver.start()
             self._owns_beaver = True
-            utils.logger.info(
-                "Beaver reader created inside evaluator (not shared)."
-            )
+            utils.logger.info("Beaver reader created inside evaluator (not shared).")
         elif self.beaver is not None:
             utils.logger.info("Using shared Beaver reader.")
 
@@ -549,17 +751,16 @@ class PolicyEvaluator:
             # terminal) are forwarded into the same command stream.
             self.monitor.command_queue = self._stdin._commands
         self._last_video_frame: dict[str, np.ndarray] = {}
-        self._last_beaver_np: tuple[np.ndarray, np.ndarray] | None = None
+        self._last_beaver_np: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
         self._last_beaver_stale = False
         self._quit_requested = False
         self._last_tcp_quat: np.ndarray | None = None
+        self._monitor_preview_warning_shown = False
 
     # ── Observation helpers ──────────────────────────────────────────────
 
     def _joints(self) -> np.ndarray:
-        return np.asarray(
-            self.backend.get_joint_configuration(), dtype=np.float64
-        )
+        return np.asarray(self.backend.get_joint_configuration(), dtype=np.float64)
 
     def _tcp_pose(self) -> list[float] | None:
         """TCP pose as [qx, qy, qz, qw, x, y, z] for the log."""
@@ -571,21 +772,44 @@ class PolicyEvaluator:
             self._last_tcp_quat = utils.quat_cal(
                 se3.rotation_matrix, self._last_tcp_quat
             )
-            return np.concatenate(
-                [self._last_tcp_quat, se3.translation]
-            ).round(4).tolist()
+            return (
+                np.concatenate([self._last_tcp_quat, se3.translation]).round(4).tolist()
+            )
         except Exception as exc:
             utils.logger.warning(f"TCP pose read failed: {exc}")
             return None
 
     def _image_tensor(self) -> torch.Tensor:
-        self._last_video_frame = self.cameras.get_images()
+        # airo-camera-toolkit returns RGB as float images in [0, 1], whereas
+        # the training dataset, OpenCV monitor, and VideoWriter use uint8.
+        # Convert once at acquisition so every consumer sees the same image
+        # representation (and inference is not accidentally divided by 255
+        # twice).
+        self._last_video_frame = self._capture_images_uint8()
         image = self._last_video_frame[self.camera_name]
         # HWC uint8 RGB -> CHW float32 in [0, 1], matching the dataset.
         chw = np.ascontiguousarray(np.transpose(image, (2, 0, 1)))
-        return (
-            torch.from_numpy(chw).float().div_(255.0).unsqueeze(0).to(self.device)
-        )
+        return torch.from_numpy(chw).float().div_(255.0).unsqueeze(0).to(self.device)
+
+    def _capture_images_uint8(self) -> dict[str, np.ndarray]:
+        return {
+            name: self._rgb_frame_uint8(image)
+            for name, image in self.cameras.get_images().items()
+        }
+
+    @staticmethod
+    def _rgb_frame_uint8(image: np.ndarray) -> np.ndarray:
+        """Return a contiguous HWC RGB frame suitable for OpenCV encoding."""
+        frame = np.asarray(image)
+        if frame.ndim != 3 or frame.shape[2] != 3:
+            raise ValueError(f"Expected an HWC RGB frame, got shape {frame.shape}")
+        if frame.dtype == np.uint8:
+            return np.ascontiguousarray(frame)
+        if np.issubdtype(frame.dtype, np.floating):
+            frame = np.nan_to_num(frame, nan=0.0, posinf=1.0, neginf=0.0)
+            if frame.size and float(frame.max()) <= 1.0:
+                frame = frame * 255.0
+        return np.ascontiguousarray(np.clip(frame, 0, 255).astype(np.uint8))
 
     def _beaver_obs(
         self,
@@ -640,6 +864,7 @@ class PolicyEvaluator:
             self._last_beaver_np = (
                 distance.detach().cpu().numpy()[0],
                 present.detach().cpu().numpy()[0],
+                status.detach().cpu().numpy()[0],
             )
         with torch.inference_mode():
             action = select_action_with_latency(
@@ -648,6 +873,45 @@ class PolicyEvaluator:
                 self.cfg.INFERENCE_LATENCY_STEPS,
             )
         return action.squeeze(0).cpu().numpy()
+
+    def _current_gate_status(self) -> dict[str, bool | None] | None:
+        """Return the latest inference gate states for the live monitor."""
+        is_wrap_policy = self.variant in {"WRM_wrap", "WRM_wrap_delta"}
+        is_monitor_gate_policy = self.variant in {
+            "WRM_wrap_monitor",
+            "WRM_wrap_monitor_backup",
+            "WRM_lobo_monitor",
+        }
+        # The display follows the deployment parameters, not only the
+        # checkpoint variant. The legacy shared flag means one overall
+        # contact-stop state; explicit J3/J4 overrides mean independent
+        # closure states. A WRM_wrap checkpoint can therefore use either
+        # display mode depending on the command line.
+        has_joint_stop_overrides = (
+            getattr(self.cfg, "WRAP_STOP_CLOSE_J3_WRAP", None) is not None
+            or getattr(self.cfg, "WRAP_STOP_CLOSE_J4_WRAP", None) is not None
+        )
+        use_per_joint_gate = is_wrap_policy and has_joint_stop_overrides
+        use_overall_gate = is_monitor_gate_policy or (
+            is_wrap_policy and not has_joint_stop_overrides
+        )
+        if not use_per_joint_gate and not use_overall_gate:
+            return None
+        lift_blocked = getattr(self.policy, "last_lift_blocked", None)
+        lift_enabled = None if lift_blocked is None else not bool(lift_blocked)
+        if use_per_joint_gate:
+            return {
+                "j3_stop": getattr(self.policy, "last_close_stopped_j3", None),
+                "j4_stop": getattr(self.policy, "last_close_stopped_j4", None),
+                "lift_enabled": lift_enabled,
+            }
+        contact_stopped = getattr(self.policy, "last_close_stopped", None)
+        return {
+            "contact_stop": (
+                None if contact_stopped is None else bool(contact_stopped)
+            ),
+            "lift_enabled": lift_enabled,
+        }
 
     # ── Commanding ───────────────────────────────────────────────────────
 
@@ -716,10 +980,43 @@ class PolicyEvaluator:
             "dropped": 0,
             "drops": {},
             "beaver_stale_steps": 0,
+            "prediction_steps": self.prediction_steps,
+            "action_steps": self.action_steps,
             "inference_latency_steps": self.cfg.INFERENCE_LATENCY_STEPS,
             "action_delta_max": 0.0,
             "success": None,
         }
+        if self.variant in {"WRM_wrap", "WRM_wrap_delta"}:
+            model = self.policy.config.model
+            stats["wrap_gate"] = {
+                "near_threshold_mm": model.beaver_wrap_near_threshold_mm,
+                "closing_scale_mm": model.beaver_wrap_closing_scale_mm,
+                "range_scale_mm": model.beaver_wrap_range_scale_mm,
+                "lift_min_wrap": model.beaver_wrap_lift_min_wrap,
+                "stop_close_j3_wrap": (
+                    model.beaver_wrap_stop_close_j3_wrap
+                    if model.beaver_wrap_stop_close_j3_wrap is not None
+                    else model.beaver_wrap_stop_close_wrap
+                ),
+                "stop_close_j4_wrap": (
+                    model.beaver_wrap_stop_close_j4_wrap
+                    if model.beaver_wrap_stop_close_j4_wrap is not None
+                    else model.beaver_wrap_stop_close_wrap
+                ),
+                "contact_stop_mm": model.beaver_wrap_contact_stop_mm,
+                "stop_hold_frames": model.beaver_wrap_stop_hold_frames,
+                "lift_hold_frames": model.beaver_wrap_lift_hold_frames,
+            }
+        elif self.variant in {"WRM_wrap_monitor", "WRM_wrap_monitor_backup"}:
+            stats["monitor_gate"] = {
+                "architecture": (
+                    "temporal_mlp"
+                    if self.variant == "WRM_wrap_monitor"
+                    else "key4_backup_mlp"
+                ),
+                "decision_logit": 0.0,
+                "parameter_overrides": False,
+            }
         delta_magnitudes: list[float] = []
         restart = False
 
@@ -748,9 +1045,7 @@ class PolicyEvaluator:
                     drops = stats["drops"]
                     drops[reason] = drops.get(reason, 0) + 1
                 if self._last_beaver_stale:
-                    stats["beaver_stale_steps"] = int(
-                        stats["beaver_stale_steps"]
-                    ) + 1
+                    stats["beaver_stale_steps"] = int(stats["beaver_stale_steps"]) + 1
 
                 delta = np.abs(action[: self.dof] - joints)
                 delta_magnitudes.append(float(np.max(delta)))
@@ -768,12 +1063,8 @@ class PolicyEvaluator:
                         # Chunk bookkeeping: replan=True marks the tick where
                         # a new action chunk was generated; chunk_step is the
                         # position within that chunk (0 = first executed).
-                        "replan": bool(
-                            getattr(self.policy, "last_replanned", False)
-                        ),
-                        "chunk_step": int(
-                            getattr(self.policy, "last_chunk_step", 0)
-                        ),
+                        "replan": bool(getattr(self.policy, "last_replanned", False)),
+                        "chunk_step": int(getattr(self.policy, "last_chunk_step", 0)),
                         "latency_steps": int(
                             getattr(self.policy, "last_latency_steps", 0)
                         ),
@@ -781,6 +1072,109 @@ class PolicyEvaluator:
                         "drop_reason": reason or None,
                         "beaver_stale": bool(self._last_beaver_stale),
                     }
+                    if self.variant == "WRM_temporal":
+                        record["grasp_probability"] = float(
+                            getattr(self.policy, "last_grasp_probability", 0.0)
+                        )
+                        record["beaver_feature_std"] = float(
+                            getattr(self.policy, "last_beaver_feature_std", 0.0)
+                        )
+                        record["beaver_feature_mean"] = float(
+                            getattr(self.policy, "last_beaver_feature_mean", 0.0)
+                        )
+                        record["beaver_sensor_token_std"] = dict(
+                            getattr(self.policy, "last_sensor_token_std", {})
+                        )
+                    if self.variant in {
+                        "WRM_wrap",
+                        "WRM_wrap_delta",
+                        "WRM_wrap_monitor",
+                        "WRM_wrap_monitor_backup",
+                        "WRM_lobo_monitor",
+                    }:
+                        record["wrap_progress"] = float(
+                            getattr(self.policy, "last_wrap_progress", 0.0)
+                        )
+                        record["min_range_mm"] = float(
+                            getattr(self.policy, "last_min_range_mm", 0.0)
+                        )
+                        record["lift_blocked"] = float(
+                            getattr(self.policy, "last_lift_blocked", 0.0)
+                        )
+                        record["close_stopped"] = float(
+                            getattr(self.policy, "last_close_stopped", 0.0)
+                        )
+                        record["close_stopped_j3"] = float(
+                            getattr(self.policy, "last_close_stopped_j3", 0.0)
+                        )
+                        record["close_stopped_j4"] = float(
+                            getattr(self.policy, "last_close_stopped_j4", 0.0)
+                        )
+                        record["jaw_wrap"] = float(
+                            getattr(self.policy, "last_jaw_wrap", 0.0)
+                        )
+                        record["enclosed_hold"] = float(
+                            getattr(self.policy, "last_enclosed_hold", 0.0)
+                        )
+                        record["beaver_feature_std"] = float(
+                            getattr(self.policy, "last_beaver_feature_std", 0.0)
+                        )
+                    if self.variant in {
+                        "WRM_wrap_monitor",
+                        "WRM_wrap_monitor_backup",
+                        "WRM_lobo_monitor",
+                    }:
+                        record["monitor_lift_probability"] = float(
+                            getattr(
+                                self.policy, "last_monitor_lift_probability", 0.0
+                            )
+                        )
+                        record["monitor_contact_probability"] = float(
+                            getattr(
+                                self.policy,
+                                "last_monitor_contact_probability",
+                                0.0,
+                            )
+                        )
+                        record["monitor_lift_state"] = float(
+                            getattr(self.policy, "last_monitor_lift_state", 0.0)
+                        )
+                        record["monitor_contact_state"] = float(
+                            getattr(self.policy, "last_monitor_contact_state", 0.0)
+                        )
+                    if self.variant == "WRM_adaptive":
+                        record["grasp_probability"] = float(
+                            getattr(self.policy, "last_grasp_probability", 0.0)
+                        )
+                        record["beaver_feature_std"] = float(
+                            getattr(self.policy, "last_z_beaver_std", 0.0)
+                        )
+                        record["sensor_attention_entropy"] = float(
+                            getattr(self.policy, "last_sensor_attention_entropy", 0.0)
+                        )
+                        record["near_field_fraction"] = float(
+                            getattr(self.policy, "last_near_field_fraction", 0.0)
+                        )
+                        record["sensor_attention"] = dict(
+                            getattr(self.policy, "last_sensor_attention", {})
+                        )
+                    if self.variant == "dp_beaver_closure":
+                        record["grasp_probability"] = float(
+                            getattr(self.policy, "last_grasp_probability", 0.0)
+                        )
+                        record["closure_gate_mean"] = float(
+                            getattr(self.policy, "last_gate_mean", 0.0)
+                        )
+                        record["closure_gate_std"] = float(
+                            getattr(self.policy, "last_gate_std", 0.0)
+                        )
+                        record["closure_residual_magnitude"] = float(
+                            getattr(
+                                self.policy,
+                                "last_closure_residual_magnitude",
+                                0.0,
+                            )
+                        )
                     log_file.write(json.dumps(record) + "\n")
                     log_file.flush()
 
@@ -802,6 +1196,7 @@ class PolicyEvaluator:
                             "dropped": int(stats["dropped"]),
                             "fps": self.cfg.FPS,
                             "beaver_ok": not self._last_beaver_stale,
+                            "gate": self._current_gate_status(),
                         },
                     )
 
@@ -821,9 +1216,7 @@ class PolicyEvaluator:
         if not restart:
             stats["duration_s"] = round(time.monotonic() - episode_start, 2)
             if delta_magnitudes:
-                stats["action_delta_mean"] = round(
-                    float(np.mean(delta_magnitudes)), 4
-                )
+                stats["action_delta_mean"] = round(float(np.mean(delta_magnitudes)), 4)
             stats["beaver_stale_fraction"] = round(
                 int(stats["beaver_stale_steps"]) / max(1, int(stats["steps"])), 4
             )
@@ -834,7 +1227,7 @@ class PolicyEvaluator:
                     f"Episode {index} ({self.name}) finished. "
                     "Success? (y/n, Enter=skip, q=quit)"
                 )
-                verdict = self._wait_command()
+                verdict = self._wait_command(monitor_state="VERDICT", episode=index)
                 stats["success"] = {
                     "y": True,
                     "yes": True,
@@ -871,26 +1264,57 @@ class PolicyEvaluator:
             if command in {"", "p", "pause"}:
                 paused = True
         if paused:
+            freedrive = self.cfg.PAUSE_FREEDRIVE and self.backend.supports_freedrive
+            if freedrive:
+                try:
+                    if self.cfg.FREEDRIVE_SENSITIVITY is not None:
+                        self.backend.set_freedrive_sensitivity(
+                            self.cfg.FREEDRIVE_SENSITIVITY
+                        )
+                    self.backend.start_freedrive()
+                except Exception as exc:
+                    utils.logger.warning(
+                        "Could not enter freedrive (%s); holding pose instead.",
+                        exc,
+                    )
+                    freedrive = False
             utils.logger.info(
-                "Paused (robot holds its pose). "
-                "Enter=resume, s=success(next episode), "
-                "f=fail(next episode), r=restart, q=quit."
+                "Paused (%s). Enter=resume, s=success(next episode), "
+                "f=fail(next episode), r=restart, q=quit.",
+                "freedrive active — you may move the arm by hand"
+                if freedrive
+                else "robot holds its pose",
             )
-            while True:
-                resume = self._wait_command()
-                if resume in {"", "p", "pause"}:
-                    utils.logger.info("Resuming.")
-                    return False, False, False, None
-                if resume == "q":
-                    return False, True, False, None
-                if resume == "r":
-                    return False, False, True, None
-                if resume in {"s", "success"}:
-                    utils.logger.info("Marked SUCCESS.")
-                    return False, False, False, True
-                if resume in {"f", "fail", "failure"}:
-                    utils.logger.info("Marked FAILURE.")
-                    return False, False, False, False
+            try:
+                while True:
+                    resume = self._wait_command(monitor_state="PAUSED")
+                    if resume in {"", "p", "pause"}:
+                        # The operator may have moved the arm while paused
+                        # (freedrive) or the pose stayed put; either way,
+                        # clear the action queue and replan from the current
+                        # joint configuration instead of executing stale
+                        # targets.
+                        self.policy.reset()
+                        utils.logger.info(
+                            "Resuming; replanning from the current configuration."
+                        )
+                        return False, False, False, None
+                    if resume == "q":
+                        return False, True, False, None
+                    if resume == "r":
+                        return False, False, True, None
+                    if resume in {"s", "success"}:
+                        utils.logger.info("Marked SUCCESS.")
+                        return False, False, False, True
+                    if resume in {"f", "fail", "failure"}:
+                        utils.logger.info("Marked FAILURE.")
+                        return False, False, False, False
+            finally:
+                if freedrive:
+                    try:
+                        self.backend.stop_freedrive()
+                    except Exception as exc:
+                        utils.logger.warning("Error leaving freedrive: %s", exc)
         return False, False, False, None
 
     # ── Recording helpers ────────────────────────────────────────────────
@@ -899,7 +1323,10 @@ class PolicyEvaluator:
         width, height = self.hw.REALSENSE_RESOLUTION
         writer = cv2.VideoWriter(
             str(path),
-            cv2.VideoWriter_fourcc(*"X264"),
+            # The pip OpenCV wheels do not ship a software H.264 encoder.
+            # MPEG-4 Part 2 is supported by OpenCV's bundled FFmpeg and keeps
+            # the existing MP4 output format.
+            cv2.VideoWriter_fourcc(*"mp4v"),
             self.cfg.FPS,
             (int(width), int(height)),
         )
@@ -921,19 +1348,76 @@ class PolicyEvaluator:
 
     # ── Session ──────────────────────────────────────────────────────────
 
-    def _wait_command(self) -> str:
+    def _show_monitor_preview(self, state: str, episode: int | None) -> None:
+        """Refresh the monitor while evaluation is waiting for user input."""
+        if self.monitor is None:
+            return
+        try:
+            self._last_video_frame = self._capture_images_uint8()
+            camera = self._last_video_frame.get(self.camera_name)
+            joints = self._joints()
+            beaver_np = self._last_beaver_np
+            beaver_ok: bool | None = None
+            if self.beaver is not None:
+                snapshot = self.beaver.snapshot()
+                beaver_np = (
+                    np.asarray(snapshot.distance_mm),
+                    np.asarray(snapshot.present),
+                    np.asarray(snapshot.target_status),
+                )
+                stale = (
+                    snapshot.timestamp_ns == 0
+                    or not snapshot.connected
+                    or (time.monotonic_ns() - snapshot.timestamp_ns) / 1e9
+                    > self.cfg.STALE_AFTER_S
+                )
+                beaver_ok = not stale
+            self.monitor.show(
+                camera=camera,
+                joints=joints,
+                beaver=beaver_np,
+                status={
+                    "state": state,
+                    "policy": self.name,
+                    "episode": "?" if episode is None else episode,
+                    "step": "-",
+                    "fps": self.cfg.FPS,
+                    "beaver_ok": beaver_ok,
+                    "gate": self._current_gate_status(),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - hardware preview is best-effort
+            # A preview failure must not prevent keyboard input or abort an
+            # otherwise valid hardware evaluation.
+            if not self._monitor_preview_warning_shown:
+                utils.logger.warning(f"Monitor preview unavailable: {exc}")
+                self._monitor_preview_warning_shown = True
+            self.monitor.pump_keys()
+
+    def _wait_command(
+        self,
+        *,
+        monitor_state: str = "WAITING",
+        episode: int | None = None,
+    ) -> str:
         """Block until a command arrives from stdin or the monitor window.
 
         Used wherever the program pauses for the user (before an episode,
         while paused mid-run) so that keys pressed while the monitor window
         has focus are handled as well as terminal keys.
         """
+        next_preview = 0.0
         while True:
             command = self._stdin.poll()
             if command is not None:
                 return command
             if self.monitor is not None:
-                self.monitor.pump_keys()
+                now = time.monotonic()
+                if now >= next_preview:
+                    self._show_monitor_preview(monitor_state, episode)
+                    next_preview = now + 0.2
+                else:
+                    self.monitor.pump_keys()
             time.sleep(0.05)
 
     def _announce_wait(self, message: str) -> None:
@@ -968,7 +1452,7 @@ class PolicyEvaluator:
                         "then press ENTER"
                     )
                 if index > 0 or wait_first:
-                    if self._wait_command() == "q":
+                    if self._wait_command(monitor_state="READY", episode=index) == "q":
                         break
                 out_dir = self.session_dir / self.name / f"episode_{index:03d}"
                 episodes.append(self.run_episode(out_dir, index))
@@ -997,6 +1481,97 @@ class PolicyEvaluator:
             utils.logger.error(f"Robot cleanup error: {exc}")
 
 
+def _resolve_checkpoint_path(spec: str) -> str:
+    """Resolve a checkpoint spec to an existing file.
+
+    Accepts the exact path, or a partial filename (e.g. ``100000.pt``)
+    when it uniquely matches one checkpoint in the same directory.
+    """
+    path = Path(spec)
+    if path.exists():
+        return str(path)
+    if path.suffix != ".pt" or not path.parent.exists():
+        return str(path)
+    matches = sorted(path.parent.glob(f"*{path.name}"))
+    if len(matches) == 1:
+        utils.logger.info(
+            "Checkpoint '%s' not found; using unique match '%s'.",
+            spec,
+            matches[0].name,
+        )
+        return str(matches[0])
+    return str(path)
+
+
+def _infer_policy_name(checkpoint: str, policies: dict[str, str]) -> str:
+    """Best-effort: which registered policy does this checkpoint belong to?
+
+    Resolution order:
+      1. a registered name in the checkpoint's file name — the most
+         specific signal (``.../dp_beaver_key4_PCA/.../dp_beaver_key4_pca_step_100000.pt``
+         resolves to ``dp_beaver_key4_pca``, not its prefix ``dp_beaver_key4``);
+      2. the variant recorded inside the checkpoint itself, when it is a
+         registered name (covers renamed files, e.g. ``dp_beaver_temporal/
+         checkpoints/last.pt`` → ``WRM_temporal``);
+      3. a registered name anywhere in the path, longest match wins.
+    """
+
+    def _registered_in(text: str) -> list[str]:
+        normalized = re.sub(r"[^a-z0-9]", "_", text.lower())
+        return [
+            name
+            for name in policies
+            if re.search(rf"(^|_){re.escape(name)}(_|$)", normalized)
+        ]
+
+    path = Path(checkpoint)
+    matches = _registered_in(path.name)
+    if matches:
+        return max(matches, key=len)
+    # The file name gave no answer; read the variant recorded in the
+    # checkpoint config (mmap keeps this to a few seconds for 1 GB files).
+    try:
+        ck = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
+        variant = ck["config"]["model"]["variant"]
+        if variant in policies:
+            return variant
+    except Exception:
+        pass
+    matches = _registered_in(str(path))
+    if matches:
+        return max(matches, key=len)
+    raise SystemExit(
+        f"Unknown policy '{checkpoint}'. Use NAME=PATH with one of "
+        "the registered names, use a safe custom NAME=PATH label, or pass a "
+        "checkpoint path whose saved variant is registered."
+    )
+
+
+def _resolve_policy_selections(
+    items: list[str], policies: dict[str, str]
+) -> dict[str, str]:
+    """Resolve CLI policy specs while preserving distinct experiment labels."""
+    selections: dict[str, str] = {}
+    for item in items:
+        name, sep, checkpoint = item.partition("=")
+        if sep:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+                raise SystemExit(
+                    f"Invalid policy label '{name}'. Use only letters, digits, "
+                    "dot, underscore, and hyphen."
+                )
+            if not checkpoint:
+                raise SystemExit(f"Missing checkpoint path after '{name}='.")
+            selections[name] = _resolve_checkpoint_path(checkpoint)
+        elif name in policies:
+            selections[name] = policies[name]
+        else:
+            checkpoint = _resolve_checkpoint_path(item)
+            inferred_name = _infer_policy_name(checkpoint, policies)
+            selections[inferred_name] = checkpoint
+    return selections
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Evaluate trained RealMan-Beaver policies on the RM75 robot."
@@ -1005,10 +1580,12 @@ def _parse_args() -> argparse.Namespace:
         "--policy",
         action="append",
         default=[],
-        metavar="NAME[=CHECKPOINT]",
-        help="Policy to evaluate; repeatable. NAME must be a key of "
-        "EvalConfig.POLICIES; CHECKPOINT overrides its path "
-        "(e.g. --policy dp_beaver=…/dp_beaver_step_100000.pt). "
+        metavar="NAME[=CHECKPOINT]|CHECKPOINT",
+        help="Policy to evaluate; repeatable. A registered NAME uses its "
+        "configured path; NAME=CHECKPOINT may use a custom safe run label "
+        "(e.g. --policy seed42=…/last.pt). "
+        "A bare checkpoint path is also accepted; its policy name is "
+        "inferred from the path (e.g. --policy …/dp_beaver_key4_PCA/…). "
         "Default: all policies in EvalConfig.",
     )
     parser.add_argument("--device", default=None, help="cuda:0 / cpu")
@@ -1023,6 +1600,60 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Discard this many predicted actions after each replan (RDP: 4 at 24 Hz)",
+    )
+    parser.add_argument(
+        "--wrap-near-mm",
+        type=float,
+        default=None,
+        help="Override WRM_wrap per-sensor near-field threshold in millimetres",
+    )
+    parser.add_argument(
+        "--wrap-range-scale-mm",
+        type=float,
+        default=None,
+        help="Override WRM_wrap enclosure distance normalization scale",
+    )
+    parser.add_argument(
+        "--wrap-lift-min",
+        type=float,
+        default=None,
+        help="Override WRM_wrap minimum wrap fraction required to release J1",
+    )
+    parser.add_argument(
+        "--wrap-stop-close",
+        type=float,
+        default=None,
+        help="Deprecated: set the stop-close fraction for both J3 and J4",
+    )
+    parser.add_argument(
+        "--wrap-stop-close-j3",
+        type=float,
+        default=None,
+        help="Override WRM_wrap near/contact fraction required to freeze J3",
+    )
+    parser.add_argument(
+        "--wrap-stop-close-j4",
+        type=float,
+        default=None,
+        help="Override WRM_wrap near/contact fraction required to freeze J4",
+    )
+    parser.add_argument(
+        "--wrap-contact-stop-mm",
+        type=float,
+        default=None,
+        help="Override WRM_wrap minimum-distance threshold for closure freeze",
+    )
+    parser.add_argument(
+        "--wrap-stop-hold-frames",
+        type=int,
+        default=None,
+        help="Frames both jaws must stay enclosed before J3/J4 freeze",
+    )
+    parser.add_argument(
+        "--wrap-lift-hold-frames",
+        type=int,
+        default=None,
+        help="Frames both jaws must stay enclosed before J1 is released",
     )
     parser.add_argument(
         "--episodes", type=int, default=None, help="Episodes per policy"
@@ -1061,8 +1692,7 @@ def main() -> None:
     if args.checkpoint_root:
         checkpoint_root = Path(args.checkpoint_root).expanduser()
         eval_cfg.POLICIES = {
-            name: str(checkpoint_root / name / "last.pt")
-            for name in eval_cfg.POLICIES
+            name: str(checkpoint_root / name / "last.pt") for name in eval_cfg.POLICIES
         }
     if args.device:
         eval_cfg.DEVICE = args.device
@@ -1074,6 +1704,21 @@ def main() -> None:
         if args.latency_steps < 0:
             raise SystemExit("--latency-steps cannot be negative")
         eval_cfg.INFERENCE_LATENCY_STEPS = args.latency_steps
+    for argument, attribute in (
+        (args.wrap_near_mm, "WRAP_NEAR_THRESHOLD_MM"),
+        (args.wrap_range_scale_mm, "WRAP_RANGE_SCALE_MM"),
+        (args.wrap_lift_min, "WRAP_LIFT_MIN_WRAP"),
+        (args.wrap_stop_close_j3, "WRAP_STOP_CLOSE_J3_WRAP"),
+        (args.wrap_stop_close_j4, "WRAP_STOP_CLOSE_J4_WRAP"),
+        (args.wrap_stop_close, "WRAP_STOP_CLOSE_WRAP"),
+        (args.wrap_contact_stop_mm, "WRAP_CONTACT_STOP_MM"),
+        (args.wrap_stop_hold_frames, "WRAP_STOP_HOLD_FRAMES"),
+        (args.wrap_lift_hold_frames, "WRAP_LIFT_HOLD_FRAMES"),
+    ):
+        if argument is not None:
+            setattr(eval_cfg, attribute, argument)
+    # Re-run deployment validation after applying command-line overrides.
+    eval_cfg.__post_init__()
     if args.episodes is not None:
         eval_cfg.EPISODES = args.episodes
     if args.max_steps:
@@ -1095,14 +1740,7 @@ def main() -> None:
     # Resolve the policies to evaluate.
     selections: dict[str, str] = {}
     if args.policy:
-        for item in args.policy:
-            name, sep, checkpoint = item.partition("=")
-            if name not in eval_cfg.POLICIES:
-                raise SystemExit(
-                    f"Unknown policy '{name}'. "
-                    f"Available: {list(eval_cfg.POLICIES)}"
-                )
-            selections[name] = checkpoint if sep else eval_cfg.POLICIES[name]
+        selections = _resolve_policy_selections(args.policy, eval_cfg.POLICIES)
     else:
         selections = dict(eval_cfg.POLICIES)
     for name, checkpoint in selections.items():
@@ -1143,6 +1781,19 @@ def main() -> None:
         f"Max steps: {eval_cfg.MAX_STEPS}  | "
         f"Latency steps: {eval_cfg.INFERENCE_LATENCY_STEPS}"
     )
+    for name, variant in variants.items():
+        if (
+            variant not in eval_cfg.PREDICTION_STEPS
+            or variant not in eval_cfg.ACTION_STEPS
+        ):
+            raise SystemExit(
+                f"Missing prediction/action step configuration for "
+                f"'{variant}' in eval_config.py"
+            )
+        utils.logger.info(
+            f"{name}: predict {eval_cfg.PREDICTION_STEPS[variant]} steps, "
+            f"execute {eval_cfg.ACTION_STEPS[variant]} steps per replan"
+        )
     utils.logger.info(f"Output:  {run_dir}")
 
     monitor = (
@@ -1176,9 +1827,7 @@ def main() -> None:
                 }
             )
             if evaluator._quit_requested:
-                utils.logger.info(
-                    "Quit requested; skipping remaining policies."
-                )
+                utils.logger.info("Quit requested; skipping remaining policies.")
                 break
     except KeyboardInterrupt:
         # Ctrl-C during policy/robot/camera setup: abort the whole run.

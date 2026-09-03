@@ -1,0 +1,35 @@
+{
+  "name": "airo-doffy-rdp-key4-all125-c6-bs32",
+  "description": "RDP-like Key4 final fit on all 125 episodes, batch size 32, 100k tokenizer plus 100k latent-DP steps",
+  "request": {
+    "resources": {
+      "gpus": 1,
+      "cpus": 8,
+      "cpuMemoryGb": 32,
+      "clusterId": 6
+    },
+    "docker": {
+      "image": "ramantalwarnr2/mt-lerobot:latest",
+      "command": [
+        "bash",
+        "-lc",
+        "set -Eeuo pipefail; stage_dir=/tmp/airo_rdp_like_key4_stage; ready_file=${stage_dir}/READY; echo 'Waiting for authenticated source/data staging...'; for stage_attempt in $(seq 1 900); do if [ -f \"${ready_file}\" ]; then exec bash \"${stage_dir}/run-rdp-like-key4-all125-cluster6-bs32.sh\"; fi; sleep 2; done; echo 'Timed out waiting for staged inputs' >&2; exit 2"
+      ],
+      "environment": {
+        "HF_REPO_ID": "IXDLI/AIRO-Doffy-WRM-Grasp-rdp-like-key4-all125",
+        "UPLOAD_HF": "1"
+      },
+      "storage": [
+        {
+          "hostPath": "/project_ghent",
+          "containerPath": "/project_ghent"
+        }
+      ],
+      "portMappings": []
+    },
+    "scheduling": {
+      "interactive": false,
+      "maxDuration": "3 days"
+    }
+  }
+}

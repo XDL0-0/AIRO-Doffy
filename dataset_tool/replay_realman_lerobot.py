@@ -1,28 +1,30 @@
 """Safely replay joint or TCP trajectories from a RealMan LeRobot dataset."""
 
 from __future__ import annotations
-import sys
-from pathlib import Path
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 import argparse
-from dataclasses import dataclass
 import json
 import logging
-from pathlib import Path
+import os
+import re
+import sys
 import time
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from scipy.spatial.transform import Rotation
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 
 logger = logging.getLogger(__name__)
 REALMAN_DOF = 7
-DEFAULT_DATASET_DIR = "./datasets/WRM_grasp_lero"
+DEFAULT_DATASET_DIR = "./datasets/WRM_grasp_cylinder_different_sizes_lero"
 
 
 @dataclass(frozen=True)
@@ -39,7 +41,9 @@ class EpisodeTrajectory:
     @property
     def joints(self) -> np.ndarray:
         if self.control_mode != "joint":
-            raise ValueError("This episode trajectory contains TCP targets, not joints.")
+            raise ValueError(
+                "This episode trajectory contains TCP targets, not joints."
+            )
         return self.targets
 
     @property
@@ -103,6 +107,11 @@ class RealManLeRobotDataset:
             "data_path",
             "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
         )
+        self.video_path = self.info.get(
+            "video_path",
+            "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
+        )
+        self._episode_table_cache: pd.DataFrame | None = None
         self._validate_metadata()
 
     def _validate_metadata(self) -> None:
@@ -112,13 +121,14 @@ class RealManLeRobotDataset:
             raise ValueError("Dataset contains no episodes.")
         robot_type = str(self.info.get("robot_type", "")).lower()
         if robot_type and robot_type != "realman":
-            raise ValueError(
-                f"Dataset robot_type is '{robot_type}', not 'realman'."
-            )
+            raise ValueError(f"Dataset robot_type is '{robot_type}', not 'realman'.")
 
         feature = self.info.get("features", {}).get(self.source)
         if not isinstance(feature, dict):
-            raise ValueError(f"Dataset does not contain feature '{self.source}'.")
+            # This is an invalid metadata value/schema, not a caller type error.
+            raise ValueError(  # noqa: TRY004
+                f"Dataset does not contain feature '{self.source}'."
+            )
         shape = tuple(feature.get("shape", ()))
         if shape != (REALMAN_DOF,):
             representation = (
@@ -188,17 +198,141 @@ class RealManLeRobotDataset:
             self.control_mode,
         )
 
+    @property
+    def video_keys(self) -> list[str]:
+        """Return the dataset features backed by per-episode video files."""
+        return sorted(
+            key
+            for key, feature in self.info.get("features", {}).items()
+            if isinstance(feature, dict) and feature.get("dtype") == "video"
+        )
+
+    def episode_video_path(self, episode_index: int, video_key: str) -> Path:
+        """Resolve one episode video using LeRobot v3 episode metadata.
+
+        v3 packs many episodes into each mp4. ``file_index`` is the packed
+        video file from ``meta/episodes``, not ``episode_index % chunks_size``.
+        """
+        if video_key not in self.video_keys:
+            raise KeyError(f"Dataset does not contain video feature '{video_key}'.")
+        if not 0 <= episode_index < self.total_episodes:
+            raise IndexError(
+                f"Episode {episode_index} is outside [0, {self.total_episodes - 1}]."
+            )
+        chunk_index, file_index = self._legacy_chunk_file(episode_index)
+        row = self._episode_row(episode_index)
+        if row is not None:
+            packed_chunk = _optional_int(row, f"videos/{video_key}/chunk_index")
+            packed_file = _optional_int(row, f"videos/{video_key}/file_index")
+            if packed_chunk is not None and packed_file is not None:
+                chunk_index, file_index = packed_chunk, packed_file
+        return self.root / self.video_path.format(
+            video_key=video_key,
+            chunk_index=chunk_index,
+            file_index=file_index,
+            episode_index=episode_index,
+        )
+
+    def episode_video_from_timestamp(self, episode_index: int, video_key: str) -> float:
+        """Return the packed-video timestamp of this episode's first frame."""
+        row = self._episode_row(episode_index)
+        if row is None:
+            return 0.0
+        timestamp = _optional_float(row, f"videos/{video_key}/from_timestamp")
+        return 0.0 if timestamp is None else timestamp
+
+    def load_first_camera_frames(self, episode_index: int) -> dict[str, np.ndarray]:
+        """Decode the first BGR frame of every camera video in an episode."""
+        frames: dict[str, np.ndarray] = {}
+        for video_key in self.video_keys:
+            path = self.episode_video_path(episode_index, video_key)
+            if not path.is_file():
+                logger.warning(
+                    "Episode %d camera video is missing for '%s': %s",
+                    episode_index,
+                    video_key,
+                    path,
+                )
+                continue
+            frame = read_first_video_frame(
+                path,
+                timestamp_s=self.episode_video_from_timestamp(episode_index, video_key),
+            )
+            if frame is None:
+                logger.warning(
+                    "Could not decode the first frame of episode %d camera '%s': %s",
+                    episode_index,
+                    video_key,
+                    path,
+                )
+                continue
+            frames[video_key] = frame
+        return frames
+
+    def _legacy_chunk_file(self, episode_index: int) -> tuple[int, int]:
+        return episode_index // self.chunks_size, episode_index % self.chunks_size
+
+    def _episode_table(self) -> pd.DataFrame:
+        if self._episode_table_cache is not None:
+            return self._episode_table_cache
+        paths = sorted((self.root / "meta" / "episodes").rglob("*.parquet"))
+        if not paths:
+            self._episode_table_cache = pd.DataFrame()
+            return self._episode_table_cache
+        try:
+            frames = [pd.read_parquet(path) for path in paths]
+        except Exception as exc:  # noqa: BLE001 - parquet/pyarrow errors vary.
+            logger.warning("Could not read LeRobot episode metadata: %s", exc)
+            self._episode_table_cache = pd.DataFrame()
+            return self._episode_table_cache
+        table = pd.concat(frames, ignore_index=True)
+        if "episode_index" in table.columns:
+            table = table.sort_values("episode_index").reset_index(drop=True)
+        self._episode_table_cache = table
+        return table
+
+    def _episode_row(self, episode_index: int) -> pd.Series | None:
+        table = self._episode_table()
+        if table.empty or "episode_index" not in table.columns:
+            return None
+        matches = table[table["episode_index"] == episode_index]
+        if matches.empty:
+            return None
+        return matches.iloc[0]
+
     def _load_episode_frames(self, episode_index: int) -> pd.DataFrame:
-        chunk_index = episode_index // self.chunks_size
+        chunk_index, file_index = self._legacy_chunk_file(episode_index)
         exact_path = self.root / self.data_path.format(
             chunk_index=chunk_index,
-            file_index=episode_index % self.chunks_size,
+            file_index=file_index,
         )
-        # Parquet files may hold several episodes (chunked by frames), so scan
-        # the whole chunk directory rather than assuming one file per episode.
-        paths = sorted(
+        row = self._episode_row(episode_index)
+        preferred: list[Path] = []
+        if row is not None:
+            packed_chunk = _optional_int(row, "data/chunk_index")
+            packed_file = _optional_int(row, "data/file_index")
+            if packed_chunk is not None and packed_file is not None:
+                meta_path = self.root / self.data_path.format(
+                    chunk_index=packed_chunk,
+                    file_index=packed_file,
+                )
+                if meta_path.is_file():
+                    preferred.append(meta_path)
+                    exact_path = meta_path
+                    chunk_index = packed_chunk
+
+        # Packed v3 files hold several episodes, so scan the chunk if the
+        # metadata path is missing or does not contain this episode.
+        chunk_paths = sorted(
             (self.root / "data" / f"chunk-{chunk_index:03d}").glob("*.parquet")
         )
+        paths: list[Path] = []
+        seen: set[Path] = set()
+        for path in preferred + chunk_paths:
+            if path in seen:
+                continue
+            seen.add(path)
+            paths.append(path)
         if not paths:
             raise FileNotFoundError(
                 f"No parquet data found for episode {episode_index}; expected "
@@ -216,6 +350,8 @@ class RealManLeRobotDataset:
                 continue
             if not frame.empty:
                 matches.append(frame)
+                if path in preferred:
+                    break
         if not matches:
             raise ValueError(f"No rows found for episode {episode_index}.")
         return pd.concat(matches, ignore_index=True)
@@ -225,10 +361,15 @@ class RealManLeRobotDataset:
         if key in frames:
             try:
                 return np.stack(
-                    [np.asarray(value, dtype=float).reshape(-1) for value in frames[key]]
+                    [
+                        np.asarray(value, dtype=float).reshape(-1)
+                        for value in frames[key]
+                    ]
                 )
             except ValueError as exc:
-                raise ValueError(f"Feature '{key}' contains inconsistent vectors.") from exc
+                raise ValueError(
+                    f"Feature '{key}' contains inconsistent vectors."
+                ) from exc
 
         prefixes = (f"{key}.", f"{key}_")
         columns = sorted(
@@ -242,6 +383,293 @@ class RealManLeRobotDataset:
                 f"{list(frames.columns)}"
             )
         return frames[columns].to_numpy(dtype=float)
+
+
+def _optional_int(row: pd.Series, key: str) -> int | None:
+    if key not in row.index:
+        return None
+    value = row[key]
+    if value is None or (isinstance(value, (float, np.floating)) and np.isnan(value)):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(row: pd.Series, key: str) -> float | None:
+    if key not in row.index:
+        return None
+    value = row[key]
+    if value is None or (isinstance(value, (float, np.floating)) and np.isnan(value)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def read_first_video_frame(
+    path: str | Path,
+    *,
+    timestamp_s: float = 0.0,
+) -> np.ndarray | None:
+    """Decode a video frame as uint8 BGR, seeking when episodes share one file."""
+    import cv2
+
+    capture = cv2.VideoCapture(str(path))
+    try:
+        if capture.isOpened():
+            if timestamp_s > 0.0:
+                capture.set(cv2.CAP_PROP_POS_MSEC, timestamp_s * 1000.0)
+            success, frame = capture.read()
+            if success and frame is not None:
+                return frame
+    finally:
+        capture.release()
+
+    try:
+        import av
+    except ImportError:
+        return None
+
+    try:
+        with av.open(str(path)) as container:
+            if timestamp_s > 0.0:
+                container.seek(int(timestamp_s * av.time_base))
+            for decoded in container.decode(video=0):
+                frame_time = decoded.time
+                if (
+                    timestamp_s > 0.0
+                    and frame_time is not None
+                    and frame_time + 1e-3 < timestamp_s
+                ):
+                    continue
+                return decoded.to_ndarray(format="bgr24")
+    except Exception as exc:  # noqa: BLE001 - PyAV backend exceptions vary by codec.
+        logger.debug("PyAV could not decode %s: %s", path, exc)
+    return None
+
+
+def camera_name_from_video_key(video_key: str, fallback_index: int) -> str:
+    """Map observation.images.camera_0-style keys to live camera names."""
+    match = re.search(r"camera[_-]?(\d+)", video_key)
+    if match:
+        return f"camera_{int(match.group(1))}"
+    return f"camera_{fallback_index}"
+
+
+def _uint8_rgb_to_bgr(frame: np.ndarray) -> np.ndarray:
+    """Convert an airo-camera-toolkit RGB image into OpenCV BGR."""
+    import cv2
+
+    image = np.asarray(frame)
+    if image.dtype != np.uint8:
+        if image.size and np.issubdtype(image.dtype, np.floating):
+            finite_max = float(np.nanmax(image))
+            if finite_max <= 1.5:
+                image = image * 255.0
+        image = np.clip(image, 0, 255).astype(np.uint8)
+    if image.ndim == 2:
+        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    if image.ndim != 3 or image.shape[2] not in {3, 4}:
+        raise ValueError(f"Unsupported live camera frame shape {image.shape}.")
+    conversion = cv2.COLOR_RGBA2BGR if image.shape[2] == 4 else cv2.COLOR_RGB2BGR
+    return cv2.cvtColor(image, conversion)
+
+
+def _resize_to_match(frame: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Cover-crop ``frame`` to ``target`` HxW without stretching."""
+    import cv2
+
+    target_h, target_w = int(target.shape[0]), int(target.shape[1])
+    src_h, src_w = int(frame.shape[0]), int(frame.shape[1])
+    if (src_h, src_w) == (target_h, target_w):
+        return frame
+    scale = max(target_w / src_w, target_h / src_h)
+    new_w = max(1, int(round(src_w * scale)))
+    new_h = max(1, int(round(src_h * scale)))
+    interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+    resized = cv2.resize(frame, (new_w, new_h), interpolation=interpolation)
+    x0 = max(0, (new_w - target_w) // 2)
+    y0 = max(0, (new_h - target_h) // 2)
+    cropped = resized[y0 : y0 + target_h, x0 : x0 + target_w]
+    if cropped.shape[:2] == (target_h, target_w):
+        return cropped
+    canvas = np.zeros((target_h, target_w, frame.shape[2]), dtype=frame.dtype)
+    canvas[: cropped.shape[0], : cropped.shape[1]] = cropped
+    return canvas
+
+
+def _labeled_frame(frame: np.ndarray, label: str) -> np.ndarray:
+    import cv2
+
+    result = frame.copy()
+    cv2.rectangle(result, (0, 0), (min(result.shape[1], 260), 28), (0, 0, 0), -1)
+    cv2.putText(
+        result,
+        label,
+        (8, 20),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (235, 235, 235),
+        1,
+        cv2.LINE_AA,
+    )
+    return result
+
+
+def _opencv_window_available() -> tuple[bool, str]:
+    """Check common headless cases before calling cv2.imshow()."""
+    import cv2
+
+    gui_line = next(
+        (
+            line.strip()
+            for line in cv2.getBuildInformation().splitlines()
+            if line.strip().startswith("GUI:")
+        ),
+        "GUI: UNKNOWN",
+    )
+    if "NONE" in gui_line:
+        return False, f"OpenCV has no GUI backend ({gui_line})."
+    if os.name == "posix" and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        return False, "DISPLAY/WAYLAND_DISPLAY is not set."
+    return True, gui_line
+
+
+def run_camera_alignment(
+    dataset: RealManLeRobotDataset,
+    episode_index: int,
+) -> bool:
+    """Block replay while dataset first frames are overlaid on live cameras.
+
+    Returns True when an interactive alignment view was shown, otherwise False.
+    """
+    import cv2
+
+    window_available, reason = _opencv_window_available()
+    if not window_available:
+        logger.warning("Skipping camera alignment: %s", reason)
+        return False
+
+    dataset_frames = dataset.load_first_camera_frames(episode_index)
+    if not dataset_frames:
+        logger.warning(
+            "Skipping camera alignment: episode %d has no readable camera first frame.",
+            episode_index,
+        )
+        return False
+
+    try:
+        import pyrealsense2 as rs
+        from airo_camera_toolkit.cameras.realsense.realsense import Realsense
+    except ImportError as exc:
+        logger.warning(
+            "Skipping camera alignment: RealSense support is unavailable: %s", exc
+        )
+        return False
+
+    devices = rs.context().query_devices()
+    serial_numbers: list[str] = []
+    for index, device in enumerate(devices):
+        serial = device.get_info(rs.camera_info.serial_number)
+        name = device.get_info(rs.camera_info.name)
+        serial_numbers.append(serial)
+        logger.info("RealSense camera %d: %s, serial=%s", index, name, serial)
+    if not serial_numbers:
+        logger.warning("Skipping camera alignment: no RealSense camera is connected.")
+        return False
+
+    cameras: dict[str, Any] = {}
+    windows: list[str] = []
+    try:
+        for fallback_index, video_key in enumerate(dataset_frames):
+            camera_name = camera_name_from_video_key(video_key, fallback_index)
+            match = re.search(r"camera_(\d+)$", camera_name)
+            camera_index = int(match.group(1)) if match else fallback_index
+            if camera_index >= len(serial_numbers):
+                logger.warning(
+                    "Dataset camera '%s' maps to %s, but only %d live camera(s) "
+                    "were detected.",
+                    video_key,
+                    camera_name,
+                    len(serial_numbers),
+                )
+                continue
+            # Dataset videos are 640x480. airo's RESOLUTION_480 is 848x480, which
+            # stretches into the overlay and makes the live scene look too tall.
+            dataset_height, dataset_width = dataset_frames[video_key].shape[:2]
+            live_resolution = (int(dataset_width), int(dataset_height))
+            cameras[video_key] = Realsense(
+                fps=30,
+                resolution=live_resolution,
+                enable_depth=False,
+                enable_pointcloud=False,
+                enable_hole_filling=False,
+                serial_number=serial_numbers[camera_index],
+            )
+            windows.append(f"Camera alignment - {camera_name}")
+            logger.info(
+                "Live %s opened at %dx%d to match dataset frames.",
+                camera_name,
+                live_resolution[0],
+                live_resolution[1],
+            )
+
+        if not cameras:
+            logger.warning(
+                "Skipping camera alignment: no dataset/live camera pair matched."
+            )
+            return False
+
+        logger.info(
+            "Align episode %d using dataset first frame | live camera | 50%% overlay.",
+            episode_index,
+        )
+        logger.info("Press q, Enter, or Esc when camera alignment is complete.")
+        while True:
+            for (video_key, camera), window_name in zip(cameras.items(), windows):
+                camera.grab_images()
+                live_frame = _uint8_rgb_to_bgr(camera.retrieve_rgb_image())
+                dataset_frame = dataset_frames[video_key]
+                live_frame = _resize_to_match(live_frame, dataset_frame)
+                overlay = cv2.addWeighted(dataset_frame, 0.5, live_frame, 0.5, 0.0)
+                display = np.concatenate(
+                    [
+                        _labeled_frame(dataset_frame, "dataset first frame"),
+                        _labeled_frame(live_frame, "live camera"),
+                        _labeled_frame(overlay, "50% overlay"),
+                    ],
+                    axis=1,
+                )
+                cv2.imshow(window_name, display)
+            if cv2.waitKey(1) & 0xFF in {ord("q"), 10, 13, 27}:
+                return True
+    except (RuntimeError, ValueError, cv2.error) as exc:
+        logger.warning(
+            "Camera alignment stopped because capture/display failed: %s", exc
+        )
+        return False
+    finally:
+        for camera in cameras.values():
+            close = getattr(camera, "close", None)
+            try:
+                if callable(close):
+                    close()
+                else:
+                    pipeline = getattr(camera, "pipeline", None)
+                    if pipeline is not None:
+                        pipeline.stop()
+            except RuntimeError as exc:
+                logger.debug("Ignoring RealSense shutdown error: %s", exc)
+        for window_name in windows:
+            try:
+                cv2.destroyWindow(window_name)
+            except cv2.error:
+                pass
 
 
 def validate_trajectory_speed(
@@ -463,7 +891,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Joint feature to command in --control-mode joint. "
         "observation.state (the measured trajectory) is the safe default; "
         "action may contain command-target glitches.",
-
     )
     parser.add_argument(
         "--initial-speed",
@@ -497,6 +924,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate and summarize episodes without connecting to the robot.",
     )
     parser.add_argument(
+        "--align-camera",
+        action="store_true",
+        help="Before each episode replay, overlay its dataset camera first frame "
+        "with the matching live RealSense image for manual scene alignment.",
+    )
+    parser.add_argument(
         "--yes",
         action="store_true",
         help="Skip the confirmation prompts (not recommended for first replay).",
@@ -521,8 +954,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.control_mode == "joint":
             validate_trajectory_speed(trajectory, args.max_joint_speed)
             logger.info(
-                "Episode %d: %d joint frames, %.2f s, max joint speed "
-                "%.3f rad/s.",
+                "Episode %d: %d joint frames, %.2f s, max joint speed %.3f rad/s.",
                 trajectory.episode_index,
                 len(trajectory.targets),
                 trajectory.duration_s,
@@ -549,6 +981,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     from airo_robots.manipulators.hardware.realman import RealmanControl
+
     from config import Config
 
     robot = RealmanControl(ip_address=args.robot_ip, port=args.port)
@@ -577,6 +1010,8 @@ def main(argv: list[str] | None = None) -> int:
                 assume_yes=args.yes,
             )
             replayer.move_to_start(trajectory.targets[0])
+            if args.align_camera:
+                run_camera_alignment(dataset, trajectory.episode_index)
             confirm(
                 f"RealMan is at the start of episode {trajectory.episode_index}; "
                 "begin trajectory replay.",

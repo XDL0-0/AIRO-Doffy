@@ -1,0 +1,32 @@
+{
+  "name": "airo-doffy-key4-parallel-c8-bs32",
+  "description": "Parallel batch-size-32 training of dp_beaver_key4 and dp_beaver_key4_pca on one shared GPU and twelve CPUs",
+  "request": {
+    "resources": {
+      "gpus": 1,
+      "cpus": 12,
+      "cpuMemoryGb": 64,
+      "clusterId": 8
+    },
+    "docker": {
+      "image": "ramantalwarnr2/mt-lerobot:latest",
+      "command": [
+        "bash",
+        "-lc",
+        "set -Eeuo pipefail; stage_dir=/tmp/airo_key4_stage; ready_file=${stage_dir}/READY; echo 'Waiting for authenticated source/data staging...'; for stage_attempt in $(seq 1 900); do if [ -f \"${ready_file}\" ]; then exec bash \"${stage_dir}/run-key4-sequential-cluster8.sh\"; fi; sleep 2; done; echo 'Timed out waiting for staged inputs' >&2; exit 2"
+      ],
+      "environment": {},
+      "storage": [
+        {
+          "hostPath": "/project_ghent",
+          "containerPath": "/project_ghent"
+        }
+      ],
+      "portMappings": []
+    },
+    "scheduling": {
+      "interactive": false,
+      "maxDuration": "3 days"
+    }
+  }
+}

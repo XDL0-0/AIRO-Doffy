@@ -115,6 +115,28 @@ class BeaverProtocolTests(unittest.TestCase):
         self.assertEqual(serial_port.read_sizes, [1])
         self.assertTrue(serial_port.closed)
 
+    def test_reader_does_not_warn_when_serial_read_is_interrupted_by_stop(self) -> None:
+        stop_event = threading.Event()
+
+        class FakeSerial:
+            in_waiting = 1
+
+            def read(self, _size):
+                stop_event.set()
+                raise TypeError("'NoneType' object cannot be interpreted as an integer")
+
+            def close(self):
+                pass
+
+        reader = BeaverReader(device="/dev/fake", sensor_layout=LAYOUT)
+        with (
+            patch("beaver.open_port", return_value=FakeSerial()),
+            patch("beaver.utils.logger.warning") as warning,
+        ):
+            reader.run(stop_event)
+
+        warning.assert_not_called()
+
 
 class FakeDataset:
     def __init__(self) -> None:
