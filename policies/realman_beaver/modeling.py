@@ -1745,6 +1745,12 @@ def build_policy(
         from policies.realman_beaver.modeling_wrm_wrap import WrapBeaverDPPolicy
 
         return WrapBeaverDPPolicy(config, normalizer)
+    if config.model.variant == "WRM_phase_ddim":
+        from policies.realman_beaver.modeling_wrm_phase_ddim import (
+            PhaseDDIMBeaverDPPolicy,
+        )
+
+        return PhaseDDIMBeaverDPPolicy(config, normalizer)
     if config.model.variant in WRAP_MONITOR_BEAVER_VARIANTS:
         from policies.realman_beaver.modeling_wrm_wrap_monitor import (
             MonitorWrapBeaverDPPolicy,

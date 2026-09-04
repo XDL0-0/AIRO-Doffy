@@ -216,9 +216,15 @@ class WrapBeaverDPPolicy(nn.Module):
         j3_contact = sensor_min[:, j3_positions].amin(dim=-1) <= (
             model.beaver_wrap_contact_stop_mm
         )
-        j4_contact = sensor_min[:, j4_positions].amin(dim=-1) <= (
-            model.beaver_wrap_contact_stop_mm
+        j4_contact = (
+            sensor_min[:, j4_positions].amin(dim=-1)
+            <= model.beaver_wrap_contact_stop_mm
         )
+        overall_wrap = near.to(dtype=sensor_min.dtype).mean(dim=-1)
+        overall_contact = (
+            sensor_min.amin(dim=-1) <= model.beaver_wrap_contact_stop_mm
+        )
+
         stop_close_j3_wrap = (
             model.beaver_wrap_stop_close_j3_wrap
             if model.beaver_wrap_stop_close_j3_wrap is not None
@@ -232,22 +238,58 @@ class WrapBeaverDPPolicy(nn.Module):
         j3_enclosed = j3_wrap >= stop_close_j3_wrap
         j4_enclosed = j4_wrap >= stop_close_j4_wrap
         enclosed = j3_enclosed & j4_enclosed
+
         hold = self._update_enclosure_hold(enclosed, sensor_min)
         ready_j3 = j3_enclosed & j3_contact
         ready_j4 = j4_enclosed & j4_contact
-        stop_hold = int(model.beaver_wrap_stop_hold_frames)
-        lift_hold = int(model.beaver_wrap_lift_hold_frames)
+        stop_hold = int(model.beaver_wrap_stop_hold_frames or 0)
+        lift_hold = int(model.beaver_wrap_lift_hold_frames or 0)
         held_stop = hold >= stop_hold if stop_hold else torch.ones_like(enclosed)
         held_lift = hold >= lift_hold if lift_hold else torch.ones_like(enclosed)
-        stop_close_j3 = ready_j3 & held_stop
-        stop_close_j4 = ready_j4 & held_stop
-        both_close_stopped = stop_close_j3 & stop_close_j4
-        # Lift needs one near-field sensor on each jaw, not 4/4 Key4 cells.
-        # Sensor 11 is frequently blind on large bottles and must not veto J1.
-        jaw_wrap = (j3_enclosed.to(dtype=sensor_min.dtype) + j4_enclosed.to(
-            dtype=sensor_min.dtype
-        )) * 0.5
-        block_lift = (jaw_wrap < model.beaver_wrap_lift_min_wrap) | (~held_lift)
+
+        # Check if caller explicitly requested different asymmetric per-joint thresholds
+        is_asymmetric = (
+            model.beaver_wrap_stop_close_j3_wrap is not None
+            and model.beaver_wrap_stop_close_j4_wrap is not None
+            and (
+                model.beaver_wrap_stop_close_j3_wrap
+                != model.beaver_wrap_stop_close_j4_wrap
+            )
+        )
+        if is_asymmetric:
+            stop_close_j3 = ready_j3 & held_stop
+            stop_close_j4 = ready_j4 & held_stop
+            both_close_stopped = stop_close_j3 & stop_close_j4
+        else:
+            # Unified overall wrap: fingers coordinate as a single hand
+            shared_wrap = (
+                model.beaver_wrap_stop_close_wrap
+                if model.beaver_wrap_stop_close_wrap is not None
+                else 0.5
+            )
+            both_close_stopped = (
+                (ready_j3 & ready_j4)
+                | (
+                    (overall_wrap >= shared_wrap)
+                    & overall_contact
+                )
+            ) & held_stop
+            stop_close_j3 = both_close_stopped
+            stop_close_j4 = both_close_stopped
+
+        # Lift releases as soon as overall or per-jaw wrap threshold is satisfied
+        jaw_wrap = torch.maximum(
+            overall_wrap,
+            (
+                j3_enclosed.to(dtype=sensor_min.dtype)
+                + j4_enclosed.to(dtype=sensor_min.dtype)
+            )
+            * 0.5,
+        )
+        block_lift = (jaw_wrap < model.beaver_wrap_lift_min_wrap) | (
+            ~held_lift
+        )
+
         lift_joint = 1
         gated[:, lift_joint] = torch.where(
             block_lift, joints[:, lift_joint], gated[:, lift_joint]

@@ -250,10 +250,12 @@ class Config:
     # visualizer without blocking robot-control or camera threads.
     beaver_enable: bool = True
     BEAVER_PORT: str | None = None       # None auto-detects ESP32-S3 USB CDC.
+    BEAVER_PORTS: list[str] | None = None  # None or list of multiple ESP32-S3 ports.
     BEAVER_BAUDRATE: int = 115200
     BEAVER_GRID_WIDTH: int = 4          # Must match ESP32 firmware (4 or 8).
     BEAVER_STALE_AFTER_S: float = 1.0
     BEAVER_RECONNECT_DELAY_S: float = 2.0
+    BEAVER_SIMULATE_8BIT: bool = True   # Quantize 16-bit distances to 10mm steps (0..2550mm) to match legacy 8-bit dataset distribution.
     # Stable dataset/visualizer slot order for the currently detected 5+4 sensors.
     BEAVER_SENSOR_LAYOUT: tuple = (
         (0, 0), (0, 1), (0, 2), (0, 3), (0, 4),
@@ -524,6 +526,7 @@ class Config:
             raise ValueError("BEAVER_RECONNECT_DELAY_S must be positive.")
         if self.BEAVER_VISUALIZER_MAX_MM <= 0:
             raise ValueError("BEAVER_VISUALIZER_MAX_MM must be positive.")
+        self.BEAVER_SIMULATE_8BIT = bool(self.BEAVER_SIMULATE_8BIT)
         layout = tuple(tuple(sensor) for sensor in self.BEAVER_SENSOR_LAYOUT)
         if (
             len(layout) != 9

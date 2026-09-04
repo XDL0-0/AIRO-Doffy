@@ -81,6 +81,9 @@ class EvalConfig:
             "WRM_lobo_monitor": (
                 "policies/downloaded/WRM_lobo_monitor/checkpoints/last.pt"
             ),
+            "WRM_phase_ddim": (
+                "policies/downloaded/WRM_phase_ddim/checkpoints/last.pt"
+            ),
             "WRM_wrap_delta": (
                 "policies/downloaded/WRM_wrap_delta/checkpoints/last.pt"
             ),
@@ -92,6 +95,12 @@ class EvalConfig:
     # Prefer the EMA weights saved in each checkpoint.
     USE_EMA: bool = True
     DEVICE: str = "cuda:0"
+
+    # Noise scheduler override for all Diffusion Policy variants.
+    # Set to "DDIM" to use the fast deterministic ODE sampler (e.g. 10..25 steps),
+    # or "DDPM" for the full stochastic 100-step reverse process. None preserves checkpoint default.
+    NOISE_SCHEDULER_TYPE: str | None = None
+    NUM_INFERENCE_STEPS: int | None = None
 
     # ── Control loop ─────────────────────────────────────────────────────
     # The dataset was recorded at 24 Hz and the policies were trained for it.
@@ -117,8 +126,8 @@ class EvalConfig:
     # Deprecated shared override; when set it applies to both J3 and J4.
     WRAP_STOP_CLOSE_WRAP: float | None = 0.5
     WRAP_CONTACT_STOP_MM: float | None = 10.0
-    WRAP_STOP_HOLD_FRAMES: int | None = 24
-    WRAP_LIFT_HOLD_FRAMES: int | None = 48
+    WRAP_STOP_HOLD_FRAMES: int | None = 0
+    WRAP_LIFT_HOLD_FRAMES: int | None = 0
 
     # ── Prediction / execution window ───────────────────────────────────
     # These are inference-time overrides. Edit the number for the policy you
@@ -157,6 +166,7 @@ class EvalConfig:
             "WRM_wrap_monitor": 16,
             "WRM_wrap_monitor_backup": 16,
             "WRM_lobo_monitor": 16,
+            "WRM_phase_ddim": 16,
             # Registered run names; checkpoint loading still dispatches by the
             # internal WRM_delta/WRM_adaptive variant above.
             "WRM_delta_all125": 16,
@@ -194,6 +204,7 @@ class EvalConfig:
             "WRM_wrap_monitor": 8,
             "WRM_wrap_monitor_backup": 8,
             "WRM_lobo_monitor": 8,
+            "WRM_phase_ddim": 8,
             "WRM_delta_all125": 8,
             "WRM_adaptive_all125": 8,
             "fm": 8,

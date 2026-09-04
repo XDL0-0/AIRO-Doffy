@@ -144,6 +144,32 @@ def configure_deployment_steps(
     return configured
 
 
+def configure_deployment_scheduler(
+    config: RealmanBeaverConfig,
+    *,
+    noise_scheduler_type: str | None = None,
+    num_inference_steps: int | None = None,
+) -> None:
+    """Override diffusion noise scheduler and inference steps at deployment."""
+    if noise_scheduler_type is not None:
+        scheduler = str(noise_scheduler_type).upper()
+        if scheduler not in {"DDPM", "DDIM"}:
+            raise ValueError(
+                f"Unsupported noise_scheduler_type '{noise_scheduler_type}'; choose DDPM or DDIM"
+            )
+        config.model.noise_scheduler_type = scheduler
+        if config.model.variant == "rdp_like":
+            config.rdp.latent_noise_scheduler_type = scheduler
+    if num_inference_steps is not None:
+        steps = int(num_inference_steps)
+        if steps <= 0:
+            raise ValueError("num_inference_steps must be positive")
+        config.model.num_inference_steps = steps
+        if config.model.variant == "rdp_like":
+            config.rdp.latent_num_inference_steps = steps
+    config.validate()
+
+
 def configure_wrap_deployment(
     config: RealmanBeaverConfig,
     *,
@@ -204,6 +230,8 @@ def load_policy(
     *,
     prediction_steps: int | None = None,
     action_steps: int | None = None,
+    noise_scheduler_type: str | None = None,
+    num_inference_steps: int | None = None,
     wrap_near_threshold_mm: float | None = None,
     wrap_range_scale_mm: float | None = None,
     wrap_lift_min_wrap: float | None = None,
@@ -260,6 +288,11 @@ def load_policy(
         config,
         prediction_steps=prediction_steps,
         action_steps=action_steps,
+    )
+    configure_deployment_scheduler(
+        config,
+        noise_scheduler_type=noise_scheduler_type,
+        num_inference_steps=num_inference_steps,
     )
     temporal_statistics = None
     delta_statistics = None

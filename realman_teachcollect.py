@@ -818,6 +818,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--task", default=defaults.TASK_NAME)
     parser.add_argument("--fps", type=int, default=defaults.COLLECT_RATE)
+    parser.add_argument(
+        "--beaver-simulate-8bit",
+        action="store_true",
+        default=False,
+        help="Quantize 16-bit Beaver distances to 10mm steps (matching legacy 8-bit dataset distribution)",
+    )
     return parser.parse_args()
 
 
@@ -841,6 +847,7 @@ def build_config(args: argparse.Namespace) -> Config:
         DEPTH_INFO_ENABLE=False,
         TACTILE_ENABLE=False,
         TACTILE_TRANSFER=False,
+        BEAVER_SIMULATE_8BIT=args.beaver_simulate_8bit,
     )
     return cfg
 

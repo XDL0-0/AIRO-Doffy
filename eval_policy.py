@@ -450,18 +450,23 @@ class MonitorWindow:
         n_sensors, grid, _ = distance.shape
         if n_sensors == 0 or status.shape != distance.shape:
             return canvas
-        cell = 14
-        tile = grid * cell
-        gap = 6
         cols = 3
         rows = int(np.ceil(n_sensors / cols))
-        x0 = (canvas.shape[1] - (cols * tile + (cols - 1) * gap)) // 2
-        y0 = (canvas.shape[0] - (rows * tile + (rows - 1) * gap)) // 2 + 10
+        tile = min(52, max(24, (195 - (rows - 1) * 6) // rows))
+        gap_text = 6
+        text_w = 64
+        item_w = tile + gap_text + text_w
+        gap_x = 16
+        gap_y = 6
+        total_w = cols * item_w + (cols - 1) * gap_x
+        total_h = rows * tile + (rows - 1) * gap_y
+        x0 = max(10, (canvas.shape[1] - total_w) // 2)
+        y0 = max(24, 24 + (195 - total_h) // 2)
         norm = max(self.distance_max_mm, 1.0)
         for s in range(n_sensors):
             r, c = divmod(s, cols)
-            ox = x0 + c * (tile + gap)
-            oy = y0 + r * (tile + gap)
+            ox = x0 + c * (item_w + gap_x)
+            oy = y0 + r * (tile + gap_y)
             present_s = bool(present[s]) if s < len(present) else False
             valid = (
                 present_s
@@ -492,38 +497,37 @@ class MonitorWindow:
                 border,
                 1,
             )
+            tx = ox + tile + gap_text
             cv2.putText(
                 canvas,
                 f"S{s}",
-                (ox + 2, oy + 12),
+                (tx, oy + 13),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.35,
-                (255, 255, 255),
+                0.38,
+                (255, 255, 255) if present_s else (150, 150, 150),
                 1,
                 cv2.LINE_AA,
             )
-            metric_height = 24
-            cv2.rectangle(
+            cv2.putText(
                 canvas,
-                (ox, oy + tile - metric_height),
-                (ox + tile - 1, oy + tile - 1),
-                (0, 0, 0),
-                -1,
+                min_text,
+                (tx, oy + 29),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.30,
+                (200, 200, 200),
+                1,
+                cv2.LINE_AA,
             )
-            for text, baseline in (
-                (min_text, oy + tile - 13),
-                (avg_text, oy + tile - 2),
-            ):
-                cv2.putText(
-                    canvas,
-                    text,
-                    (ox + 2, baseline),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.26,
-                    (255, 255, 255),
-                    1,
-                    cv2.LINE_AA,
-                )
+            cv2.putText(
+                canvas,
+                avg_text,
+                (tx, oy + 45),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.30,
+                (200, 200, 200),
+                1,
+                cv2.LINE_AA,
+            )
         return canvas
 
 
@@ -602,6 +606,8 @@ class PolicyEvaluator:
             use_ema=eval_cfg.USE_EMA,
             prediction_steps=requested_prediction_steps,
             action_steps=requested_action_steps,
+            noise_scheduler_type=eval_cfg.NOISE_SCHEDULER_TYPE,
+            num_inference_steps=eval_cfg.NUM_INFERENCE_STEPS,
             wrap_near_threshold_mm=(
                 eval_cfg.WRAP_NEAR_THRESHOLD_MM
                 if checkpoint_variant in {"WRM_wrap", "WRM_wrap_delta"}
@@ -876,8 +882,9 @@ class PolicyEvaluator:
 
     def _current_gate_status(self) -> dict[str, bool | None] | None:
         """Return the latest inference gate states for the live monitor."""
-        is_wrap_policy = self.variant in {"WRM_wrap", "WRM_wrap_delta"}
-        is_monitor_gate_policy = self.variant in {
+        variant = getattr(self, "variant", None)
+        is_wrap_policy = variant in {"WRM_wrap", "WRM_wrap_delta"}
+        is_monitor_gate_policy = variant in {
             "WRM_wrap_monitor",
             "WRM_wrap_monitor_backup",
             "WRM_lobo_monitor",
@@ -1645,12 +1652,16 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--wrap-stop-hold-frames",
+        "--wrap-stop-hold",
+        dest="wrap_stop_hold_frames",
         type=int,
         default=None,
         help="Frames both jaws must stay enclosed before J3/J4 freeze",
     )
     parser.add_argument(
         "--wrap-lift-hold-frames",
+        "--wrap-lift-hold",
+        dest="wrap_lift_hold_frames",
         type=int,
         default=None,
         help="Frames both jaws must stay enclosed before J1 is released",
@@ -1681,6 +1692,32 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Start episode 0 without waiting for Enter",
     )
+    parser.add_argument(
+        "--beaver-simulate-8bit",
+        action="store_true",
+        default=False,
+        help="Quantize 16-bit Beaver distances to 10mm steps (matching legacy 8-bit dataset distribution)",
+    )
+    parser.add_argument(
+        "--ddim",
+        action="store_true",
+        default=False,
+        help="Use fast DDIM ODE scheduler for all evaluated Diffusion Policies",
+    )
+    parser.add_argument(
+        "--scheduler",
+        choices=["DDPM", "DDIM"],
+        default=None,
+        help="Explicitly choose diffusion noise scheduler (DDPM or DDIM)",
+    )
+    parser.add_argument(
+        "--num-inference-steps",
+        "--inference-steps",
+        dest="num_inference_steps",
+        type=int,
+        default=None,
+        help="Number of diffusion inference denoising steps (e.g. 15 for DDIM, 100 for DDPM)",
+    )
     return parser.parse_args()
 
 
@@ -1688,6 +1725,18 @@ def main() -> None:
     args = _parse_args()
     eval_cfg = EvalConfig()
     hw_cfg = Config()
+
+    if args.beaver_simulate_8bit:
+        hw_cfg.BEAVER_SIMULATE_8BIT = True
+
+    if args.ddim:
+        eval_cfg.NOISE_SCHEDULER_TYPE = "DDIM"
+        if eval_cfg.NUM_INFERENCE_STEPS is None:
+            eval_cfg.NUM_INFERENCE_STEPS = 15
+    if args.scheduler is not None:
+        eval_cfg.NOISE_SCHEDULER_TYPE = args.scheduler
+    if args.num_inference_steps is not None:
+        eval_cfg.NUM_INFERENCE_STEPS = args.num_inference_steps
 
     if args.checkpoint_root:
         checkpoint_root = Path(args.checkpoint_root).expanduser()
