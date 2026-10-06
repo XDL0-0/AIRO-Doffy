@@ -1,10 +1,10 @@
 """Realtime UR TCP force/torque visualization dashboard.
 
 Run with a real robot:
-    python test_tool/ForceVisualize.py --ip 10.42.0.162 --robot-type ur3e
+    python test_tool/ForceVisualize.py --ip 192.0.2.30 --robot-type ur3e
 
 Move the TCP xyz with airo-mono servo_to_tcp_pose while keeping rotation fixed:
-    python test_tool/ForceVisualize.py --ip 10.42.0.162 --robot-type ur3e \
+    python test_tool/ForceVisualize.py --ip 192.0.2.30 --robot-type ur3e \
         --payload-cog 0 0 0.058 --tcp-xyz-experiment
 
 Preview the UI without hardware:

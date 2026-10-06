@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import select
+import shutil
 import socket
 import subprocess
 import sys
@@ -37,8 +38,7 @@ from doffy_teleop.protocol.jpeg import JpegChunkAssembler, JpegChunkSender
 
 
 MONO_DEFAULT = Path(
-    "/home/yuyuan/Unity/Hub/Editor/6000.5.6f1/Editor/"
-    "Data/MonoBleedingEdge/bin/mono"
+    os.environ.get("DOFFY_MONO") or shutil.which("mono") or "mono"
 )
 CSHARP_HARNESS_DEFAULT = Path("/tmp/teleop-protocol-tests.exe")
 
@@ -209,7 +209,7 @@ def run_unity_csharp_loopback(
         output_path.unlink(missing_ok=True)
 
 
-def run_realsense_capture(*, frames: int = 3, chunk_size: int = 180, csharp_harness: Path | None = None) -> dict[str, Any]:
+def run_realsense_capture(*, frames: int = 3, chunk_size: int = 180, csharp_harness: Path | None = None, mono: Path = MONO_DEFAULT) -> dict[str, Any]:
     """Capture a few frames from the first visible RealSense, if available."""
 
     try:
@@ -296,7 +296,7 @@ def run_realsense_capture(*, frames: int = 3, chunk_size: int = 180, csharp_harn
         if csharp_harness is not None:
             stage = "camera_to_csharp_udp"
             bgr = cv2.cvtColor(np.clip(rgb * 255, 0, 255).astype(np.uint8) if rgb.dtype != np.uint8 else rgb, cv2.COLOR_RGB2BGR)
-            csharp = run_unity_csharp_loopback(harness=csharp_harness, image=bgr, chunk_size=1200)
+            csharp = run_unity_csharp_loopback(mono=mono, harness=csharp_harness, image=bgr, chunk_size=1200)
             if csharp["status"] != "passed":
                 raise RuntimeError(f"Camera to C# did not pass: {csharp}")
         return {
@@ -337,12 +337,13 @@ def main() -> int:
     parser.add_argument("--realsense", action="store_true", help="capture a few frames only from the first RealSense")
     parser.add_argument("--frames", type=int, default=3, help="RealSense frames to capture")
     parser.add_argument("--harness", type=Path, default=CSHARP_HARNESS_DEFAULT, help="compiled C# ProtocolHarness.exe path")
+    parser.add_argument("--mono", type=Path, default=MONO_DEFAULT, help="Mono runtime (or set DOFFY_MONO)")
     args = parser.parse_args()
     results: list[dict[str, Any]] = [run_python_udp_loopback()]
     if args.csharp:
-        results.append(run_unity_csharp_loopback(harness=args.harness))
+        results.append(run_unity_csharp_loopback(mono=args.mono.expanduser().resolve(), harness=args.harness))
     if args.realsense:
-        results.append(run_realsense_capture(frames=args.frames, csharp_harness=args.harness if args.csharp else None))
+        results.append(run_realsense_capture(frames=args.frames, csharp_harness=args.harness if args.csharp else None, mono=args.mono.expanduser().resolve()))
     print(json.dumps(results, ensure_ascii=False, indent=2))
     return 0 if all(result["status"] in {"passed", "skipped"} for result in results) else 1
 

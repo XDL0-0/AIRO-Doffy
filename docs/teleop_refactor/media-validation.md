@@ -1,5 +1,7 @@
 # PC media/通信拆分验证
 
+> Public copy: local paths, device identifiers and site addresses are anonymized; recorded results and version/hash data are unchanged.
+
 日期：2026-09-16\
 范围：仅修改本任务拥有的 `udp.py`、`WebRTC_udp.py`、`doffy_teleop/media/`、`doffy_teleop/protocol/`、媒体测试、回环脚本和本报告。`config.py`、`main.py`、`realman_teleop.py` 及其他根模块未改动。
 
@@ -84,7 +86,7 @@ PYTHONWARNINGS=ignore /tmp/airo-teleop-qa/bin/python -m pytest -q \
 /tmp/airo-teleop-qa/bin/python scripts/teleop_refactor/media_loopback.py --realsense --frames 3
 ```
 
-本机发现 RealSense D435 serial `231122072220`。脚本只打开相机，抓取三帧并通过并发排空的本地 Python UDP；实际输出为 `status=passed`、`captured_frames=3`，三帧解码尺寸均为 `[480, 640]`。发送和接收均为 `127.0.0.1`，没有导入或操作机器人。脚本在相机初始化、抓帧、JPEG 编码、UDP bind、UDP loopback 各阶段记录失败位置；若设备被占用或现场采集超时，会报告 `status=unavailable` 与具体 `stage`，不会把相机失败伪装成网络通过。
+本机发现 RealSense D435 serial `REALSENSE_SERIAL_REDACTED`。脚本只打开相机，抓取三帧并通过并发排空的本地 Python UDP；实际输出为 `status=passed`、`captured_frames=3`，三帧解码尺寸均为 `[480, 640]`。发送和接收均为 `127.0.0.1`，没有导入或操作机器人。脚本在相机初始化、抓帧、JPEG 编码、UDP bind、UDP loopback 各阶段记录失败位置；若设备被占用或现场采集超时，会报告 `status=unavailable` 与具体 `stage`，不会把相机失败伪装成网络通过。
 
 ## 剩余集成边界
 

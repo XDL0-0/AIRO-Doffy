@@ -19,9 +19,16 @@ import textwrap
 
 
 REPO = Path(__file__).resolve().parents[2]
-UNITY = Path(os.environ.get("DOFFY_UNITY_PROJECT", "/home/yuyuan/UNITY_Project/Codex"))
-EDITOR_DATA = Path(os.environ.get("DOFFY_UNITY_EDITOR_DATA", "/home/yuyuan/Unity/Hub/Editor/6000.5.6f1/Editor/Data"))
-REFERENCE = Path(os.environ.get("DOFFY_UNITY_REFERENCE_PROJECT", "/home/yuyuan/UNITY_Project/classic"))
+def required_path(name: str) -> Path:
+    value = os.environ.get(name)
+    if not value:
+        raise SystemExit(f"Set {name} to the local Unity project/SDK path before running this check.")
+    return Path(value).expanduser().resolve()
+
+
+UNITY = required_path("DOFFY_UNITY_PROJECT")
+EDITOR_DATA = required_path("DOFFY_UNITY_EDITOR_DATA")
+REFERENCE = Path(os.environ.get("DOFFY_UNITY_REFERENCE_PROJECT") or UNITY).expanduser().resolve()
 NEWTONSOFT = next(
     (UNITY / "Library").glob("PackageCache/com.unity.nuget.newtonsoft-json*/Runtime/Newtonsoft.Json.dll"),
     next((REFERENCE / "Library").glob("PackageCache/com.unity.nuget.newtonsoft-json*/Runtime/Newtonsoft.Json.dll"), None),

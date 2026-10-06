@@ -9,12 +9,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts/teleop_refactor/run_webrtc_csharp_checks.py"
-UNITY = Path(os.environ.get("DOFFY_UNITY_PROJECT", "/home/yuyuan/UNITY_Project/Codex"))
-EDITOR = Path(os.environ.get("DOFFY_UNITY_EDITOR_DATA", "/home/yuyuan/Unity/Hub/Editor/6000.5.6f1/Editor/Data"))
+UNITY = Path(os.environ["DOFFY_UNITY_PROJECT"]).expanduser().resolve() if os.environ.get("DOFFY_UNITY_PROJECT") else None
+EDITOR = Path(os.environ["DOFFY_UNITY_EDITOR_DATA"]).expanduser().resolve() if os.environ.get("DOFFY_UNITY_EDITOR_DATA") else None
 
 
 def test_real_video_signaling_client_against_aiohttp_server():
-    if not UNITY.is_dir() or not (EDITOR / "MonoBleedingEdge/bin-linux64/mcs").is_file():
+    if UNITY is None or EDITOR is None or not UNITY.is_dir() or not (EDITOR / "MonoBleedingEdge/bin-linux64/mcs").is_file():
         pytest.skip("Optional Unity C# integration requires the Quest source and Unity SDK; configure DOFFY_UNITY_PROJECT/DOFFY_UNITY_EDITOR_DATA")
     result = subprocess.run(
         [sys.executable, str(RUNNER)],

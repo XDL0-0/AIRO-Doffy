@@ -32,8 +32,9 @@ def data_process( frame):
     # frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     return frame_rgb
 
-ur = URrtde("10.42.0.162", URrtde.UR3E_CONFIG)
-gripper = Robotiq2F85("10.42.0.162")
+robot_ip = os.environ.get("DOFFY_UR_IP", "192.0.2.30")
+ur = URrtde(robot_ip, URrtde.UR3E_CONFIG)
+gripper = Robotiq2F85(robot_ip)
 ur.gripper = gripper
 gripper_delta_step_size = 0.01
 

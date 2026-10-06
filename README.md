@@ -98,17 +98,24 @@ Additionally, this project depends on custom robotic libraries. Ensure the follo
 ## Configuration
 The system uses [`doffy_teleop/config.py`](doffy_teleop/config.py) as its central configuration. Key settings:
 
+Local PC, Quest and UR addresses are configured with `DOFFY_PC_IP`,
+`DOFFY_VR_IP` and `DOFFY_UR_IP`; the `192.0.2.x` defaults below are documentation
+examples and must be replaced before connecting. `DOFFY_REALMAN_STATE_PUSH_IP`
+overrides the separate wired host example. Explicit `Config(...)` arguments
+still take precedence. See [release hygiene and local setup](docs/release-hygiene.md)
+for the reviewed robot defaults, Unity tool paths and regression check.
+
 ### Network & Robot
 | Parameter | Description | Default |
 |---|---|---|
 | `ROBOT_TYPE` | Robot backend (`ur3e` / `ur5e` / `realman`) | `realman` |
 | `ROBOT_IP` | Robot controller IP; UR types fall back to `UR_IP` when this is set to `None` | `192.168.1.18` |
-| `UR_IP` | UR robot IP address fallback | `10.42.0.162` |
+| `UR_IP` | UR robot IP address fallback | `192.0.2.30` |
 | `REALMAN_PORT` | RealMan API port | `8080` |
 | `REALMAN_READ_RETRIES` | Attempts for transient RealMan state-read timeouts | `3` |
 | `REALMAN_RETRY_DELAY` | Delay between RealMan state-read retries in seconds | `0.05` |
-| `PC_IP` | Host PC interface reachable by the VR headset | `10.10.130.209` |
-| `VR_IP` | VR headset IP address | `10.10.131.245` |
+| `PC_IP` | Host PC interface reachable by the VR headset | `192.0.2.10` |
+| `VR_IP` | VR headset IP address | `192.0.2.20` |
 | `REALMAN_STATE_PUSH_IP` | Host PC interface reachable by the robot; `None` falls back to `PC_IP` | `192.168.1.100` |
 | `TELEOP_COMMAND_MODE` | Teleoperation command path (`joint` / `tcp`) | `joint` |
 | `FREEZE_ROTATION` | Keep the TCP orientation fixed while mapping controller translation | `False` |
@@ -218,13 +225,13 @@ python main.py
 Use the independent Meta body viewer without connecting to a robot:
 
 ```bash
-/home/yuyuan/.venvs/airo-teleop/bin/python teleop_body_visualizer.py
+./.venv/bin/python teleop_body_visualizer.py
 # Opt in to RealMan teleop when needed:
-/home/yuyuan/.venvs/airo-teleop/bin/python teleop_body_visualizer.py --teleop realman
+./.venv/bin/python teleop_body_visualizer.py --teleop realman
 # Synthetic preview without Quest or robot hardware:
-/home/yuyuan/.venvs/airo-teleop/bin/python teleop_body_visualizer.py --demo
+./.venv/bin/python teleop_body_visualizer.py --demo
 # Equivalent packaged entry point, run from this repository:
-/home/yuyuan/.venvs/airo-teleop/bin/python -m doffy_teleop.runtime.body_visualizer
+./.venv/bin/python -m doffy_teleop.runtime.body_visualizer
 ```
 
 The viewer defaults to one enlarged skeleton, with view selection, four-view
@@ -248,7 +255,7 @@ python realman_teleop.py
 ```
 
 On the verified workstation, use
-`/home/yuyuan/.venvs/airo-teleop/bin/python realman_teleop.py` from the repository
+`./.venv/bin/python realman_teleop.py` from the repository
 root. See the [teleop environment notes](docs/teleop_refactor/teleop-environment.md)
 for the tested dependency constraints and setup.
 
@@ -549,7 +556,7 @@ a RealMan trajectory slow stop and discards the partial episode.
 ### 3. Force/Tactile Visualizer
 Run the standalone dashboard against a UR robot:
 ```bash
-python test_tool/ForceVisualize.py --ip 10.42.0.162 --robot-type ur3e
+python test_tool/ForceVisualize.py --ip 192.0.2.30 --robot-type ur3e
 ```
 
 Preview the shared visualizer UI without robot hardware:
@@ -560,13 +567,13 @@ python test_tool/ForceVisualize.py --mock
 Show tactile data in the dashboard:
 ```bash
 python test_tool/ForceVisualize.py --mock --mock-tactile
-python test_tool/ForceVisualize.py --ip 10.42.0.162 --robot-type ur3e --tactile
+python test_tool/ForceVisualize.py --ip 192.0.2.30 --robot-type ur3e --tactile
 ```
 
 Run a small TCP xyz experiment with fixed orientation using `servo_to_tcp_pose`:
 ```bash
 python test_tool/ForceVisualize.py \
-    --ip 10.42.0.162 \
+    --ip 192.0.2.30 \
     --robot-type ur3e \
     --payload-cog 0 0 0.058 \
     --tcp-xyz-experiment

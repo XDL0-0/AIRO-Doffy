@@ -1,5 +1,7 @@
 # Python teleoperation 审计（2026-09-28）
 
+> Public copy: local paths, device identifiers and site addresses are anonymized; recorded results and version/hash data are unchanged.
+
 > 本文保留修复前的发现与复现记录。后续代码修复、网络恢复和验收结果见
 > [修复验收记录](python-fixes-20260928.md)；下文的旧地址、失败结果和测试数量不代表修复后的状态。
 
@@ -9,9 +11,9 @@
 
 ## 验证范围与环境
 
-- 运行环境：`/home/yuyuan/miniconda3/envs/airo-doffy/bin/python`，Python 3.10.0。
+- 运行环境：`/path/to/source-env/bin/python`，Python 3.10.0。
 - 测试环境：`/tmp/airo-teleop-qa/bin/python`，继承上述环境的 site-packages。
-- Unity 协议来源：`/home/yuyuan/UNITY_Project/CodexBracelet/Assets/Teleop`。
+- Unity 协议来源：`/path/to/unity/CodexBracelet/Assets/Teleop`。
 - 机器人控制测试使用 fake backend；录制/删除测试仅使用临时目录。
 - 真硬件验证包括 Quest 网络诊断和 RealSense 取帧；没有执行机器人复位、运动、夹爪或灵巧手动作。
 
@@ -36,7 +38,7 @@
 
 ## 当前环境阻塞
 
-`config.py:11-18` 配置 PC 为 `192.168.43.198`、VR 为 `192.168.43.89`、机器人为 `192.168.1.18:8080`。实际 PC 有 `10.10.135.124/22` 和 `10.10.130.209/22`；Quest 是 `172.22.22.157/21`。
+`config.py:11-18` 配置 PC 为 `192.0.2.16`、VR 为 `192.0.2.17`、机器人为 `192.168.1.18:8080`。实际 PC 有 `192.0.2.12/22` 和 `192.0.2.10/22`；Quest 是 `192.0.2.14/21`。
 
 直接尝试绑定 `Config.PC_IP` 返回 **`OSError: [Errno 99] Cannot assign requested address`**。这能确定当前默认配置无法在这台电脑正常启动接收 socket。不同网段本身不代表必然不通；实际双向 ping 和 Quest 发往两个 PC 网卡的临时 TCP/UDP listener 探测也没有成功。USB ADB 已授权只证明 USB 调试链路可用。
 
@@ -171,7 +173,7 @@ PYTHONWARNINGS=ignore /tmp/airo-teleop-qa/bin/python -m pytest -q \
 # 20 passed；其中 3 项与前两组重复，去重后合计 129 项。
 ```
 
-当前手环版源码另以 `DOFFY_UNITY_PROJECT=/home/yuyuan/UNITY_Project/CodexBracelet` 运行 `tests/test_webrtc_csharp_source.py`，1 项通过，覆盖 C# 信令客户端并发发送、UTF-8 分片、重连、超大消息拒绝。
+当前手环版源码另以 `DOFFY_UNITY_PROJECT=/path/to/unity/CodexBracelet` 运行 `tests/test_webrtc_csharp_source.py`，1 项通过，覆盖 C# 信令客户端并发发送、UTF-8 分片、重连、超大消息拒绝。
 
 额外临时验证代码保存在 `/tmp/doffy-python-audit/comms` 与 `/tmp/doffy-python-audit/undo`，不是生产实现。C# 协议 harness 的 47 项检查通过；组合检查脚本随后在独立的 TrackingGuard 编译阶段因缺少 `OVRHand` 引用退出 1，所以没有把整条 C# 组合检查命令计为通过。当前源码的后续协议互通检查已单独通过。
 

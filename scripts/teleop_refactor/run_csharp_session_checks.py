@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import tempfile
@@ -24,21 +25,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--project",
-        type=Path,
-        default=Path("/home/yuyuan/UNITY_Project/Codex"),
+        type=lambda value: Path(value).expanduser().resolve(),
+        default=os.environ.get("DOFFY_UNITY_PROJECT"), required=not os.environ.get("DOFFY_UNITY_PROJECT"),
         help="Unity project root containing Assets/",
     )
     parser.add_argument(
         "--mono-bin",
-        type=Path,
-        default=Path(
-            "/home/yuyuan/Unity/Hub/Editor/6000.5.6f1/Editor/Data/MonoBleedingEdge/bin"
-        ),
+        type=lambda value: Path(value).expanduser().resolve(),
+        default=os.environ.get("DOFFY_MONO_BIN"), required=not os.environ.get("DOFFY_MONO_BIN"),
         help="Unity Mono bin directory containing mcs and mono",
     )
     parser.add_argument(
         "--export-dir",
-        type=Path,
+        type=lambda value: Path(value).expanduser().resolve(),
         help="optionally keep the compiled SessionHarness.exe",
     )
     args = parser.parse_args()

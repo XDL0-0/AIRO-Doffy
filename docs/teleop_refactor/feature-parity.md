@@ -1,6 +1,6 @@
 # Classic 功能迁移与验收矩阵
 
-基线是 [Classic 只读盘点](classic-feature-inventory.md)，不是旧 Codex 的功能推测。新工程位于 `/home/yuyuan/UNITY_Project/Codex`；主场景 `Assets/Scenes/Teleoperation.unity`。所有下表代码目录相对 `Assets/Teleop`。`保留` 表示源码/场景路径存在，**不等于已经通过 Quest 真机验收**。
+基线是 [Classic 只读盘点](classic-feature-inventory.md)，不是旧 Codex 的功能推测。新工程位于 `/path/to/unity/Codex`；主场景 `Assets/Scenes/Teleoperation.unity`。所有下表代码目录相对 `Assets/Teleop`。`保留` 表示源码/场景路径存在，**不等于已经通过 Quest 真机验收**。
 
 | 编号 | 迁移结果 / 新入口 | 证据与尚待验收 |
 |---|---|---|
@@ -43,7 +43,7 @@
 - UDP 缩放现在实际改变显示 UV；旧场景仅改变标签的行为得到补齐。重启 PC 后视频帧计数归零可恢复接收；陈旧 TCP 反馈隐藏力箭头并显示 STALE。
 - 录制按钮依赖显式状态，结束会话自动停止录制；Undo 增加第二次点击确认。协议字符串不变。
 - 手动调整后的 Confirm & resume 和随后 Start session 均保留手动参考系；Recalibrate 明确切回自动参考系。底座编辑改为显式进入，可用 Cancel base placement 退出。
-- 默认配置显式绑定到场景，保持 Classic 实际默认 IP `10.10.131.72`、手部 60 Hz 文本协议、旧偏好优先。
+- 默认配置显式绑定到场景，保持 Classic 实际默认 IP `192.0.2.11`、手部 60 Hz 文本协议、旧偏好优先。
 - 历史失效 URP/XR/触觉资源已归档到备份目录，清理前后记录在 [引用清理清单](inherited-reference-cleanup.json)。当前 Classic 活动功能与有效触觉资源保留。
 
 UI SVG 是布局预览，不能作为 Unity 实际渲染或 Quest 交互验收证据。最终硬件验收步骤见 [Unity 集成验收](unity-integration-validation.md)。

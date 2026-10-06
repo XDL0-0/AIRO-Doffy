@@ -1,6 +1,9 @@
 # DOFFY 遥操作重构
 
-Unity 新工程：`/home/yuyuan/UNITY_Project/Codex`。PC 工程：`/home/yuyuan/AIRO-Doffy`。
+Local paths and network addresses in this documentation are anonymized examples;
+see [local setup and validation paths](../release-hygiene.md) before running checks.
+
+Unity 新工程：`/path/to/unity/Codex`。PC 工程：`/path/to/AIRO-Doffy`。
 
 旧 Codex 已先归档再删除，新工程以 Classic 的 XR rig、有效场景和协议为基础重建。Classic 与 AIRO-DOFFY-v2 参考工程没有修改。Meta XR All-in-One 固定为官方 registry 核实的最新稳定版 **205.0.0**；Audio 85.0.0、Voice 85.0.1 是该版本指定的依赖，并非遗漏升级。
 
@@ -68,7 +71,7 @@ python3 scripts/teleop_refactor/audit_unity_project.py
 
 ## 备份与已有工作
 
-- 旧 Codex：`/home/yuyuan/UNITY_Project/.backups/codex-before-refactor-20260916.tar.gz`
-- PC 工作树源码/测试基线：`/home/yuyuan/UNITY_Project/.backups/pc-teleop-baseline-20260916.tar.gz`
+- 旧 Codex：`/path/to/unity/.backups/codex-before-refactor-20260916.tar.gz`
+- PC 工作树源码/测试基线：`/path/to/unity/.backups/pc-teleop-baseline-20260916.tar.gz`
 - Classic 继承的失效资产清理：[明细](inherited-reference-cleanup.json)，原内容另行归档。
 - 重构前 git 状态保留在本机的 `pre-refactor-git-status.txt`，用于区别已有训练、评估、数据与论文改动，不随源码仓库上传。没有将这些既有修改回退或并入本次重构。

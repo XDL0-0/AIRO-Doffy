@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 from pathlib import Path
 import select
@@ -18,8 +19,8 @@ from doffy_teleop.control.contracts import pack_quest_tcp_state_packet
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--harness', type=Path, default=Path('/tmp/doffy-csharp-checks/ProtocolHarness.exe'))
-    parser.add_argument('--mono', type=Path, default=Path('/home/yuyuan/Unity/Hub/Editor/6000.5.6f1/Editor/Data/MonoBleedingEdge/bin/mono'))
+    parser.add_argument('--harness', type=lambda value: Path(value).expanduser().resolve(), default=Path('/tmp/doffy-csharp-checks/ProtocolHarness.exe'))
+    parser.add_argument('--mono', type=lambda value: Path(value).expanduser().resolve(), default=os.environ.get("DOFFY_MONO"), required=not os.environ.get("DOFFY_MONO"))
     args = parser.parse_args()
     command = [str(args.mono), str(args.harness)]
     results = []

@@ -1,19 +1,21 @@
 from dataclasses import dataclass, field
+import os
 import numpy as np
 from doffy_teleop import utils
 
 
 @dataclass
 class Config:
+    # Documentation-only PC/Quest/UR addresses: set DOFFY_*_IP for your LAN.
     # Quest-facing interface. The robot-facing interface is configured
     # independently below when Ethernet and headset Wi-Fi use different LANs.
-    PC_IP: str = "10.10.130.18"
-    VR_IP: str = "10.10.129.105"
+    PC_IP: str = field(default_factory=lambda: os.environ.get("DOFFY_PC_IP", "192.0.2.10"))
+    VR_IP: str = field(default_factory=lambda: os.environ.get("DOFFY_VR_IP", "192.0.2.20"))
     # ── Robot ──────────────────────────────────────────────────────────────
     # Supported: "ur3e", "ur5e", "realman".
     ROBOT_TYPE: str = "realman"
     ROBOT_IP: str | None = "192.168.1.18"
-    UR_IP: str = "10.42.0.162"
+    UR_IP: str = field(default_factory=lambda: os.environ.get("DOFFY_UR_IP", "192.0.2.30"))
     REALMAN_PORT: int = 8080
     REALMAN_READ_RETRIES: int = 3
     REALMAN_RETRY_DELAY: float = 0.05
@@ -64,7 +66,9 @@ class Config:
     REALMAN_STATE_PUSH_PORT: int = 8098
     REALMAN_STATE_PUSH_TIMEOUT: float = 2.0
     # Destination reachable by the robot; None preserves the PC_IP fallback.
-    REALMAN_STATE_PUSH_IP: str | None = "192.168.1.100"
+    REALMAN_STATE_PUSH_IP: str | None = field(
+        default_factory=lambda: os.environ.get("DOFFY_REALMAN_STATE_PUSH_IP", "192.168.1.100")
+    )
     REALMAN_FORCE_COORDINATE: int = 0  # 0 sensor, 1 work, 2 tool
     # "joint" preserves the original VR -> IK -> joint-servo path.
     # "tcp" sends TCP targets through the selected backend when possible.

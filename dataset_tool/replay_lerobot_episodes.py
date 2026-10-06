@@ -24,7 +24,7 @@ Usage:
       --dataset_dir ./datasets/pnp_long_lero\
       --from_episode 0 \
       --to_episode 66 \
-      --robot_ip 10.42.0.162 \
+      --robot_ip 192.0.2.30 \
       --align_camera\
       --no_robot \
       --show_video \
@@ -34,7 +34,7 @@ Usage:
   # Replay a LeRobot dataset from the Hugging Face Hub
   python -m dataset_tool.replay_lerobot_episodes \
       --repo_id IXDLI/pnp_long_filtered_deltaTCP \
-      --robot_ip 10.42.0.162 \
+      --robot_ip 192.0.2.30 \
       --from_episode 0 \
       --to_episode 10 \
       --data_type delta_tcp \
@@ -90,7 +90,7 @@ parser.add_argument("--local_files_only", action="store_true",
 parser.add_argument("--from_episode", type=int, default=0)
 parser.add_argument("--to_episode",   type=int, default=None,
                     help="Exclusive upper bound. Defaults to total_episodes.")
-parser.add_argument("--robot_ip",     type=str, default="10.42.0.162")
+parser.add_argument("--robot_ip",     type=str, default=os.environ.get("DOFFY_UR_IP", "192.0.2.30"))
 parser.add_argument("--robot_type",   type=str, default="ur3e",
                     choices=["ur3e", "ur5e"],
                     help="Robot model passed to make_robot()")

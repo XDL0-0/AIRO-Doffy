@@ -2036,7 +2036,7 @@ class ConfigRuntimeDefaultsTest(unittest.TestCase):
         )
         sender = QuestTcpStateSender(
             teleop,
-            quest_ip="10.135.223.229",
+            quest_ip="192.0.2.21",
             port=8012,
             send_rate_hz=30.0,
             socket_factory=lambda *_args: fake_socket,
@@ -2049,7 +2049,7 @@ class ConfigRuntimeDefaultsTest(unittest.TestCase):
         self.assertTrue(fake_socket.closed)
         self.assertEqual(len(fake_socket.packets), 1)
         packet, destination = fake_socket.packets[0]
-        self.assertEqual(destination, ("10.135.223.229", 8012))
+        self.assertEqual(destination, ("192.0.2.21", 8012))
         message = json.loads(packet.decode("utf-8"))
         np.testing.assert_allclose(
             message["rightTCP"]["position"],

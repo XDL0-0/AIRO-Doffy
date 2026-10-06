@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 cfg = Config(ROBOT_TYPE="ur3e", TCP_TOOL="None")
-robot = URrtde("10.42.0.162", URrtde.UR3E_CONFIG)
+robot = URrtde(cfg.UR_IP, URrtde.UR3E_CONFIG)
 robot.move_to_joint_configuration(cfg.INITIAL_JOINT,0.3).wait()
 logger.info("Initialization complete.")
 # robot = URrtde("localhost", URrtde.UR5E_CONFIG)

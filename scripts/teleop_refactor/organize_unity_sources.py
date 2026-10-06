@@ -1,11 +1,12 @@
 """One-time feature migration of the rebuilt project, preserving Unity GUIDs."""
+import argparse
+import os
 from pathlib import Path
 import json
 import re
 import uuid
 
 
-PROJECT = Path('/home/yuyuan/UNITY_Project/Codex')
 GROUPS = {
     'Core': ['New/AppManager', 'RecordingController', 'TeleopConfig', 'TeleopSessionState'],
     'Input': ['DualControllerSender', 'HandTrackingSender', 'TrackingModeManager', 'TeleopTrackingGuard'],
@@ -40,13 +41,19 @@ RENAMES = {'UDPManager': 'UdpWindowManager', 'VideoCreateManager': 'VideoWindowC
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--project", type=Path, default=os.environ.get("DOFFY_UNITY_PROJECT"),
+                        required=not os.environ.get("DOFFY_UNITY_PROJECT"))
+    project = parser.parse_args().project.expanduser().resolve()
+    if not (project / "Assets/Scripts").is_dir():
+        parser.error("--project must contain Assets/Scripts for this one-time migration")
     moved = []
     for group, files in GROUPS.items():
         for name in files:
-            source = PROJECT / 'Assets/Scripts' / (name + '.cs')
+            source = project / 'Assets/Scripts' / (name + '.cs')
             if not source.exists():
                 continue
-            target = PROJECT / 'Assets/Teleop' / group / (RENAMES.get(source.stem, source.stem) + '.cs')
+            target = project / 'Assets/Teleop' / group / (RENAMES.get(source.stem, source.stem) + '.cs')
             if target.exists():
                 raise RuntimeError(f'Target exists: {target}')
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -54,9 +61,9 @@ def main():
             guid = re.search(r'^guid: (\w+)', meta.read_text(), re.M)[1]
             source.rename(target)
             meta.rename(Path(str(target) + '.meta'))
-            moved.append({'from': str(source.relative_to(PROJECT)),
-                          'to': str(target.relative_to(PROJECT)), 'guid': guid})
-    old = PROJECT / 'Assets/Scripts'
+            moved.append({'from': str(source.relative_to(project)),
+                          'to': str(target.relative_to(project)), 'guid': guid})
+    old = project / 'Assets/Scripts'
     if old.exists():
         for directory in sorted([old, *[p for p in old.rglob('*') if p.is_dir()]],
                                 key=lambda p: len(p.parts), reverse=True):
@@ -64,13 +71,13 @@ def main():
                 directory.rmdir()
                 Path(str(directory) + '.meta').unlink(missing_ok=True)
     # New resources get stable path-derived GUIDs; migrated references keep their originals.
-    for path in [PROJECT / 'Assets/Teleop', *(PROJECT / 'Assets/Teleop').rglob('*')]:
+    for path in [project / 'Assets/Teleop', *(project / 'Assets/Teleop').rglob('*')]:
         if path.suffix == '.meta':
             continue
         meta = Path(str(path) + '.meta')
         if meta.exists():
             continue
-        guid = uuid.uuid5(uuid.NAMESPACE_URL, 'doffy-teleop:' + str(path.relative_to(PROJECT))).hex
+        guid = uuid.uuid5(uuid.NAMESPACE_URL, 'doffy-teleop:' + str(path.relative_to(project))).hex
         if path.is_dir():
             body = 'folderAsset: yes\nDefaultImporter:\n  externalObjects: {}\n  userData: \n  assetBundleName: \n  assetBundleVariant: \n'
         elif path.suffix == '.cs':
