@@ -17,5 +17,32 @@
     "quest3_install_verified": true,
     "quest3_activity_launch_verified": true,
     "quest3_rendered_ui_verified": false
+  },
+  "release": {
+    "repository": "XDL0-0/AIRO-Doffy",
+    "commit": "a3d1233c53d82f35394f68f0c8d2faa2a4857c81",
+    "published_date": "2026-10-06",
+    "notes": "apk/RELEASE.md"
+  },
+  "source": {
+    "repository": "XDL0-0/AIRO-DOFFY-APP",
+    "revision": null,
+    "status": "unavailable",
+    "reason": "No complete v0.9.7/BODY Unity project or matching source revision was found in the public refs and reachable history of either repository. Historical build notes refer to a local CodexBracelet project, which was not available for this audit. BODY component copies are not the complete build source.",
+    "audited_date": "2026-10-07",
+    "last_public_revision": "994a672175af58fc4f14b92f2ca10b4595c8e0a9",
+    "last_public_tag": "v0.6.0",
+    "reported_local_project": "/home/yuyuan/UNITY_Project/CodexBracelet",
+    "partial_sources": "docs/body_visualization/quest/",
+    "apk_vcs_info": "generate_error_reason: NO_SUPPORTED_VCS_FOUND"
+  },
+  "build": {
+    "unity_version": "6000.5.6f1",
+    "unity_version_evidence": "APK assets/bin/Data/globalgamemanagers serialized-file header",
+    "meta_xr_all_version": "205.0.0",
+    "meta_xr_version_status": "reported_unverified",
+    "meta_xr_version_evidence": "docs/teleop_refactor/README.md and unity-integration-validation.md report 205.0.0; no package lock tied to this APK is available.",
+    "ovrplugin_version_string": "1.205.0",
+    "ovrplugin_version_evidence": "Version string observed in APK lib/arm64-v8a/libOVRPlugin.so; not a full Meta XR package-lock verification."
   }
 }

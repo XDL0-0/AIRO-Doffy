@@ -71,6 +71,8 @@ adb install -r /home/yuyuan/UNITY_Project/App_output/body-visualization/AIRO_Dof
 
 ## 0.9.7 发布 APK
 
+> 2026-10-07 发布关联审计：以下安装、签名及设备检查为原有历史记录，本次未重跑。实际发布文件的哈希、Android 版本、ARM64 ABI 和 Unity `6000.5.6f1` 已重新核验；Meta XR `205.0.0` 为构建记录值，未取得对应 package lock。完整 Unity source SHA 仍缺失，不能声称从公开源码复现此 APK。详见[发布记录](../../apk/RELEASE.md)。
+
 - 发布文件：[AIRO_Doffy_v0.9.7_arm64_code18.apk](../../apk/AIRO_Doffy_v0.9.7_arm64_code18.apk)，Android ARM64，版本 **0.9.7 / code 18**，包名 `com.AIROLab.AIRODOFFY`。
 - 大小：92,549,501 字节；SHA256：`3a1e95322c83c865ba6729a5317bcc06b60875241c78c03d8e28752db6d24a4e`。机器可读信息见 [APK manifest](../../apk/manifest.json)。
 - 包含 BODY 发送代码，签名验证通过，Quest 3 安装及应用启动成功。

@@ -33,6 +33,8 @@ Unity 新工程：`/home/yuyuan/UNITY_Project/Codex`。PC 工程：`/home/yuyuan
 
 ## 验证与复现
 
+**公开复现范围限制（2026-10-07 审计）**：下方 Unity/C# 命令依赖工作站上的完整工程和缓存。公开仓库仅包含部分 C# 副本、测试与文档，未包含当前 v0.9.7 的完整 Unity 工程或 source SHA。`AIRO-DOFFY-APP` 的历史 `v0.6.0` 标签不能填补该缺口；不要将本机路径或历史验证结果作为公开 APK 可复现的证明。详见[发布关联审计](../../apk/RELEASE.md)。
+
 本次上传子集的 Python 验收结果：**433 项测试、12 项子测试通过，3 项跳过**。测试范围按保留的 teleop、BODY、dataset tools 及相关测试筛选，未向导入路径添加外部 simulation 目录。此结果与下方历史完整工作树回归记录分开，也不替代 Unity/Quest 或机器人实机验收。
 
 以下是历史重构专项验证的复现命令。原始验证使用工作站已有依赖环境；当时 pytest 单独安装在 `/tmp/airo-teleop-qa`，未改变现有 conda 环境。

@@ -1,0 +1,28 @@
+name: APK provenance
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test the provenance guard
+        run: python -m unittest discover -s tests -p test_apk_release.py -v
+      - name: Audit repository APK (one historical exception)
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type != 'tag')
+        run: python scripts/check_apk_release.py --allow-known-unmapped
+      - name: Require source pin for release, tag or manual preflight
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
+        run: python scripts/check_apk_release.py
