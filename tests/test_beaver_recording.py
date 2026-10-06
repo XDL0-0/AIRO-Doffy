@@ -9,7 +9,7 @@ from unittest.mock import patch
 import h5py
 import numpy as np
 
-from beaver import (
+from doffy_teleop.sensors.beaver import (
     FRAME_HEADER,
     FrameDecoder,
     SENSOR_PREFIX,
@@ -17,9 +17,9 @@ from beaver import (
     empty_snapshot,
     parse_frame,
 )
-from data_recording import DataRecordingService, RecordingControl, RecordingFrame
-from config import Config
-from dataset import DatasetRecorder
+from doffy_teleop.recording.service import DataRecordingService, RecordingControl, RecordingFrame
+from doffy_teleop.config import Config
+from doffy_teleop.recording.dataset import DatasetRecorder
 
 
 LAYOUT = (
@@ -42,6 +42,9 @@ def encoded_frame(sequence: int = 7) -> bytes:
 
 
 class BeaverProtocolTests(unittest.TestCase):
+    def test_raw_16bit_is_the_default_configuration(self) -> None:
+        self.assertFalse(Config().BEAVER_SIMULATE_8BIT)
+
     def test_legacy_zero_flags_decode_as_8x8(self) -> None:
         record = (
             SENSOR_PREFIX.pack(0, 0, 64, 100, 22, 1)
@@ -51,7 +54,25 @@ class BeaverProtocolTests(unittest.TestCase):
         raw = FRAME_HEADER.pack(0x5A5A, 3, 1, 0) + record
         frame = parse_frame(raw)
         self.assertEqual(frame["grid_width"], 8)
+        self.assertEqual(frame["distance_bits"], 8)
         self.assertEqual(frame["sensors"][0]["distance_mm"].shape, (8, 8))
+
+    def test_16bit_wire_precision_is_exposed_in_snapshot(self) -> None:
+        zones = 16
+        distances = np.arange(1001, 1001 + zones, dtype="<u2").tobytes()
+        record = (
+            SENSOR_PREFIX.pack(0, 0, zones, 1008, 22, 1)
+            + distances
+            + bytes([5] * zones)
+        )
+        raw = FRAME_HEADER.pack(0x5A5A, 3, 1, 4) + record
+        frame = parse_frame(raw)
+        reader = BeaverReader(sensor_layout=LAYOUT)
+        reader._publish_frame(frame, frame_count=1, lost_frames=0)
+
+        self.assertEqual(frame["distance_bits"], 16)
+        self.assertEqual(reader.snapshot().wire_distance_bits, 16)
+        self.assertEqual(int(reader.snapshot().distance_mm[0, 0, 0]), 1001)
 
     def test_decoder_tolerates_boot_text_and_partial_reads(self) -> None:
         decoder = FrameDecoder()
@@ -82,7 +103,7 @@ class BeaverProtocolTests(unittest.TestCase):
         first = decoder.feed(encoded_frame(11))[0]
         second = decoder.feed(encoded_frame(12))[0]
         reader = BeaverReader(sensor_layout=LAYOUT, sync_buffer_size=2)
-        with patch("beaver.time.monotonic_ns", side_effect=[100, 300]):
+        with patch("doffy_teleop.sensors.beaver.time.monotonic_ns", side_effect=[100, 300]):
             reader._publish_frame(first, frame_count=1, lost_frames=0)
             reader._publish_frame(second, frame_count=2, lost_frames=0)
 
@@ -109,7 +130,7 @@ class BeaverProtocolTests(unittest.TestCase):
 
         serial_port = FakeSerial()
         reader = BeaverReader(device="/dev/fake", sensor_layout=LAYOUT)
-        with patch("beaver.open_port", return_value=serial_port):
+        with patch("doffy_teleop.sensors.beaver.open_port", return_value=serial_port):
             reader.run(stop_event)
 
         self.assertEqual(serial_port.read_sizes, [1])
@@ -130,8 +151,8 @@ class BeaverProtocolTests(unittest.TestCase):
 
         reader = BeaverReader(device="/dev/fake", sensor_layout=LAYOUT)
         with (
-            patch("beaver.open_port", return_value=FakeSerial()),
-            patch("beaver.utils.logger.warning") as warning,
+            patch("doffy_teleop.sensors.beaver.open_port", return_value=FakeSerial()),
+            patch("doffy_teleop.sensors.beaver.utils.logger.warning") as warning,
         ):
             reader.run(stop_event)
 

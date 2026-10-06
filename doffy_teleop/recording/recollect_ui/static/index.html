@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RealMan Recollect</title>
+    <link rel="stylesheet" href="/static/style.css?v=6" />
+  </head>
+  <body>
+    <div id="startup" class="startup">Connecting to recollection workflow…</div>
+    <div id="app" class="app hidden">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">LeRobot v3 · RealMan · raw Beaver capture</p>
+          <h1>Dataset Recollect</h1>
+          <p id="dataset-path" class="dataset-path"></p>
+        </div>
+        <div class="progress-block">
+          <div class="progress-copy">
+            <strong id="progress-count">0 / 0 episodes</strong>
+            <span id="frame-progress">frame 0 / 0</span>
+          </div>
+          <div class="progress-track"><span id="progress-bar"></span></div>
+          <span id="progress-percent">0%</span>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="sidebar">
+          <div class="dataset-card">
+            <span>Source</span><code id="source-path"></code>
+            <span>Output</span><code id="output-path"></code>
+            <div class="dataset-summary">
+              <span id="fps">— fps</span><span id="total-frames">— frames</span>
+            </div>
+          </div>
+          <h2>Episodes</h2>
+          <div id="episode-list" class="episode-list"></div>
+        </aside>
+
+        <main class="main-panel">
+          <section class="status-card">
+            <div>
+              <span id="state-badge" class="state-badge">starting</span>
+              <h2 id="episode-title">Preparing…</h2>
+              <p id="workflow-message"></p>
+            </div>
+            <div id="sensor-status" class="sensor-status"></div>
+          </section>
+
+          <section class="calibration-card">
+            <div class="calibration-header">
+              <div>
+                <p class="eyebrow">Frame 0 calibration</p>
+                <h2>Match the live scene to the recorded first frame</h2>
+              </div>
+              <label>Camera <select id="camera-select"></select></label>
+              <label>Overlay <input id="overlay-opacity" type="range" min="0" max="100" value="50" /></label>
+            </div>
+            <div class="camera-grid">
+              <figure>
+                <figcaption>Source · first frame</figcaption>
+                <div class="camera-view"><img id="reference-image" alt="Source first frame" /><span id="reference-empty">Waiting for source frame</span></div>
+              </figure>
+              <figure>
+                <figcaption>Live · current stream</figcaption>
+                <div class="camera-view"><img id="live-image" alt="Live camera" /><span id="live-empty">Waiting for live camera</span></div>
+              </figure>
+              <figure>
+                <figcaption>Alignment overlay</figcaption>
+                <div class="camera-view overlay-view">
+                  <img id="overlay-reference" alt="Source overlay" />
+                  <img id="overlay-live" alt="Live overlay" />
+                  <span id="overlay-empty">Both frames are required</span>
+                </div>
+              </figure>
+            </div>
+          </section>
+
+          <section class="control-card">
+            <div id="readiness" class="readiness"></div>
+            <div class="buttons">
+              <button id="rollback-button" class="secondary">Undo previous</button>
+              <button id="retry-button" class="secondary">Retry episode</button>
+              <button id="cancel-teach-button" class="secondary">Cancel teach</button>
+              <button id="teach-button" class="secondary">Teach replacement · T</button>
+              <button id="end-teach-button" class="secondary">End teach · Enter</button>
+              <button id="stop-button" class="danger">Emergency stop</button>
+              <button id="teach-collect-button" class="primary">Collect replacement · Enter</button>
+              <button id="replay-button" class="primary">Start replay · Enter</button>
+            </div>
+            <p id="command-message" class="command-message"></p>
+          </section>
+          <p class="shortcut-help">Enter starts source replay, ends a teach, or collects a replacement · T starts/restarts a replacement teach · Esc stops motion or a drag-teach. After a replacement is collected, the next slot is still the original dataset episode.</p>
+
+          <section class="beaver-card" aria-labelledby="beaver-heading">
+            <div class="beaver-header">
+              <div>
+                <p class="eyebrow">Live tactile distance</p>
+                <h2 id="beaver-heading">Beaver 16-bit sensor view</h2>
+              </div>
+              <div id="beaver-summary" class="beaver-summary" aria-live="polite">Waiting for Beaver data…</div>
+            </div>
+            <div id="beaver-grid" class="beaver-grid"></div>
+            <div class="beaver-legend" aria-label="Beaver distance color legend">
+              <span><i class="legend-contact"></i>0 mm contact</span>
+              <span><i class="legend-near"></i>1 mm near</span>
+              <span><i class="legend-far"></i>400 mm far</span>
+              <span><i class="legend-over"></i>&gt;400 mm</span>
+              <span><i class="legend-invalid"></i>invalid</span>
+            </div>
+          </section>
+
+        </main>
+      </div>
+    </div>
+    <script src="/static/app.js?v=6"></script>
+  </body>
+</html>

@@ -11,14 +11,19 @@ from __future__ import annotations
 import time
 import threading
 import sys
+from pathlib import Path
 from typing import Dict
 
 import numpy as np
 
-import utils
-import udp_comms as U
-from config import Config
-from parse_vr import parse_data, parse_hand_data, detect_packet_type
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+import doffy_teleop.utils as utils
+import doffy_teleop.media.udp_comms as U
+from doffy_teleop.config import Config
+from doffy_teleop.protocol.parse_vr import parse_data, parse_hand_data, detect_packet_type
 
 VR_RECEIVE_HZ = 100
 CONNECTION_TIMEOUT = 30.0

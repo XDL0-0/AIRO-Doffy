@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from wrm_akm import (
+from doffy_teleop.control.wrm_akm import (
     Rm75AkmSettings,
     Rm75ArmAngleIk,
     WrmTrackingSample,

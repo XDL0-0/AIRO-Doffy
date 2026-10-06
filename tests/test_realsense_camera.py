@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from config import Config
-from realsense_camera import RealSenseCameraManager
+from doffy_teleop.config import Config
+from doffy_teleop.media.realsense_camera import RealSenseCameraManager
 
 
 class FakeDevice:
@@ -64,8 +64,8 @@ class RealSenseCameraManagerTests(unittest.TestCase):
 
         cfg = Config(DEPTH_INFO_ENABLE=depth_mode, REALSENSE_FPS=15)
         with (
-            patch("realsense_camera.rs.context", return_value=FakeContext(devices)),
-            patch("realsense_camera.Realsense", side_effect=create_camera),
+            patch("doffy_teleop.media.realsense_camera.rs.context", return_value=FakeContext(devices)),
+            patch("doffy_teleop.media.realsense_camera.Realsense", side_effect=create_camera),
         ):
             manager = RealSenseCameraManager(cfg)
         return manager, created
@@ -95,8 +95,8 @@ class RealSenseCameraManagerTests(unittest.TestCase):
             manager.running = False
 
         with (
-            patch("realsense_camera.time.sleep", side_effect=stop_after_frame),
-            patch("realsense_camera.time.monotonic_ns", side_effect=[100, 200]),
+            patch("doffy_teleop.media.realsense_camera.time.sleep", side_effect=stop_after_frame),
+            patch("doffy_teleop.media.realsense_camera.time.monotonic_ns", side_effect=[100, 200]),
         ):
             manager._camera_read_thread(cameras[0], 0)
 

@@ -1,7 +1,0 @@
-{
-    "venvPath": "/home/idlab504/miniconda3/envs",
-    "venv": "airo-mono",
-    "extraPaths": [
-        "."
-    ]
-}

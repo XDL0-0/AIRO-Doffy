@@ -60,6 +60,10 @@ import sys
 import logging
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 
 import numpy as np
 import pandas as pd
@@ -324,7 +328,7 @@ tcp_transform  = None  # flange→TCP, used with IK when torque_mode + eef/tcp_q
 delta_tcp_target_pose = None  # commanded TCP target used to integrate delta_tcp actions
 
 if not args.no_robot:
-    from robot_teleop import make_robot, FastRobotiq2F85
+    from doffy_teleop.robots.teleop import make_robot, FastRobotiq2F85
     from airo_robots.grippers import Robotiq2F85
     from airo_spatial_algebra.se3 import SE3Container
 
@@ -337,7 +341,7 @@ if not args.no_robot:
     gripper = FastRobotiq2F85(args.robot_ip) if args.fast_gripper else Robotiq2F85(args.robot_ip)
     ur.gripper = gripper
     if args.torque_mode and args.data_type != "qpos":
-        from config import Config
+        from doffy_teleop.config import Config
         tcp_transform = np.asarray(Config().TCP_TRANSFORM, dtype=float)
     logger.info("Robot connected.")
 

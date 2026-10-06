@@ -1,1 +1,0 @@
-python -m sensor_comm_dds.visualisation.visualisers.magtouch_raw_visualiser MagTouchRaw0

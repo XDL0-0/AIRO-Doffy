@@ -1,0 +1,4 @@
+dependencies:
+  idf: ">=4.1"
+  vl53l7cx:
+    git: https://github.com/Twistx77/V53L7CX-Library.git

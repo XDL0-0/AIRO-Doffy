@@ -1,0 +1,21 @@
+{
+  "file": "AIRO_Doffy_v0.9.7_arm64_code18.apk",
+  "package": "com.AIROLab.AIRODOFFY",
+  "version_name": "0.9.7",
+  "version_code": 18,
+  "abi": "arm64-v8a",
+  "bytes": 92549501,
+  "sha256": "3a1e95322c83c865ba6729a5317bcc06b60875241c78c03d8e28752db6d24a4e",
+  "body_protocol": {
+    "type": "BODY",
+    "version": 1,
+    "udp_port": 8015,
+    "enabled_by_default": false
+  },
+  "validation": {
+    "signature_verified": true,
+    "quest3_install_verified": true,
+    "quest3_activity_launch_verified": true,
+    "quest3_rendered_ui_verified": false
+  }
+}

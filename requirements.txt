@@ -1,15 +1,26 @@
+# Verified workstation compatibility profile:
+# pip install -c requirements-teleop-constraints.txt -r requirements.txt
 numpy
 scipy
 ruckig
 opencv-python
 pyrealsense2
 h5py
+pandas
+pyarrow
+Pillow
+pydantic
+tqdm
+ipython
 torch
 matplotlib
 loguru
 pyserial
 av
 aiortc
+aiohttp
+fastapi
+uvicorn
 
 # HuggingFace / LeRobot
 huggingface-hub
@@ -25,5 +36,5 @@ ur-analytic-ik
 # tactile sensor (internal)
 # sensor-comm-dds
 
-# experiment tracking
-wandb
+# Automated source checks
+pytest

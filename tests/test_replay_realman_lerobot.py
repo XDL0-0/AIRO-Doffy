@@ -9,13 +9,14 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from dataset_tool.replay_realman_lerobot import (
+from doffy_teleop.recording.replay import (
     EpisodeTrajectory,
     RealManLeRobotDataset,
     RealManTrajectoryReplayer,
     build_parser,
     camera_name_from_video_key,
     confirm,
+    interpolate_joint_speed_discontinuities,
     read_first_video_frame,
     run_camera_alignment,
     _resize_to_match,
@@ -181,13 +182,13 @@ class ReplayRealManLeRobotTests(unittest.TestCase):
         self.assertEqual(camera_name_from_video_key("observation.image", 2), "camera_2")
 
     @patch(
-        "dataset_tool.replay_realman_lerobot._opencv_window_available",
+        "doffy_teleop.recording.replay._opencv_window_available",
         return_value=(False, "headless test"),
     )
     def test_alignment_skips_safely_without_display(self, _window_status) -> None:
         self.assertFalse(run_camera_alignment(object(), 0))
 
-    @patch("dataset_tool.replay_realman_lerobot.read_first_video_frame")
+    @patch("doffy_teleop.recording.replay.read_first_video_frame")
     def test_loads_dataset_camera_first_frame(self, read_first_video_frame) -> None:
         joints = np.zeros((2, 7), dtype=np.float32)
         expected_frame = np.full((4, 6, 3), 127, dtype=np.uint8)
@@ -213,7 +214,7 @@ class ReplayRealManLeRobotTests(unittest.TestCase):
         np.testing.assert_array_equal(frames[VIDEO_KEY], expected_frame)
         read_first_video_frame.assert_called_once_with(video_path, timestamp_s=0.0)
 
-    @patch("dataset_tool.replay_realman_lerobot.read_first_video_frame")
+    @patch("doffy_teleop.recording.replay.read_first_video_frame")
     def test_resolves_packed_v3_video_file_and_timestamp(
         self,
         read_first_video_frame,
@@ -335,6 +336,22 @@ class ReplayRealManLeRobotTests(unittest.TestCase):
         self.assertIn(VIDEO_KEY, frames)
         self.assertEqual(frames[VIDEO_KEY].shape, (480, 640, 3))
 
+    def test_real_dataset_load_survives_hf_array_extension_registration(self) -> None:
+        root = (
+            Path(__file__).resolve().parents[1]
+            / "datasets"
+            / "WRM_grasp_cylinder_different_sizes_lero"
+        )
+        if not (root / "meta" / "info.json").is_file():
+            self.skipTest("WRM_grasp_cylinder_different_sizes_lero is not present.")
+        # DatasetRecorder initialization registers these Arrow extensions.
+        # Their unrelated Beaver columns must not participate in row slicing.
+        from datasets.features.features import Array3DExtensionType  # noqa: F401
+
+        trajectory = RealManLeRobotDataset(root).load_episode(0)
+
+        self.assertEqual(trajectory.targets.shape, (308, 7))
+
     @patch("builtins.input", return_value="")
     def test_confirmation_accepts_enter(self, mocked_input) -> None:
         confirm("Ready.", assume_yes=False)
@@ -374,6 +391,26 @@ class ReplayRealManLeRobotTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "above the replay safety limit"):
             validate_trajectory_speed(trajectory, 2.5)
 
+    def test_interpolates_isolated_joint_jump_without_changing_length(self) -> None:
+        targets = np.zeros((6, 7), dtype=float)
+        targets[:, 0] = [0.0, 0.01, 0.02, 0.12, 0.13, 0.14]
+        trajectory = EpisodeTrajectory(8, targets, fps=50.0)
+
+        repaired, repairs = interpolate_joint_speed_discontinuities(
+            trajectory,
+            maximum_joint_speed=2.5,
+        )
+
+        self.assertEqual(len(repaired.targets), len(trajectory.targets))
+        np.testing.assert_allclose(repaired.targets[0], trajectory.targets[0])
+        np.testing.assert_allclose(repaired.targets[-1], trajectory.targets[-1])
+        np.testing.assert_allclose(repaired.targets[:, 1:], trajectory.targets[:, 1:])
+        np.testing.assert_allclose(trajectory.targets, targets)
+        self.assertLessEqual(repaired.maximum_joint_speed, 2.5)
+        self.assertGreater(len(repairs), 0)
+        self.assertEqual(repairs[0].joint_index, 0)
+        self.assertEqual(repairs[0].transition_start_frame, 2)
+
     def test_loads_and_validates_tcp_trajectory(self) -> None:
         joints = np.zeros((2, 7), dtype=np.float32)
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -392,8 +429,8 @@ class ReplayRealManLeRobotTests(unittest.TestCase):
         np.testing.assert_allclose(pose[:3, :3], np.eye(3))
         np.testing.assert_allclose(pose[:3, 3], [0.1, 0.2, 0.3])
 
-    @patch("dataset_tool.replay_realman_lerobot.time.sleep", return_value=None)
-    @patch("dataset_tool.replay_realman_lerobot.time.perf_counter")
+    @patch("doffy_teleop.recording.replay.time.sleep", return_value=None)
+    @patch("doffy_teleop.recording.replay.time.perf_counter")
     def test_moves_to_start_then_replays_all_joint_targets(
         self,
         perf_counter,
@@ -417,8 +454,8 @@ class ReplayRealManLeRobotTests(unittest.TestCase):
         replayer.stop_motion()
         self.assertEqual(robot.robot.slow_stops, 1)
 
-    @patch("dataset_tool.replay_realman_lerobot.time.sleep", return_value=None)
-    @patch("dataset_tool.replay_realman_lerobot.time.perf_counter")
+    @patch("doffy_teleop.recording.replay.time.sleep", return_value=None)
+    @patch("doffy_teleop.recording.replay.time.perf_counter")
     def test_moves_and_replays_tcp_targets(self, perf_counter, _sleep) -> None:
         perf_counter.side_effect = [0.0, 0.01, 0.11]
         tcp_targets = np.array(

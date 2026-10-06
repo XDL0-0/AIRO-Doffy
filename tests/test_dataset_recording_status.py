@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
-from data_recording import DataRecordingService
-from dataset import DatasetRecorder
+from doffy_teleop.recording.service import DataRecordingService
+from doffy_teleop.recording.dataset import DatasetRecorder
 
 
 class DatasetRecordingStatusTests(unittest.TestCase):

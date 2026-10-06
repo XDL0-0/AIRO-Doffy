@@ -1,0 +1,15 @@
+{
+  "date": "2026-09-16",
+  "unity_project": "/home/yuyuan/UNITY_Project/Codex",
+  "meta_xr_all_in_one": "205.0.0",
+  "runtime_source_api_compile": {"files": 82, "errors": 0, "warnings": 0},
+  "editor_tool_source_api_compile": {"files": 1, "errors": 0, "warnings": 0},
+  "serialized_reference_audit": {"script_references": 846, "local_guids": 362, "errors": 0},
+  "csharp_checks": {"protocol_math_lifecycle": 47, "tracking_event_lifecycle": 10, "session_async_behavior": 25, "core_settings_state_suite": "passed"},
+  "python_full_suite": {"passed": 698, "subtests_passed": 95, "failed": 1, "seconds": 75.56, "failure": "test_eval_policy_latency.PolicyCompatibilityTest.test_dp_contact_no_vision_registration_and_resolution", "preexisting_failure_evidence": "Task-start eval_config.py snapshot sets ICRA_DP_contact_no_vision ACTION_STEPS to 4; test expects 8"},
+  "transport": {"controller_csharp_to_python_udp": "passed", "tcp_python_to_csharp_udp": "passed", "python_aiortc_webrtc_loopback": "passed", "csharp_websocket_to_aiohttp": "passed", "d435_to_csharp_jpeg_udp": "passed"},
+  "unity_editor_scene_validation": {"status": "blocked", "exit_code": 198, "reason": "No valid Unity Editor license found"},
+  "adb_quest_devices": 0,
+  "android_build": "not completed",
+  "quest_runtime_and_robot_end_to_end": "not completed"
+}

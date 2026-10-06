@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import to_rgba
 
-from visualizer import TeleopDashboard, TeleopSample
+from doffy_teleop.visualization.dashboard import TeleopDashboard, TeleopSample
 
 
 class CapturingText:
@@ -143,7 +143,7 @@ class WrmVisualizerTest(unittest.TestCase):
         self.assertIn("avg --", dashboard.beaver_axes[1].title)
         self.assertEqual(
             int(np.ma.count(dashboard.beaver_artists[0].data)),
-            3,
+            4,
         )
 
     def test_beaver_colormap_blue_ramp_within_400mm(self):
@@ -164,19 +164,24 @@ class WrmVisualizerTest(unittest.TestCase):
                     cmap(artist.norm(401.0)), to_rgba("#6e6e6e")
                 )
                 # A valid zero reading (contact) is flagged red via the
-                # under-range slot; the wire encodes positive distances in
-                # 10 mm increments, so nothing valid falls between 0 and 5.
-                self.assertEqual(artist.norm.vmin, 5.0)
+                # under-range slot. Positive raw 16-bit values begin at 1 mm.
+                self.assertEqual(artist.norm.vmin, 1.0)
                 self.assertEqual(artist.norm.vmax, 400.0)
                 np.testing.assert_allclose(cmap.get_under(), to_rgba("#ff1a1a"))
                 np.testing.assert_allclose(
                     cmap(artist.norm(0.0)), to_rgba("#ff1a1a")
                 )
-                # 10-400 mm: 40 ten-mm bins, every one blue (blue channel
-                # dominates red).
-                self.assertEqual(len(cmap.colors), 40)
+                # 1-400 mm: 400 one-mm bins, every one blue (blue channel
+                # dominates red) and adjacent millimetres remain distinct.
+                self.assertEqual(len(cmap.colors), 400)
                 for color in cmap.colors:
                     self.assertGreater(color[2], color[0])
+                self.assertFalse(
+                    np.allclose(
+                        cmap(artist.norm(100.0)),
+                        cmap(artist.norm(101.0)),
+                    )
+                )
                 # Near is light, far is dark.
                 self.assertGreater(
                     np.sum(cmap(artist.norm(10.0))),

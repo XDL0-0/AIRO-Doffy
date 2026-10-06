@@ -1,22 +1,49 @@
-# VR Teleoperation for Robot Manipulators
+# doffy-teleop: VR Teleoperation for Robot Manipulators
 
-> **Version**: This repository is compatible with the VR app **v0.6.0**.  
-> **VR App**: The APK and Unity project files are maintained at **[AIRO-DOFFY-APP](https://github.com/XDL0-0/AIRO-DOFFY-APP)**.
+> **Latest VR APK**: [AIRO Doffy v0.9.7, code 18, Android ARM64](apk/AIRO_Doffy_v0.9.7_arm64_code18.apk), package `com.AIROLab.AIRODOFFY`. This build includes BODY telemetry; enable it in the Session page as described below.
+>
+> **Unity project**: [AIRO-DOFFY-APP](https://github.com/XDL0-0/AIRO-DOFFY-APP). Classic controller/video protocols also retain compatibility with the historical **v0.6.0** app; that version does not provide BODY telemetry.
 
-A high-performance codebase for controlling robot manipulators (UR3e, UR5e, RealMan, or compatible backends) using VR controllers or hand tracking via UDP. It features camera streaming to the VR headset via **HD chunked UDP** or **WebRTC** (aiortc), low-latency robot control, tactile sensing integration, dataset recording (HDF5 & LeRobot formats), and policy inference evaluation.
+The project is named **doffy-teleop**; its Python module uses an underscore, `doffy_teleop`. The teleoperation implementation lives in `doffy_teleop/`; the five public root Python files are CLI launchers for teleop, teach/recollect and BODY workflows. Library imports use the packaged paths listed in the [module layout and migration guide](docs/module-layout.md). The rebuilt local Quest source uses Meta XR 205.0.0. See the [feature inventory, UI previews and validation status](docs/teleop_refactor/README.md); headset display, interaction and robot hardware acceptance remain pending.
+
+A high-performance codebase for controlling robot manipulators (UR3e, UR5e, RealMan, or compatible backends) using VR controllers or hand tracking via UDP. It features camera streaming to the VR headset via **HD chunked UDP** or **WebRTC** (aiortc), low-latency robot control, tactile sensing integration, and dataset recording (HDF5 & LeRobot formats).
+
+## Repository contents
+
+The published source covers UR/RealMan teleoperation, WRM input mapping,
+BrainCo hand control, Beaver and other teleop sensors, VR communication,
+camera streaming, BODY visualization, recording/replay/recollection, dataset
+tools and their related tests. It includes five root CLI launchers, the
+`doffy_teleop` modules used by these workflows, packaged UI assets, Beaver
+firmware, Quest protocol sources, documentation and dependency files.
+
+Seahorse, deployment, policy training/inference/evaluation, Jev and standalone experiments
+are local research work outside this upload scope.
+
+Datasets, trained checkpoints, videos, run outputs, manuscripts, local cluster
+jobs (`.gpulab/`), machine audit records (`evidence/`) and workstation settings
+stay local. `.gitignore` excludes these files, including uppercase video
+extensions. Supply datasets separately before running dataset tools that
+require them.
+
+The selected Python upload subset passed **433 tests and 12 subtests**, with
+**3 skipped**, without adding an external simulation directory to the import
+path. Unity/Quest and robot hardware acceptance remain separate; see the
+[validation records](docs/teleop_refactor/README.md#验证与复现).
 
 ## Key Features
 - **Low-Latency Teleoperation**: Real-time VR controller tracking to robot end-effector mapping with backend-specific IK/control and safety limits.
 - **Hand Tracking Support**: Receive and visualize 24-bone hand skeleton data from Meta Quest hand tracking (text and binary protocols).
 - **HD Video Streaming**: Two transport options:
-  - **UDP** (`udp.py`): Chunked JPEG transfer, compatible with `UdpSocketMultiHD.cs`.
-  - **WebRTC** (`WebRTC_udp.py`): aiortc-based multi-track video (H.264/VP8) with WebSocket signaling + DataChannel for control. Lower bandwidth, NAT-friendly.
+  - **UDP** (`doffy_teleop/media/udp_manager.py`): Chunked JPEG transfer, compatible with `UdpSocketMultiHD.cs`.
+  - **WebRTC** (`doffy_teleop/media/webrtc_manager.py`): aiortc-based multi-track video (H.264/VP8) with WebSocket signaling + DataChannel for control. Lower bandwidth, NAT-friendly.
 - **Fast Gripper Control**: Custom non-blocking TCP socket implementation for the Robotiq 2F-85 gripper.
 - **Tactile & Force Integration**: Supports serial MagTouch and 4-taxel BLE MagTouch readers, UR force/torque readings, gravity compensation, baseline reset, and configurable wrench filtering.
 - **Live Teleop Visualizer**: Optional multiprocessing matplotlib dashboard for force/torque, camera previews, TCP/joint status, tactile bubbles, dataset status, and last-episode rollback.
 - **Dataset Recording**: Save robotic trajectories directly in ACT (HDF5) or Hugging Face `lerobot` formats.
 - **Dataset Rollback**: Delete the latest recorded ACT/HDF5 or LeRobot episode from the VR record-control channel or the visualizer.
-- **Policy Inference & Evaluation**: Load trained AI policies (e.g., ACT, Diffusion, Pi0) and evaluate them offline or run live robotics inference.
+- **BrainCo Hand Control**: Control Revo2 presets from the controller or all six motors from hand tracking, including separate thumb flexion and rotation channels.
+- **BODY Visualization**: Inspect Meta body telemetry in an independent skeleton viewer, with optional RealMan or Classic teleop.
 - **Hand Visualizer**: Real-time matplotlib 3D hand skeleton visualization with finger bone connections and dynamic axis scaling.
 
 ## Installation
@@ -25,12 +52,31 @@ A high-performance codebase for controlling robot manipulators (UR3e, UR5e, Real
 - **Python 3.10+** (Recommended: Conda environment `airo-mono`)
 - **Robot**: Compatible robot backend, such as UR3e/UR5e with RTDE enabled or RealMan over its network API.
 - **Cameras**: Intel RealSense Cameras.
-- **VR Setup**: VR headset running the compatible Unity app (v0.6.0) with `DualControllerSender` / `HandTrackingSender` + `UdpSocketMultiHD` receiver. APK and project files: [AIRO-DOFFY-APP](https://github.com/XDL0-0/AIRO-DOFFY-APP).
+- **VR Setup**: Meta Quest running the [v0.9.7 ARM64 APK](apk/AIRO_Doffy_v0.9.7_arm64_code18.apk). Unity project files: [AIRO-DOFFY-APP](https://github.com/XDL0-0/AIRO-DOFFY-APP).
 
-### 2. Dependencies
+### 2. Install the VR APK
+
+With a Quest connected through ADB and USB debugging authorized, install the
+downloaded APK from the repository root:
+
+```bash
+adb install -r apk/AIRO_Doffy_v0.9.7_arm64_code18.apk
+```
+
+The APK's signature has been verified, and installation and application startup
+on Quest 3 succeeded. Headset display, interaction and real BODY pose acceptance
+remain pending. Version, size and SHA256 are recorded in
+[the APK manifest](apk/manifest.json) and [the validation record](docs/body_visualization/validation.md#097-发布-apk).
+
+BODY sending is **OFF on every app launch**. In **Session**, set and Apply the
+PC address, then switch **Body data: OFF → ON** to send BODY data to UDP 8015.
+BODY viewing does not require starting a robot session. See the
+[BODY setup guide](docs/body_visualization/README.md) for PC viewer commands.
+
+### 3. Dependencies
 Install the required Python packages:
 ```bash
-pip install -r requirements.txt
+pip install -c requirements-teleop-constraints.txt -r requirements.txt
 ```
 
 Or install individually:
@@ -46,11 +92,11 @@ Additionally, this project depends on custom robotic libraries. Ensure the follo
 - `airo-camera-toolkit` (RealSense wrappers)
 - `airo-spatial-algebra` (SE3 containers)
 - `ur_analytic_ik` (Analytic Inverse Kinematics for UR)
-- `lerobot` (For Hugging Face dataset creation and policy inference)
+- `lerobot` (For Hugging Face dataset creation and replay)
 - `sensor_comm_dds` (For tactile sensor communication, optional)
 
 ## Configuration
-The system uses `config.py` as its central configuration. Key settings:
+The system uses [`doffy_teleop/config.py`](doffy_teleop/config.py) as its central configuration. Key settings:
 
 ### Network & Robot
 | Parameter | Description | Default |
@@ -61,8 +107,9 @@ The system uses `config.py` as its central configuration. Key settings:
 | `REALMAN_PORT` | RealMan API port | `8080` |
 | `REALMAN_READ_RETRIES` | Attempts for transient RealMan state-read timeouts | `3` |
 | `REALMAN_RETRY_DELAY` | Delay between RealMan state-read retries in seconds | `0.05` |
-| `PC_IP` | Host PC address; also the destination for RealMan realtime UDP state push | `192.168.1.59` |
-| `VR_IP` | VR headset IP address | `192.168.1.234` |
+| `PC_IP` | Host PC interface reachable by the VR headset | `10.10.130.209` |
+| `VR_IP` | VR headset IP address | `10.10.131.245` |
+| `REALMAN_STATE_PUSH_IP` | Host PC interface reachable by the robot; `None` falls back to `PC_IP` | `192.168.1.100` |
 | `TELEOP_COMMAND_MODE` | Teleoperation command path (`joint` / `tcp`) | `joint` |
 | `FREEZE_ROTATION` | Keep the TCP orientation fixed while mapping controller translation | `False` |
 | `VR_ROTATION_AXIS_SIGNS` | Controller rotation signs in Unity-local `[pitch, yaw, roll]`; RealMan reverses pitch and roll | `[-1, 1, -1]` |
@@ -115,6 +162,7 @@ The system uses `config.py` as its central configuration. Key settings:
 | `DATA_TYPE` | State/action representation (`qpos`, `both`, `tcp`, `delta_tcp`) | `both` |
 | `TEACH_ACTION_MODE` | Teach-replay action label: next measured joints (`next_joint`) or current taught target (`command`) | `next_joint` |
 | `SENSOR_SYNC_BUFFER_SIZE` | Recent timestamped camera/Beaver frames retained for nearest-time matching | `8` |
+| `BEAVER_SIMULATE_8BIT` | Legacy opt-in: quantize Beaver distances to 10 mm steps; keep `False` for raw 16-bit data | `False` |
 | `TEACH_INITIAL_DISCARD_FRAMES` | Teaching samples discarded before trajectory edge trimming | `40` |
 | `LEROBOT_IMAGE_WRITER_PROCESSES` | Background processes used for image compression | `1` |
 | `LEROBOT_IMAGE_WRITER_THREADS` | Background threads used for image compression | `1` |
@@ -140,7 +188,7 @@ The system uses `config.py` as its central configuration. Key settings:
 | `TACTILE_SHAPE` | Stored tactile sample shape | `(4, 3)` |
 | `TACTILE_FILTER_ALPHA` | BLE tactile exponential filter alpha | `0.75` |
 
-`visualizer_config.py` controls the live dashboard:
+[`doffy_teleop/visualization/config.py`](doffy_teleop/visualization/config.py) controls the live dashboard:
 
 | Parameter | Description | Default |
 |---|---|---|
@@ -150,6 +198,8 @@ The system uses `config.py` as its central configuration. Key settings:
 | `FORCE_PANEL_RANGE` | Force plot and Fx/Fy panel +/- range in newtons | `30.0` |
 
 ## How to Run
+
+Run the following commands from the repository root in the environment for the selected runtime. The root launchers retain their existing arguments; equivalent `python -m doffy_teleop...` commands are listed in the [module layout guide](docs/module-layout.md#running-the-entry-points).
 
 ### 1. Data Collection & Teleoperation
 Initiate the main teleoperation and dataset recording loop:
@@ -163,6 +213,31 @@ python main.py
 - A VR record-control value of `Undo`, `Rollback`, or `DeleteLast` removes the latest saved episode and reuses its index.
 - Pressing the reset trigger combination recalibrates force/tactile baselines when those sensors are enabled.
 
+### Human pose visualization with teleop
+
+Use the independent Meta body viewer without connecting to a robot:
+
+```bash
+/home/yuyuan/.venvs/airo-teleop/bin/python teleop_body_visualizer.py
+# Opt in to RealMan teleop when needed:
+/home/yuyuan/.venvs/airo-teleop/bin/python teleop_body_visualizer.py --teleop realman
+# Synthetic preview without Quest or robot hardware:
+/home/yuyuan/.venvs/airo-teleop/bin/python teleop_body_visualizer.py --demo
+# Equivalent packaged entry point, run from this repository:
+/home/yuyuan/.venvs/airo-teleop/bin/python -m doffy_teleop.runtime.body_visualizer
+```
+
+The viewer defaults to one enlarged skeleton, with view selection, four-view
+and zoom buttons, joint angles, tracking validity and confidence on UDP 8015.
+BODY sending defaults to OFF in the [v0.9.7 APK](apk/AIRO_Doffy_v0.9.7_arm64_code18.apk).
+Enable **Body data: ON** in its Session page to send
+BODY telemetry; no robot session is required. The current
+default is upper-body tracking; legs are displayed only when valid full-body
+joints arrive. The root command remains a thin launcher for the modular
+`doffy_teleop` implementation; `doffy_teleop.body_visualization` provides
+compatibility exports for the BODY viewer API. See
+[setup, usage and module ownership](docs/body_visualization/README.md).
+
 ### 2. RealMan CAN-FD Teleoperation
 
 For RealMan high-rate teleoperation and dataset recording without gripper or
@@ -172,8 +247,13 @@ tactile hardware:
 python realman_teleop.py
 ```
 
+On the verified workstation, use
+`/home/yuyuan/.venvs/airo-teleop/bin/python realman_teleop.py` from the repository
+root. See the [teleop environment notes](docs/teleop_refactor/teleop-environment.md)
+for the tested dependency constraints and setup.
+
 Set `ROBOT_TYPE="realman"`, choose `TELEOP_COMMAND_MODE="joint"` or `"tcp"`,
-and keep `TRACKING_MODE="controller"`, `GRIPPER=False`, and
+and set `TRACKING_MODE="controller"` or `"hand"`, `GRIPPER=False`, and
 `TACTILE_TRANSFER=False`. Configure `DATASET_DIR`, `DATASET_TYPE`, `DATA_TYPE`,
 and `COLLECT_RATE` as usual. Use the VR app's built-in buttons to start and save
 episodes. The visualizer provides only **Undo episode**, matching `main.py`.
@@ -191,13 +271,33 @@ is the main `TCPPoseReceiver` port; a separate force-only receiver is not used.
 orientation, and force so the streamed TCP state stays aligned with the Quest
 scene after calibration.
 
-With `TCP_TOOL="Hand"`, controller tracking also enables the BrainCo Revo2
-presets: push the right joystick forward to run the staged **grab** motion and
+With `TCP_TOOL="Hand"` and `BRAINCO_HAND_ENABLE=True`, controller tracking
+enables the BrainCo Revo2 presets: push the right joystick forward to run the staged **grab** motion and
 pull it backward to **release**. Each direction is edge-triggered; return the
 stick to neutral before intentionally repeating the same motion. The threshold
 is configured by `BRAINCO_HAND_JOYSTICK_THRESHOLD`.
 The horizontal axis remains assigned to the robot wrist: move the right
 joystick left or right while holding the grip trigger to rotate the final joint.
+
+For simultaneous wrist and finger tracking, set the following in `doffy_teleop/config.py`
+and select hand tracking in the VR app:
+
+```python
+ROBOT_TYPE = "realman"
+TCP_TOOL = "Hand"
+BRAINCO_HAND_ENABLE = True
+TRACKING_MODE = "hand"
+```
+
+The right-hand wrist pose controls the arm TCP while the OpenXR skeleton
+controls all six Revo2 motors in the order `[thumb flex, index, middle, ring,
+pinky, thumb rotation]`. Thumb flexion and opposition/rotation have separate
+channels. Start with an open hand: the first valid frame calibrates the thumb
+rotation's open endpoint, and `BRAINCO_THUMB_ROTATE_PROGRESS_RANGE` controls
+its sensitivity. `BRAINCO_HAND_MAX_SEND_HZ` limits hand commands independently
+of the arm's CAN-FD rate. Set `BRAINCO_HAND_ENABLE=False` to skip the hand
+connection and commands while retaining arm teleoperation and the configured
+tool TCP. This integration currently uses RealMan RM_ARM+.
 
 This entry point keeps camera streaming, the robot's integrated six-axis force
 sensor, and the shared visualizer. A dedicated thread targets
@@ -241,14 +341,19 @@ REALMAN_STATE_PUSH_TIMEOUT = 2.0
 REALMAN_FORCE_COORDINATE = 0
 ```
 
-Set `PC_IP` to the address of the PC network interface that the RealMan
-controller can reach. The controller sends UDP state packets to
-`PC_IP:REALMAN_STATE_PUSH_PORT`; allow inbound UDP on that port in the PC
+Set `PC_IP` to the PC interface that the headset can reach and
+`REALMAN_STATE_PUSH_IP` to the interface reachable by the RealMan controller.
+They can differ when the headset uses Wi-Fi and the robot uses Ethernet.
+The controller sends UDP state packets to
+`REALMAN_STATE_PUSH_IP:REALMAN_STATE_PUSH_PORT` (falling back to `PC_IP` when
+the separate address is `None`); allow inbound UDP on that port in the PC
 firewall, ensure both hosts have a valid route, and make sure another process is
 not already using the port. Startup waits up to `REALMAN_STATE_PUSH_TIMEOUT` for
 the first valid packet and fails with a connection diagnostic if none arrives.
 The default 5 ms cycle provides joint, TCP, and integrated force state without
 placing synchronous state reads in the CAN-FD command path.
+`REALMAN_STATE_PUSH_CYCLE_MS` is in milliseconds; the API adapter converts it
+to the SDK's 5 ms units (`5` ms becomes `cycle=1`).
 
 `REALMAN_FORCE_COORDINATE` selects the reported wrench frame: `0` is the force
 sensor frame, `1` the active work frame, and `2` the active tool frame. The
@@ -375,6 +480,72 @@ python -m dataset_tool.replay_realman_lerobot \
 TCP replay separately checks translation and rotation speed using
 `--max-linear-speed` and `--max-angular-speed`.
 
+### Recollect an existing RealMan dataset with 16-bit Beaver data
+
+Use the recollection workflow when an existing LeRobot v3 trajectory should be
+replayed while robot state, TCP pose, wrench, RealSense images, timestamps, and
+Beaver distance maps are recorded again. Beaver's legacy 8-bit simulation is
+forcibly disabled, so the received `uint16` millimetre values are preserved
+without the old 10 mm quantization.
+
+First inspect every selected episode length and replay speed without opening
+the robot, cameras, Beaver serial port, or output dataset:
+
+```bash
+python -m dataset_tool.recollect_realman \
+    --dataset-root ./datasets/realman_teach_lero \
+    --dry-run
+```
+
+Start recollection and its local UI:
+
+```bash
+python -m dataset_tool.recollect_realman \
+    --dataset-root ./datasets/realman_teach_lero \
+    --robot-ip 192.168.1.18
+```
+
+The default output is the sibling dataset
+`./datasets/realman_teach_lero_recollect`; use `--output-dataset` to override
+it. The UI lists the source length of every episode. For each episode the robot
+moves to frame 0 and pauses, while the UI shows the recorded first frame, the
+current live camera, and a 50% alignment overlay. Adjust the scene/camera, then
+press **Enter** or **Start replay**. Exactly one output frame is recorded per
+source trajectory frame. After export, the next episode is loaded and paused at
+its first frame automatically.
+
+If the current source path is unsatisfactory, press **Teach replacement** (`T`)
+while paused at frame 0. This is the same drag-teach then replay-collect path as
+`realman_teachcollect.py`: freedrive records waypoints, **End teach** trims the
+motion and moves the arm back to **that taught path's first pose** so the scene
+can be set up, and **Collect replacement** then replays the new path into the
+current output slot (length may differ from the source episode). After that
+export, recollection still advances to the **original dataset's next episode**,
+not a continuation of the taught path. **Cancel teach** returns to the current
+source episode without consuming the slot. An existing matching `_recollect` dataset
+resumes from its first unfinished episode; its source fingerprint and selected
+episode list must match.
+
+The same page also displays the nine live Beaver sensors as 4x4 (or 8x8)
+distance heatmaps. Every valid cell shows its raw 16-bit millimetre value, and
+each sensor reports online/stale state plus the minimum and mean valid distance.
+The colours match the teachcollect visualizer: red at 0 mm, a smooth 1 mm-step
+light-to-dark blue ramp from 1-400 mm, grey above 400 mm, and slate for invalid
+cells.
+
+Source episodes above `--max-joint-speed` preserve their original targets and
+timing by default and show an amber warning in the UI before the operator
+presses Enter. Use `--joint-jump-policy error` for strict rejection.
+`--joint-jump-policy interpolate` remains available for confirmed sensor
+glitches: it keeps the episode length and first/last pose unchanged while
+smoothing the smallest local window. Do not use interpolation for a fast motion
+that is part of the grasp contact sequence.
+
+Useful options include `--episodes`, `--from-episode`, `--to-episode`,
+`--source`, `--max-joint-speed`, `--joint-jump-policy`, `--initial-speed`,
+`--beaver-port`, and `--beaver-grid-width`. The emergency-stop button requests
+a RealMan trajectory slow stop and discards the partial episode.
+
 ### 3. Force/Tactile Visualizer
 Run the standalone dashboard against a UR robot:
 ```bash
@@ -402,47 +573,12 @@ python test_tool/ForceVisualize.py \
 ```
 
 ### 4. Standalone VR Data Receiver
-Test VR connection without robot hardware:
+Test VR connection without robot hardware, running from the repository root:
 ```bash
-# Controller mode — print controller data
-python vr_data.py
-
-# Hand tracking mode — 3D hand visualizer
-python vr_data.py --visualize
+python -m test_tool.vr_data
 ```
-
-### 4. Live Policy Inference
-Execute a previously trained AI policy directly onto the robot:
-```bash
-python inference.py --policy username/my_act_policy
-python inference.py --policy ./checkpoints/my_policy --device cuda --fps 10
-```
-
-### 5. Real-robot Policy Evaluation
-Evaluate a downloaded checkpoint on the configured RM75 robot:
-```bash
-# Registered local policy (defaults to its last.pt)
-python eval_policy.py --policy dp_beaver_closure --episodes 5
-
-# A specific milestone
-python eval_policy.py \
-    --policy WRM_wrap=policies/downloaded/WRM_wrap/checkpoints/WRM_wrap_step_050000.pt \
-    --episodes 5
-
-# ICRA matrix checkpoints can use distinct labels in one run
-python eval_policy.py \
-    --policy joint_only_seed42=policies/downloaded/icra_policy_matrix_v1_20260831/joint_only/seed_42/last.pt \
-    --policy joint_only_seed43=policies/downloaded/icra_policy_matrix_v1_20260831/joint_only/seed_43/last.pt \
-    --episodes 5
-```
-
-`NAME=CHECKPOINT` accepts a custom safe label, so multiple checkpoints with the
-same internal policy variant remain separate in logs and output directories.
-
-`eval_policy.py` follows RDP's deployment-time latency matching: after each
-replan it discards the first `EvalConfig.INFERENCE_LATENCY_STEPS` predictions
-(default `0` at 24 Hz). Override it with `--latency-steps N`, or pass `0` to
-disable matching. This does not shift dataset labels a second time.
+The receiver prints controller data and opens the 3D hand visualizer when the
+headset switches from controller mode to hand tracking.
 
 ## VR Data Protocols
 
@@ -474,27 +610,36 @@ Each UDP packet: 12-byte big-endian header + JPEG payload
 - **Control**: DataChannel `"control"` replaces UDP port 8005 for resolution/zoom commands.
 
 ## Project Structure
+
+The tree below shows the upload scope. See the [module layout and migration guide](docs/module-layout.md) for directory responsibilities, old-to-new module paths, and packaged entry points.
+
 ```
-airo-doffy/
-├── config.py           # Central configuration
-├── main.py             # Data collection entry point
-├── realsense_camera.py # Shared local RealSense capture
-├── udp.py              # UDP video/control transport using captured camera frames
-├── WebRTC_udp.py       # Camera streaming (WebRTC) + VR data reception
-├── parse_vr.py         # VR data parsing (controller + hand tracking)
-├── robot_backend.py    # Robot backend adapters for UR, RealMan, and generic manipulators
-├── robot_teleop.py     # Robot-agnostic teleoperation backend client
-├── realman_teleop.py   # Lean RealMan camera/force teleop with 200 Hz CAN-FD
-├── force_filter.py     # Shared 6D wrench filtering utilities
-├── tactile_4point.py   # 4-taxel BLE MagTouch reader and tactile panel helpers
-├── visualizer.py       # Shared live force/tactile/camera/dataset dashboard
-├── visualizer_config.py # Visualizer settings
-├── vr_data.py          # Standalone VR receiver + hand visualizer
-├── data_schema.py      # Dataset and policy state/action schema helpers
-├── dataset.py          # Dataset recording (HDF5 / LeRobot)
-├── inference.py        # Policy inference
-├── tactile.py          # Tactile sensor interface
-├── udp_comms.py        # Two-way UDP communication
-├── utils.py            # Filters, safety checks, helpers
-└── example from VR/    # Unity C# source & Python examples
+doffy-teleop/
+├── main.py                  # Classic teleop CLI launcher
+├── realman_teleop.py         # RealMan teleop CLI launcher
+├── realman_teachcollect.py   # Teach/replay/collect CLI launcher
+├── realman_recollect.py      # Dataset recollection CLI launcher
+├── teleop_body_visualizer.py # BODY viewer CLI launcher
+├── doffy_teleop/
+│   ├── config.py            # Central robot, sensor and recording configuration
+│   ├── utils.py             # Shared filters, safety checks and helpers
+│   ├── protocol/            # VR, BODY, control, JPEG and signaling formats
+│   ├── media/               # Capture, UDP/WebRTC and socket services
+│   ├── sensors/             # Beaver, MagTouch and wrench filtering
+│   ├── control/             # Input mapping, IK, constraints and CAN-FD
+│   ├── robots/              # Backends, grippers, BrainCo and Classic control
+│   ├── recording/           # Datasets, schema, services, replay and recollection UI
+│   ├── runtime/             # Teleop, teach/recollect and BODY lifecycles
+│   ├── visualization/       # Teleop dashboard, BODY viewer and display config
+│   └── body_visualization.py # BODY compatibility exports
+├── dataset_tool/            # Dataset conversion, replay, recollection and annotation
+├── test_tool/               # Standalone hardware/protocol tools
+├── tests/                   # Teleop, BODY, dataset and protocol tests
+├── hardware/beaver/         # Beaver firmware source
+├── apk/                     # v0.9.7 ARM64 VR app and release manifest
+├── docs/                    # Usage, architecture and validation records
+└── scripts/teleop_refactor/  # Teleop validation harnesses and helper scripts
 ```
+
+The local Seahorse launcher implementation and the research modules listed
+above are excluded from the upload.

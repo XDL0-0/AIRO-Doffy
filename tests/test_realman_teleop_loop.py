@@ -3,16 +3,19 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
 from airo_spatial_algebra.se3 import SE3Container
 from scipy.spatial.transform import Rotation
 
-from config import Config
-from dataset import DatasetRecorder
-from realman_teleop import (
+from doffy_teleop.config import Config
+from doffy_teleop.recording.dataset import DatasetRecorder
+from doffy_teleop.robots.contracts import CommandResult
+from doffy_teleop.robots.gripper import NullGripper
+from doffy_teleop.robots.legacy.runtime import RobotTeleop as ClassicRobotTeleop
+from doffy_teleop.runtime.realman_cli import (
     _UNCLOSED_REALMAN_TELEOPS,
     CanfdCommandLoop,
     RealManEpisodeRecorder,
@@ -22,7 +25,7 @@ from realman_teleop import (
     pack_quest_tcp_state_packet,
     visualizer_publish_loop,
 )
-from visualizer_config import VisualizerConfig
+from doffy_teleop.visualization.config import VisualizerConfig
 
 
 class FakeRealManArm:
@@ -186,6 +189,26 @@ class FakeRealManBackend:
         self.cleaned = True
 
 
+class FakeClassicBackend(FakeRealManBackend):
+    is_ur = False
+    ik_solver = None
+    dataset_robot_type = "realman"
+
+    def __init__(self) -> None:
+        super().__init__(FakeRealManArm())
+        self.tcp_tool = "Hand"
+        self.gripper = NullGripper(0.085)
+        self.hand = Mock()
+        self.tcp_targets = []
+
+    def clip_joint_configuration(self, joints):
+        return np.asarray(joints, dtype=float)
+
+    def command_tcp_pose(self, tcp_pose, dt):
+        self.tcp_targets.append(np.asarray(tcp_pose, dtype=float).copy())
+        return CommandResult(True, tcp_pose, self.joints.copy())
+
+
 def controller_data(
     *,
     x: float = 0.0,
@@ -200,12 +223,29 @@ def controller_data(
         "IndexTrigger": 0.0,
         "Joystick": (0.0, 0.0),
         "Joystick_Press": 0,
+        "Button_AX": 0,
+        "Button_BY": 0,
     }
     right = dict(empty)
     right["Position"] = (x, 0.0, 0.0)
     right["GripTrigger"] = float(grip)
     right["Joystick"] = (float(joystick_x), float(joystick_y))
     return [empty, right]
+
+
+def tracked_hand_data(*, z: float = 0.0) -> dict:
+    bones = np.full((26, 3), 0.1, dtype=float)
+    # Keep gesture fingertips apart so classic tracking stays in hand mode.
+    bones[:, 0] = np.arange(26) * 0.01
+    return {
+        "R": {
+            "bones": bones,
+            "wrist_pose": {
+                "position": (0.0, 0.0, z),
+                "rotation": (0.0, 0.0, 0.0, 1.0),
+            },
+        }
+    }
 
 
 def make_loop(
@@ -680,7 +720,7 @@ class CanfdCommandLoopTest(unittest.TestCase):
             loop._last_command_success_ns = 900_000_000
 
         with patch(
-            "realman_teleop.time.perf_counter_ns",
+            "doffy_teleop.runtime.realman_cli.time.perf_counter_ns",
             return_value=1_060_000_000,
         ):
             inflight_error = loop.heartbeat_error()
@@ -691,7 +731,7 @@ class CanfdCommandLoopTest(unittest.TestCase):
             loop._last_command_start_ns = 1_000_000_000
             loop._last_command_success_ns = 1_000_000_000
         with patch(
-            "realman_teleop.time.perf_counter_ns",
+            "doffy_teleop.runtime.realman_cli.time.perf_counter_ns",
             return_value=1_060_000_000,
         ):
             missing_success_error = loop.heartbeat_error()
@@ -851,7 +891,7 @@ class RealManTeleopTest(unittest.TestCase):
             WRM_TCP_Z_DROP_M=0.05,
             TELEOP_COMMAND_MODE="joint",
         )
-        with patch("wrm_akm.Rm75ArmAngleIk", CapturingWrmIk):
+        with patch("doffy_teleop.control.wrm_akm.Rm75ArmAngleIk", CapturingWrmIk):
             teleop = RealManTeleop(
                 controller_data(),
                 cfg=cfg,
@@ -961,6 +1001,36 @@ class RealManTeleopTest(unittest.TestCase):
         finally:
             teleop.close()
 
+    def test_disabled_brainco_ignores_presets_and_keeps_controller_arm_control(self) -> None:
+        backend = FakeRealManBackend(FakeRealManArm())
+        backend.tcp_tool = "Hand"
+        backend.hand = Mock()
+        cfg = realman_config(
+            TELEOP_COMMAND_MODE="tcp",
+            TRACKING_MODE="controller",
+            TCP_TOOL="Hand",
+            BRAINCO_HAND_ENABLE=False,
+        )
+        teleop = RealManTeleop(controller_data(), cfg=cfg, backend=backend)
+        try:
+            self.assertIsNone(teleop.hand)
+            self.assertFalse(teleop.process_controller(controller_data(), 0.01))
+            for joystick_y in (1.0, 1.0, 0.0, -1.0):
+                self.assertTrue(
+                    teleop.process_controller(
+                        controller_data(x=0.01, grip=True, joystick_y=joystick_y),
+                        0.01,
+                    )
+                )
+
+            self.assertEqual(backend.hand.mock_calls, [])
+            self.assertFalse(np.allclose(teleop._last_tcp_target, backend.tcp_pose))
+            self.assertEqual(teleop.tcp_tool, "Hand")
+            self.assertEqual(cfg.TCP_TOOL, "Hand")
+            self.assertFalse(cfg.GRIPPER)
+        finally:
+            teleop.close()
+
     def test_hand_tracking_controls_wrist_and_brainco_tool(self) -> None:
         class CapturingHand:
             def __init__(self) -> None:
@@ -1010,6 +1080,29 @@ class RealManTeleopTest(unittest.TestCase):
             self.assertTrue(teleop.process_hand(moved, 0.01))
             self.assertEqual(len(backend.hand.frames), 2)
             self.assertGreater(teleop.canfd._target[0], 0.4)
+        finally:
+            teleop.close()
+
+    def test_disabled_brainco_keeps_hand_tracking_wrist_control(self) -> None:
+        backend = FakeRealManBackend(FakeRealManArm())
+        backend.tcp_tool = "Hand"
+        backend.hand = Mock()
+        cfg = realman_config(
+            TELEOP_COMMAND_MODE="tcp",
+            TRACKING_MODE="hand",
+            TCP_TOOL="Hand",
+            BRAINCO_HAND_ENABLE=False,
+        )
+        teleop = RealManTeleop(controller_data(), cfg=cfg, backend=backend)
+        try:
+            self.assertIsNone(teleop.hand)
+            self.assertFalse(teleop.process_hand(tracked_hand_data(), 0.01))
+            self.assertTrue(teleop.process_hand(tracked_hand_data(z=0.01), 0.01))
+
+            self.assertEqual(backend.hand.mock_calls, [])
+            self.assertGreater(teleop.canfd._target[0], 0.4)
+            self.assertEqual(teleop.tcp_tool, "Hand")
+            self.assertEqual(cfg.TCP_TOOL, "Hand")
         finally:
             teleop.close()
 
@@ -1336,7 +1429,7 @@ class RealManTeleopTest(unittest.TestCase):
         arm = FakeRealManArm()
         backend = FakeRealManBackend(arm)
         with patch(
-            "realman_teleop.make_robot_backend",
+            "doffy_teleop.runtime.realman_cli.make_robot_backend",
             return_value=backend,
         ):
             with self.assertRaises(IndexError):
@@ -1367,10 +1460,10 @@ class RealManTeleopTest(unittest.TestCase):
         self.assertEqual(len(arm.push_configs), 1)
         enabled = arm.push_configs[0]
         self.assertTrue(enabled.enable)
-        self.assertEqual(enabled.cycle, cfg.REALMAN_STATE_PUSH_CYCLE_MS)
+        self.assertEqual(enabled.cycle, 1)  # SDK cycle 1 = 5 ms = 200 Hz.
         self.assertEqual(enabled.port, cfg.REALMAN_STATE_PUSH_PORT)
         self.assertEqual(enabled.force_coordinate, cfg.REALMAN_FORCE_COORDINATE)
-        self.assertEqual(enabled.ip, cfg.PC_IP)
+        self.assertEqual(enabled.ip, cfg.REALMAN_STATE_PUSH_IP or cfg.PC_IP)
 
         stop_event.set()
         for thread in threads:
@@ -1391,6 +1484,27 @@ class RealManTeleopTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "closed"):
             teleop.start(threading.Event())
+
+    def test_realtime_push_converts_milliseconds_to_sdk_units(self) -> None:
+        for period_ms, sdk_cycle in ((5, 1), (10, 2), (25, 5)):
+            with self.subTest(period_ms=period_ms):
+                arm = FakeRealManArm()
+                backend = FakeRealManBackend(arm, api=fake_realtime_api())
+                teleop = RealManTeleop(
+                    controller_data(),
+                    cfg=realman_config(
+                        REALMAN_STATE_PUSH_CYCLE_MS=period_ms,
+                        REALMAN_STATE_PUSH_TIMEOUT=0.1,
+                    ),
+                    backend=backend,
+                )
+                try:
+                    teleop._start_realtime_state_push()
+                    self.assertEqual(arm.push_configs[-1].cycle, sdk_cycle)
+                finally:
+                    teleop.close()
+                self.assertFalse(arm.push_configs[-1].enable)
+                self.assertEqual(arm.push_configs[-1].cycle, sdk_cycle)
 
     def test_repeated_start_is_rejected(self) -> None:
         arm = FakeRealManArm()
@@ -1420,7 +1534,7 @@ class RealManTeleopTest(unittest.TestCase):
             backend=backend,
         )
         with patch(
-            "realman_teleop.threading.Thread.start",
+            "doffy_teleop.runtime.realman_cli.threading.Thread.start",
             side_effect=RuntimeError("thread start failed"),
         ):
             with self.assertRaisesRegex(RuntimeError, "thread start failed"):
@@ -1771,6 +1885,64 @@ class RealManTeleopTest(unittest.TestCase):
         self.assertNotIn("tactile", handle.sample)
         self.assertIn("camera_0", handle.sample["images"])
         teleop.close()
+
+
+class ClassicBrainCoEnableTest(unittest.TestCase):
+    @staticmethod
+    def _teleop(tracking_mode):
+        backend = FakeClassicBackend()
+        cfg = realman_config(
+            TRACKING_MODE=tracking_mode,
+            TELEOP_COMMAND_MODE="tcp",
+            TCP_TOOL="Hand",
+            BRAINCO_HAND_ENABLE=False,
+            GRAVITY_COMP=False,
+            FORCE_COLLECT=False,
+            TORQUE_COLLECT=False,
+        )
+        teleop = ClassicRobotTeleop(
+            controller_data(),
+            cfg=cfg,
+            backend=backend,
+            visualizer_config=VisualizerConfig(ENABLED=False),
+        )
+        return teleop, backend
+
+    def test_disabled_brainco_ignores_controller_presets_and_moves_arm(self) -> None:
+        teleop, backend = self._teleop("controller")
+        try:
+            self.assertIsNone(teleop.hand)
+            for joystick_y in (1.0, 1.0, 0.0, -1.0):
+                teleop.step(
+                    controller_data(x=0.01, grip=True, joystick_y=joystick_y),
+                    0.01,
+                )
+
+            self.assertEqual(backend.hand.mock_calls, [])
+            self.assertEqual(len(backend.tcp_targets), 4)
+            self.assertFalse(np.allclose(backend.tcp_targets[-1], backend.tcp_pose))
+            self.assertEqual(teleop.tcp_tool, "Hand")
+            self.assertEqual(teleop.cfg.TCP_TOOL, "Hand")
+            self.assertFalse(teleop.gripper_enabled)
+        finally:
+            teleop.close()
+
+    def test_disabled_brainco_ignores_fingers_and_moves_tracked_wrist(self) -> None:
+        teleop, backend = self._teleop("hand")
+        try:
+            self.assertIsNone(teleop.hand)
+            teleop.step(None, 0.01, hand_data=tracked_hand_data())
+            self.assertEqual(backend.tcp_targets, [])
+            teleop.step(None, 0.01, hand_data=tracked_hand_data(z=0.01))
+
+            self.assertEqual(backend.hand.mock_calls, [])
+            self.assertEqual(len(backend.tcp_targets), 1)
+            self.assertGreater(backend.tcp_targets[0][0, 3], 0.4)
+            self.assertEqual(teleop.tracking_mode, "hand")
+            self.assertEqual(teleop.tcp_tool, "Hand")
+            self.assertEqual(teleop.cfg.TCP_TOOL, "Hand")
+        finally:
+            teleop.close()
 
 
 class DatasetRecorderLifecycleTest(unittest.TestCase):

@@ -4,6 +4,13 @@ import os
 import h5py
 import cv2
 import logging
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from airo_robots.manipulators.hardware.ur_rtde import URrtde
 import pyrealsense2 as rs
 from airo_robots.grippers import Robotiq2F85

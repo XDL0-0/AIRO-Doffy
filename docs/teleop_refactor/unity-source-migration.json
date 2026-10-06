@@ -1,0 +1,262 @@
+[
+  {
+    "from": "Assets/Scripts/New/AppManager.cs",
+    "to": "Assets/Teleop/Core/AppManager.cs",
+    "guid": "6caad518c3ed6e74aaaaee0b1553bedd"
+  },
+  {
+    "from": "Assets/Scripts/RecordingController.cs",
+    "to": "Assets/Teleop/Core/RecordingController.cs",
+    "guid": "8de7369edb741a0489cc1c663d98866f"
+  },
+  {
+    "from": "Assets/Scripts/TeleopConfig.cs",
+    "to": "Assets/Teleop/Core/TeleopConfig.cs",
+    "guid": "78b2d57c905f46a2af657076a7f64b6d"
+  },
+  {
+    "from": "Assets/Scripts/TeleopSessionState.cs",
+    "to": "Assets/Teleop/Core/TeleopSessionState.cs",
+    "guid": "2c7f89d5f12f44f4a8e3fb7638c16011"
+  },
+  {
+    "from": "Assets/Scripts/DualControllerSender.cs",
+    "to": "Assets/Teleop/Input/DualControllerSender.cs",
+    "guid": "9a2625f3cf3a1cc4abee28a220f18ea1"
+  },
+  {
+    "from": "Assets/Scripts/HandTrackingSender.cs",
+    "to": "Assets/Teleop/Input/HandTrackingSender.cs",
+    "guid": "cdbd536dda793a84eb8640dccbbe6495"
+  },
+  {
+    "from": "Assets/Scripts/TrackingModeManager.cs",
+    "to": "Assets/Teleop/Input/TrackingModeManager.cs",
+    "guid": "6593d2ff22f284e4db295dcd54d9d865"
+  },
+  {
+    "from": "Assets/Scripts/TeleopTrackingGuard.cs",
+    "to": "Assets/Teleop/Input/TeleopTrackingGuard.cs",
+    "guid": "cdc4af80c43c453cb153b78cd58e8a50"
+  },
+  {
+    "from": "Assets/Scripts/UdpSocket.cs",
+    "to": "Assets/Teleop/Networking/UdpSocket.cs",
+    "guid": "52395b768bff51b47b52a369e1d969a9"
+  },
+  {
+    "from": "Assets/Scripts/TeleopWorld.cs",
+    "to": "Assets/Teleop/Calibration/TeleopWorld.cs",
+    "guid": "ddd4e93a432dc9149bd76bbe2b67f80e"
+  },
+  {
+    "from": "Assets/Scripts/TeleopReferenceFrame.cs",
+    "to": "Assets/Teleop/Calibration/TeleopReferenceFrame.cs",
+    "guid": "1bd3da8221df4a2d9e0ca5db7e75372a"
+  },
+  {
+    "from": "Assets/Scripts/TeleopControlModeManager.cs",
+    "to": "Assets/Teleop/Calibration/TeleopControlModeManager.cs",
+    "guid": "a21f4c2a8b3093e4792122c1944bc076"
+  },
+  {
+    "from": "Assets/Scripts/TeleopViewModeMapper.cs",
+    "to": "Assets/Teleop/Calibration/TeleopViewModeMapper.cs",
+    "guid": "88980e9ca5e546047862f3c8f0dcc0cc"
+  },
+  {
+    "from": "Assets/Scripts/RobotBasePlacementTool.cs",
+    "to": "Assets/Teleop/Calibration/RobotBasePlacementTool.cs",
+    "guid": "eeff3d06b00b1dd4c87ce634c67c5b4a"
+  },
+  {
+    "from": "Assets/Scripts/Calibration/CalibrationTool.cs",
+    "to": "Assets/Teleop/Calibration/CalibrationTool.cs",
+    "guid": "38ccd7a4852db49c8b814e6bb34e88b3"
+  },
+  {
+    "from": "Assets/Scripts/Calibration/CalibrationGizmo.cs",
+    "to": "Assets/Teleop/Calibration/CalibrationGizmo.cs",
+    "guid": "ff13b8e7858f7445facd9951cde15fe4"
+  },
+  {
+    "from": "Assets/Scripts/TCP/TCPPoseReceiver.cs",
+    "to": "Assets/Teleop/Feedback/TCPPoseReceiver.cs",
+    "guid": "e36442bf1f7252ba791499c3d679cc91"
+  },
+  {
+    "from": "Assets/Scripts/Force/ForceArrow.cs",
+    "to": "Assets/Teleop/Feedback/ForceArrow.cs",
+    "guid": "5cc199c11b1682202832a6f49fd9a329"
+  },
+  {
+    "from": "Assets/Scripts/Force/ForceSensorReceiver.cs",
+    "to": "Assets/Teleop/Feedback/ForceSensorReceiver.cs",
+    "guid": "f44c19645c005f70a8149991592ca0f5"
+  },
+  {
+    "from": "Assets/Scripts/Viz/RobotTcpAxes.cs",
+    "to": "Assets/Teleop/Feedback/RobotTcpAxes.cs",
+    "guid": "acedd6afebe89583ba984cc0dcf8ac05"
+  },
+  {
+    "from": "Assets/Scripts/MultipleVideoStream/UDPManager.cs",
+    "to": "Assets/Teleop/Media/UDP/UdpWindowManager.cs",
+    "guid": "63f54b5e7b164c04ba4a422a9dd4f006"
+  },
+  {
+    "from": "Assets/Scripts/MultipleVideoStream/VideoCreateManager.cs",
+    "to": "Assets/Teleop/Media/UDP/VideoWindowController.cs",
+    "guid": "e7d67a6de85fee54690a2da32347c7a9"
+  },
+  {
+    "from": "Assets/Scripts/MultipleVideoStream/UdpSocketMultiHD.cs",
+    "to": "Assets/Teleop/Media/UDP/UdpSocketMultiHD.cs",
+    "guid": "0820c7231cdaf9b4fa2614e370be0211"
+  },
+  {
+    "from": "Assets/Scripts/New/VideoSignalingClient.cs",
+    "to": "Assets/Teleop/Media/WebRTC/VideoSignalingClient.cs",
+    "guid": "444bb0b4bcafa494ca0112be6b98f22e"
+  },
+  {
+    "from": "Assets/Scripts/New/VideoStreamManager.cs",
+    "to": "Assets/Teleop/Media/WebRTC/VideoStreamManager.cs",
+    "guid": "36d774acfb067174aad6275fece1a188"
+  },
+  {
+    "from": "Assets/Scripts/New/WebRTCVideoReceiver.cs",
+    "to": "Assets/Teleop/Media/WebRTC/WebRTCVideoReceiver.cs",
+    "guid": "1ca8f2fb5d581274b9cc19019a5f626e"
+  },
+  {
+    "from": "Assets/Scripts/UpperLimb/UpperLimbAkmManager.cs",
+    "to": "Assets/Teleop/UpperLimb/UpperLimbAkmManager.cs",
+    "guid": "68808d8c84df463584445cfd7efda34a"
+  },
+  {
+    "from": "Assets/Scripts/UpperLimb/UpperLimbAkmBootstrap.cs",
+    "to": "Assets/Teleop/UpperLimb/UpperLimbAkmBootstrap.cs",
+    "guid": "cf1632c71f935f382aa7d658e6b29be6"
+  },
+  {
+    "from": "Assets/Scripts/Tactile Visualization/TactileArrow.cs",
+    "to": "Assets/Teleop/Visualization/Tactile/TactileArrow.cs",
+    "guid": "f4770f40741eb8948be868f154ba3e8f"
+  },
+  {
+    "from": "Assets/Scripts/Tactile Visualization/TactileUIManager.cs",
+    "to": "Assets/Teleop/Visualization/Tactile/TactileUIManager.cs",
+    "guid": "c94bdb6fa0379af4fbe5696feb675999"
+  },
+  {
+    "from": "Assets/Scripts/Tactile Visualization/TactileSensorGenerator.cs",
+    "to": "Assets/Teleop/Visualization/Tactile/TactileSensorGenerator.cs",
+    "guid": "83c3a822c1359e64584cba72c56c9c51"
+  },
+  {
+    "from": "Assets/Scripts/VirtualRobot/VirtualRobotJointStateReceiver.cs",
+    "to": "Assets/Teleop/Visualization/VirtualRobot/VirtualRobotJointStateReceiver.cs",
+    "guid": "c8fa33bfc8905de4790ed1ab850cbe3f"
+  },
+  {
+    "from": "Assets/Scripts/VirtualRobot/VirtualUrdfJointDriver.cs",
+    "to": "Assets/Teleop/Visualization/VirtualRobot/VirtualUrdfJointDriver.cs",
+    "guid": "ff353e0803ad2c94ab04da6ecb29c348"
+  },
+  {
+    "from": "Assets/Scripts/VirtualRobot/Robotiq2F85MimicJointDriver.cs",
+    "to": "Assets/Teleop/Visualization/VirtualRobot/Robotiq2F85MimicJointDriver.cs",
+    "guid": "535a5720c8b5b0f44b2e0c3f92459579"
+  },
+  {
+    "from": "Assets/Scripts/Tactile Visualization/GrabbleWindows.cs",
+    "to": "Assets/Teleop/UI/DraggableWindowWorld.cs",
+    "guid": "cf150edf4c1b76f4496bf93cd0001288"
+  },
+  {
+    "from": "Assets/Scripts/RuntimeUITheme.cs",
+    "to": "Assets/Teleop/UI/RuntimeUITheme.cs",
+    "guid": "115f675885ff23543810e1bcb829d0b0"
+  },
+  {
+    "from": "Assets/Scripts/New/LogManager.cs",
+    "to": "Assets/Teleop/Diagnostics/LogManager.cs",
+    "guid": "323597c1f6577884abf0ee21595981b5"
+  },
+  {
+    "from": "Assets/Scripts/FoldingCanvas.cs",
+    "to": "Assets/Teleop/Legacy/Presentation/CollapsibleCanvas.cs",
+    "guid": "e9e708a39bd5d844099874ca03d6bf9f"
+  },
+  {
+    "from": "Assets/Scripts/User_Manual_control.cs",
+    "to": "Assets/Teleop/Legacy/Presentation/WindowToggle.cs",
+    "guid": "ce1f77e74abdc7a4c8115826921c3a03"
+  },
+  {
+    "from": "Assets/Scripts/PassthroughManager.cs",
+    "to": "Assets/Teleop/Legacy/Presentation/PassthroughToggle.cs",
+    "guid": "3bbec01ca669330488500a0ae454e3fd"
+  },
+  {
+    "from": "Assets/Scripts/AppController.cs",
+    "to": "Assets/Teleop/Legacy/Presentation/AppController.cs",
+    "guid": "0d40fc60a808cfa4b8b16b32c42f2d45"
+  },
+  {
+    "from": "Assets/Scripts/Controller.cs",
+    "to": "Assets/Teleop/Legacy/Debug/MetaControllerData.cs",
+    "guid": "070d6371a7034d04db602bd6edb4deda"
+  },
+  {
+    "from": "Assets/Scripts/PythonTest.cs",
+    "to": "Assets/Teleop/Legacy/Debug/PythonTest.cs",
+    "guid": "7b35067901b18b5459f346f04e9b16a9"
+  },
+  {
+    "from": "Assets/Scripts/MultipleVideoStream/UDPSocket_MULTI.cs",
+    "to": "Assets/Teleop/Legacy/Video/UdpSocketMulti.cs",
+    "guid": "491b6efe1f031174c9383f9c8a1e5768"
+  },
+  {
+    "from": "Assets/Scripts/UpperLimb/UpperLimbVrKeyboard.cs",
+    "to": "Assets/Teleop/Legacy/UI/UpperLimbVrKeyboard.cs",
+    "guid": "f8b665b2c3ad602d89fc4bcff43aa87f"
+  },
+  {
+    "from": "Assets/Scripts/UpperLimb/UpperLimbAkmUi.cs",
+    "to": "Assets/Teleop/Legacy/UI/UpperLimbAkmUi.cs",
+    "guid": "7f8d14e37847424a8b262ff6f5f8921c"
+  },
+  {
+    "from": "Assets/Scripts/Position_transfer.cs",
+    "to": "Assets/Teleop/Legacy/PositionTransfer.cs",
+    "guid": "c67c297b461cb4646949242fbaaae1a9"
+  },
+  {
+    "from": "Assets/Scripts/Unused/CanvasMovement.cs",
+    "to": "Assets/Teleop/Legacy/CanvasMoveProvider.cs",
+    "guid": "c587bd541fc8d93448269098e3d347a3"
+  },
+  {
+    "from": "Assets/Scripts/Unused/A_button_laser_control.cs",
+    "to": "Assets/Teleop/Legacy/AButtonLaserControl.cs",
+    "guid": "2b3f781c31fa8d14b92f8436af275912"
+  },
+  {
+    "from": "Assets/Scripts/Unused/X_button_laser_control.cs",
+    "to": "Assets/Teleop/Legacy/XButtonLaserControl.cs",
+    "guid": "a333524ca1da927498d8259cf003f6f1"
+  },
+  {
+    "from": "Assets/Scripts/Unused/WindowJoystickHoldMove.cs",
+    "to": "Assets/Teleop/Legacy/WindowJoystickHoldMove.cs",
+    "guid": "a95477cf2b9675c498948e2f1db01bff"
+  },
+  {
+    "from": "Assets/Scripts/Unused/Position_transfer_Multi.cs",
+    "to": "Assets/Teleop/Legacy/Position_transfer_Multi.cs",
+    "guid": "732172fb91a921c4c81b9c48fad4ef52"
+  }
+]

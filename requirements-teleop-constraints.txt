@@ -1,0 +1,14 @@
+# Tested teleoperation compatibility set for the local Python 3.10 airo-doffy base.
+# This is a pip constraints file, not a complete requirements or portable lock file.
+lerobot==0.4.4
+aiortc==1.15.0
+aiohttp==3.14.3
+datasets==4.8.5
+diffusers==0.35.2
+accelerate==1.14.0
+av==15.1.0
+huggingface-hub==0.35.3
+hf-transfer==0.1.9
+fsspec==2026.2.0
+packaging==25.0
+setuptools==80.10.2

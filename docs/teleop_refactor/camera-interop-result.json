@@ -1,0 +1,58 @@
+[
+  {
+    "status": "passed",
+    "transport": "python-udp",
+    "shape": [
+      96,
+      128
+    ],
+    "jpeg_sha256": "727db4200ea06d0ce1d66dd3cfe72df136e0ca50b0750d9335d8188976ce3533",
+    "chunks": 61,
+    "malformed": 1,
+    "duplicates": 1,
+    "expired": 1,
+    "restarts": 1
+  },
+  {
+    "status": "passed",
+    "transport": "python-to-unity-csharp-udp",
+    "shape": [
+      72,
+      96
+    ],
+    "jpeg_sha256": "32811e18b69c9e1d45b35c84a9de31ab4aab9ce739d3ebd174b9b15fda2938fc",
+    "chunks": 37,
+    "ready": "READY 49026"
+  },
+  {
+    "status": "passed",
+    "transport": "realsense-to-python-udp",
+    "frames": 3,
+    "captured_frames": 3,
+    "shapes": [
+      [
+        480,
+        640
+      ],
+      [
+        480,
+        640
+      ],
+      [
+        480,
+        640
+      ]
+    ],
+    "unity_csharp": {
+      "status": "passed",
+      "transport": "python-to-unity-csharp-udp",
+      "shape": [
+        480,
+        640
+      ],
+      "jpeg_sha256": "f808c8c6fd788e2df19c091eb9316bd0de534b0171682727c2bc0aab798c6713",
+      "chunks": 38,
+      "ready": "READY 50923"
+    }
+  }
+]

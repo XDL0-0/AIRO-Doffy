@@ -1,0 +1,102 @@
+{
+  "checked_at": "2026-09-16T13:34:13.944578+00:00",
+  "packages": {
+    "com.meta.xr.sdk.all": {
+      "version": "205.0.0",
+      "minimum_unity": "6000.0",
+      "dependencies": {
+        "com.meta.xr.sdk.core": "205.0.0",
+        "com.meta.xr.sdk.audio": "85.0.0",
+        "com.meta.xr.sdk.voice": "85.0.1",
+        "com.meta.xr.sdk.haptics": "205.0.0",
+        "com.meta.xr.mrutilitykit": "205.0.0",
+        "com.meta.xr.sdk.platform": "205.0.0",
+        "com.meta.xr.sdk.interaction": "205.0.0",
+        "com.meta.xr.sdk.interaction.ovr": "205.0.0"
+      },
+      "registry": "https://packages.unity.com/com.meta.xr.sdk.all",
+      "sha1": "eefa31febf377c66b79e9a9df9abdc09eefc8070"
+    },
+    "com.meta.xr.sdk.core": {
+      "version": "205.0.0",
+      "minimum_unity": "6000.0",
+      "dependencies": {
+        "com.unity.xr.hands": "1.7.2",
+        "com.unity.modules.ui": "1.0.0",
+        "com.unity.modules.audio": "1.0.0",
+        "com.unity.modules.imgui": "1.0.0",
+        "com.unity.modules.imageconversion": "1.0.0",
+        "com.unity.modules.unitywebrequest": "1.0.0",
+        "com.unity.modules.unitywebrequestaudio": "1.0.0"
+      },
+      "registry": "https://packages.unity.com/com.meta.xr.sdk.core",
+      "sha1": "c0efcbf2ba7073389408996e55bbf8c3fcc04485"
+    },
+    "com.meta.xr.sdk.interaction": {
+      "version": "205.0.0",
+      "minimum_unity": "2022.3",
+      "dependencies": {
+        "com.unity.ugui": "1.0.0",
+        "com.unity.textmeshpro": "3.0.6"
+      },
+      "registry": "https://packages.unity.com/com.meta.xr.sdk.interaction",
+      "sha1": "b67d311217e9d21eaad2a70d8f5bb409f4caf404"
+    },
+    "com.meta.xr.sdk.interaction.ovr": {
+      "version": "205.0.0",
+      "minimum_unity": "2022.3",
+      "dependencies": {
+        "com.meta.xr.sdk.core": "205.0.0",
+        "com.meta.xr.sdk.interaction": "205.0.0"
+      },
+      "registry": "https://packages.unity.com/com.meta.xr.sdk.interaction.ovr",
+      "sha1": "84d9703a2ac27816d3d9e6298d15d88890ccb971"
+    },
+    "com.meta.xr.sdk.platform": {
+      "version": "205.0.0",
+      "minimum_unity": "6000.0",
+      "dependencies": {
+        "com.unity.ugui": "1.0.0",
+        "com.unity.inputsystem": "1.7.0",
+        "com.unity.nuget.newtonsoft-json": "3.2.1"
+      },
+      "registry": "https://packages.unity.com/com.meta.xr.sdk.platform",
+      "sha1": "77232b66891b50074888f477d650814677e5d616"
+    },
+    "com.meta.xr.mrutilitykit": {
+      "version": "205.0.0",
+      "minimum_unity": "6000.0",
+      "dependencies": {
+        "com.meta.xr.sdk.core": "205.0.0",
+        "com.unity.textmeshpro": "3.0.6",
+        "com.unity.ai.navigation": "1.1.4",
+        "com.unity.nuget.newtonsoft-json": "3.0.2"
+      },
+      "registry": "https://packages.unity.com/com.meta.xr.mrutilitykit",
+      "sha1": "2979546e717905c3acdd7cf71231f1a26851db9d"
+    },
+    "com.meta.xr.sdk.haptics": {
+      "version": "205.0.0",
+      "minimum_unity": "6000.0",
+      "dependencies": {
+        "com.meta.xr.sdk.core": "205.0.0"
+      },
+      "registry": "https://packages.unity.com/com.meta.xr.sdk.haptics",
+      "sha1": "ca7512cf6c805774cb1924ea4dbe8f4ae3f466b7"
+    },
+    "com.meta.xr.sdk.audio": {
+      "version": "85.0.0",
+      "minimum_unity": "2022.3",
+      "dependencies": {},
+      "registry": "https://packages.unity.com/com.meta.xr.sdk.audio",
+      "sha1": "baafb66e77db28ad9ed6579c7c1c1f8a5f1ec844"
+    },
+    "com.meta.xr.sdk.voice": {
+      "version": "85.0.1",
+      "minimum_unity": "2022.3",
+      "dependencies": {},
+      "registry": "https://packages.unity.com/com.meta.xr.sdk.voice",
+      "sha1": "856439ff26898b0412bc511c8939463658bbd9b3"
+    }
+  }
+}

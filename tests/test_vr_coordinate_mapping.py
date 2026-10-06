@@ -1,8 +1,8 @@
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from config import Config
-from robot_teleop import RobotTeleop
+from doffy_teleop.config import Config
+from doffy_teleop.robots.teleop import RobotTeleop
 
 
 def _teleop_with_configured_axes(cfg: Config) -> RobotTeleop:

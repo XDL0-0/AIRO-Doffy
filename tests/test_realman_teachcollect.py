@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from config import Config
-from realman_teachcollect import (
+from doffy_teleop.config import Config
+from doffy_teleop.runtime.teachcollect import (
     RealManTeachCollector,
     TeachState,
     build_config,
@@ -308,7 +308,7 @@ class RealManTeachCollectorTests(unittest.TestCase):
         self.assertIn("Replay failed", collector.workflow_message)
         collector.close()
 
-    @patch("realman_teachcollect.time.sleep", return_value=None)
+    @patch("doffy_teleop.runtime.teachcollect.time.sleep", return_value=None)
     def test_visualizer_commands_teach_then_replay_collect(self, _sleep) -> None:
         backend = FakeBackend()
         dataset = FakeDataset()
@@ -358,7 +358,10 @@ class RealManTeachCollectorTests(unittest.TestCase):
         np.testing.assert_allclose(
             dataset.frames[1]["state"], np.arange(7) + 0.1
         )
-        self.assertEqual(len(backend.commanded_joints), 2)
+        self.assertEqual(len(backend.commanded_joints), 3)
+        np.testing.assert_allclose(
+            backend.commanded_joints[0][0], np.arange(7) + 0.1
+        )
         self.assertEqual(len(backend.reset_targets), 2)
         np.testing.assert_allclose(
             backend.reset_targets[-1], collector.cfg.INITIAL_JOINT
@@ -388,7 +391,7 @@ class RealManTeachCollectorTests(unittest.TestCase):
         self.assertTrue(visualizer.closed)
         self.assertTrue(backend.cleaned)
 
-    @patch("realman_teachcollect.time.sleep", return_value=None)
+    @patch("doffy_teleop.runtime.teachcollect.time.sleep", return_value=None)
     def test_next_joint_mode_uses_next_measured_state_and_its_timestamp(
         self, _sleep
     ) -> None:
@@ -433,7 +436,7 @@ class RealManTeachCollectorTests(unittest.TestCase):
         )
         collector.close()
 
-    @patch("realman_teachcollect.time.sleep", return_value=None)
+    @patch("doffy_teleop.runtime.teachcollect.time.sleep", return_value=None)
     def test_command_mode_uses_current_target_and_command_timestamp(self, _sleep) -> None:
         measured = [np.full(7, 10.0), np.full(7, 20.0)]
         targets = [np.full(7, 1.0), np.full(7, 2.0)]
@@ -458,7 +461,7 @@ class RealManTeachCollectorTests(unittest.TestCase):
             )
         collector.close()
 
-    @patch("realman_teachcollect.time.sleep", return_value=None)
+    @patch("doffy_teleop.runtime.teachcollect.time.sleep", return_value=None)
     def test_single_frame_next_joint_episode_repeats_its_own_state(self, _sleep) -> None:
         measured = np.full(7, 12.0)
         backend = LaggingFakeBackend([measured])
@@ -681,7 +684,7 @@ class RealManTeachCollectorTests(unittest.TestCase):
         dataset = FakeDataset()
         cameras = FakeCameraManager(camera_num=3, depth_mode=False)
         with patch(
-            "realman_teachcollect.DatasetRecorder", return_value=dataset
+            "doffy_teleop.runtime.teachcollect.DatasetRecorder", return_value=dataset
         ) as recorder_type:
             collector = RealManTeachCollector(
                 teaching_config(),

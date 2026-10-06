@@ -1,15 +1,22 @@
-from airo_robots.manipulators import URrtde
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from airo_robots.manipulators.hardware.ur_rtde import URrtde
 from airo_spatial_algebra.se3 import SE3Container
 import numpy as np
 import logging
 
-from config import Config
+from doffy_teleop.config import Config
 
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-cfg = Config()
+cfg = Config(ROBOT_TYPE="ur3e", TCP_TOOL="None")
 robot = URrtde("10.42.0.162", URrtde.UR3E_CONFIG)
 robot.move_to_joint_configuration(cfg.INITIAL_JOINT,0.3).wait()
 logger.info("Initialization complete.")
@@ -18,12 +25,12 @@ task_frame = robot.get_tcp_pose()   # [x,y,z, rx,ry,rz] expressed in base coordi
 SE = SE3Container.from_homogeneous_matrix(task_frame)
 task_frame = np.concatenate([SE.translation,SE.orientation_as_euler_angles])
 logger.info(f"Task frame: {task_frame}")
-logger.info(f"TCP force: {robot.get_tcp_force()}")
+logger.info(f"TCP force: {robot.rtde_receive.getActualTCPForce()}")
 selection_vector = [1, 1, 0, 0, 0, 0]    # [Fx,Fy,Fz, Tx,Ty,Tz] corresponds to [x,y,z, Rx,Ry,Rz]
 wrench = [0, 0, 8.0, 0, 0, 0]           # About 8N downward force
 type_ = 2
 limits = [0.03, 0.03, 0.015,   0.15, 0.15, 0.15]
-robot.rtde_control.forceMode(task_frame, selection_vector, robot.get_tcp_force(), type_, limits) # start freedrive
+robot.rtde_control.forceMode(task_frame, selection_vector, robot.rtde_receive.getActualTCPForce(), type_, limits) # start freedrive
 input("press enter to stop forcemode")
 robot.rtde_control.forceModeStop()  # stop freedrive
 # input("press enter to continue")

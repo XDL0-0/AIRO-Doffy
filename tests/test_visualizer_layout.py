@@ -9,7 +9,7 @@ os.environ["MPLBACKEND"] = "Agg"
 import matplotlib.pyplot as plt
 from matplotlib.backend_bases import MouseEvent
 
-from visualizer import TeleopDashboard, TeleopSample
+from doffy_teleop.visualization.dashboard import TeleopDashboard, TeleopSample
 
 
 class VisualizerLayoutTests(unittest.TestCase):

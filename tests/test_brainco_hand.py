@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from brainco_hand import (
+from doffy_teleop.robots.brainco_hand import (
     BrainCoHandDriver,
     BrainCoHandMotionFilter,
     BrainCoHandUnavailableError,
@@ -18,7 +18,7 @@ from brainco_hand import (
     openxr_thumb_opposition_progress,
     openxr_to_brainco_joints,
 )
-from config import Config
+from doffy_teleop.config import Config
 
 
 class FakeArm:
@@ -32,21 +32,27 @@ class FakeArm:
         }
         self.position = [10, 20, 30, 40, 50, 60]
         self.commands = []
+        self.rm_plus_calls = []
 
     def rm_get_rm_plus_mode(self):
+        self.rm_plus_calls.append("rm_get_rm_plus_mode")
         return 0, self.mode
 
     def rm_set_rm_plus_mode(self, mode):
+        self.rm_plus_calls.append("rm_set_rm_plus_mode")
         self.mode = mode
         return 0
 
     def rm_get_rm_plus_base_info(self):
+        self.rm_plus_calls.append("rm_get_rm_plus_base_info")
         return 0, self.base_info
 
     def rm_get_rm_plus_state_info(self):
+        self.rm_plus_calls.append("rm_get_rm_plus_state_info")
         return 0, {"pos": self.position}
 
     def rm_set_hand_follow_pos(self, target, block):
+        self.rm_plus_calls.append("rm_set_hand_follow_pos")
         self.commands.append((target, block))
         return 0
 
@@ -64,6 +70,17 @@ def straight_skeleton():
     for start, x in ((6, 0.00), (11, 0.013), (16, 0.026), (21, 0.04)):
         for offset in range(5):
             bones[start + offset] = [x, 0.02 * offset, 0.0]
+    return bones
+
+
+def partially_curled_skeleton():
+    bones = straight_skeleton()
+    for start, bend_degrees in ((6, 15), (11, 25), (16, 35), (21, 45)):
+        angles = np.deg2rad(np.arange(4) * bend_degrees)
+        segments = 0.02 * np.column_stack(
+            (np.zeros(4), np.cos(angles), np.sin(angles))
+        )
+        bones[start + 1:start + 5] = bones[start] + np.cumsum(segments, axis=0)
     return bones
 
 
@@ -130,6 +147,45 @@ class OpenXrMappingTest(unittest.TestCase):
 
         self.assertGreater(thumb_flex, 0.7)
         self.assertAlmostEqual(joints[0], thumb_flex)
+
+    def test_thumb_flex_changes_only_first_motor_when_opposition_is_fixed(self):
+        initial = partially_curled_skeleton()
+        flexed = initial.copy()
+        # Bend the intermediate joints while keeping the thumb tip fixed, so
+        # the opposition measure and all four finger chains are unchanged.
+        flexed[3:5] = [[-0.04, 0.01, 0.0], [-0.05, 0.02, 0.0]]
+        calibration = openxr_thumb_opposition_progress(initial)
+
+        initial_joints = openxr_to_brainco_joints(
+            initial, thumb_rotate_open_progress=calibration
+        )
+        flexed_joints = openxr_to_brainco_joints(
+            flexed, thumb_rotate_open_progress=calibration
+        )
+
+        self.assertGreater(flexed_joints[0], 0.7)
+        self.assertTrue(np.all(initial_joints[1:5] > 0.0))
+        np.testing.assert_allclose(flexed_joints[1:], initial_joints[1:])
+
+    def test_thumb_opposition_changes_only_sixth_motor_for_straight_thumb(self):
+        initial = partially_curled_skeleton()
+        initial[2:6] = [[-0.03, y, 0.0] for y in (0.0, 0.01, 0.02, 0.03)]
+        opposed = initial.copy()
+        # Translate the whole straight thumb across the palm without changing
+        # its curvature or bringing it into contact with the fingertips.
+        opposed[2:6, 0] += 0.01
+        calibration = openxr_thumb_opposition_progress(initial)
+
+        initial_joints = openxr_to_brainco_joints(
+            initial, thumb_rotate_open_progress=calibration
+        )
+        opposed_joints = openxr_to_brainco_joints(
+            opposed, thumb_rotate_open_progress=calibration
+        )
+
+        self.assertGreater(opposed_joints[5], 0.1)
+        self.assertTrue(np.all(initial_joints[1:5] > 0.0))
+        np.testing.assert_allclose(opposed_joints[:5], initial_joints[:5])
 
 
 class BrainCoDriverTest(unittest.TestCase):
@@ -262,6 +318,32 @@ class TcpToolConfigTest(unittest.TestCase):
             "airo_spatial_algebra.se3": se3,
         }
 
+    def test_brainco_hand_is_enabled_by_default(self):
+        with patch.dict(sys.modules, self._fake_spatial_modules()):
+            cfg = Config()
+
+        self.assertTrue(cfg.BRAINCO_HAND_ENABLE)
+        self.assertEqual(cfg.TCP_TOOL, "Hand")
+        self.assertFalse(cfg.GRIPPER)
+
+    def test_disabling_brainco_preserves_tool_and_legacy_gripper_flag(self):
+        for tool, expected_tool, gripper in (
+            ("Hand", "Hand", False),
+            ("Gripper", "Gripper", True),
+            ("None", "None", False),
+        ):
+            with self.subTest(tool=tool):
+                with patch.dict(sys.modules, self._fake_spatial_modules()):
+                    enabled = Config(TCP_TOOL=tool, BRAINCO_HAND_ENABLE=True)
+                    disabled = Config(TCP_TOOL=tool, BRAINCO_HAND_ENABLE=False)
+
+                self.assertFalse(disabled.BRAINCO_HAND_ENABLE)
+                self.assertEqual(disabled.TCP_TOOL, expected_tool)
+                self.assertEqual(disabled.GRIPPER, gripper)
+                np.testing.assert_array_equal(
+                    disabled.TCP_TRANSFORM, enabled.TCP_TRANSFORM
+                )
+
     def test_hand_is_kept_for_realman_hand_tracking(self):
         with patch.dict(sys.modules, self._fake_spatial_modules()):
             cfg = Config(TCP_TOOL="hand", TRACKING_MODE="HAND")
@@ -294,6 +376,60 @@ class TcpToolConfigTest(unittest.TestCase):
 
         self.assertEqual(cfg.TCP_TOOL, "Gripper")
         self.assertTrue(cfg.GRIPPER)
+
+
+class RealManHandEnableTest(unittest.TestCase):
+    @staticmethod
+    def _config(enabled):
+        return Config(
+            TCP_TOOL="Hand",
+            BRAINCO_HAND_ENABLE=enabled,
+            BRAINCO_HAND_RETRY_DELAY=0.0,
+            BRAINCO_HAND_MODE_SETTLE_DELAY=0.0,
+        )
+
+    @staticmethod
+    def _robot(arm):
+        return types.SimpleNamespace(
+            robot=arm,
+            manipulator_specs=types.SimpleNamespace(dof=7),
+        )
+
+    def test_disabled_hand_performs_no_rm_arm_plus_calls(self):
+        from doffy_teleop.robots.backends import RealManBackend
+
+        arm = FakeArm(mode=115200)
+        cfg = self._config(False)
+        tcp_transform = cfg.TCP_TRANSFORM.copy()
+        backend = RealManBackend(cfg, self._robot(arm))
+
+        self.assertIsNone(backend.hand)
+        self.assertEqual(arm.rm_plus_calls, [])
+        self.assertEqual(arm.commands, [])
+        self.assertEqual(arm.mode, 115200)
+        self.assertEqual(backend.tcp_tool, "Hand")
+        self.assertEqual(cfg.TCP_TOOL, "Hand")
+        self.assertFalse(cfg.GRIPPER)
+        np.testing.assert_array_equal(backend.tcp_transform, tcp_transform)
+
+    def test_enabled_hand_connects_through_rm_arm_plus(self):
+        from doffy_teleop.robots.backends import RealManBackend
+
+        arm = FakeArm(mode=115200)
+        backend = RealManBackend(self._config(True), self._robot(arm))
+
+        self.assertIsInstance(backend.hand, BrainCoHandDriver)
+        self.assertEqual(
+            arm.rm_plus_calls,
+            [
+                "rm_get_rm_plus_mode",
+                "rm_set_rm_plus_mode",
+                "rm_get_rm_plus_base_info",
+                "rm_get_rm_plus_state_info",
+            ],
+        )
+        self.assertEqual(arm.mode, 460800)
+        self.assertEqual(backend.tcp_tool, "Hand")
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from airo_robots.manipulators.hardware.ur_rtde import URrtde
 import logging
 from airo_robots.manipulators.hardware.realman import RealmanControl
 
-from config import Config
+from doffy_teleop.config import Config
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)

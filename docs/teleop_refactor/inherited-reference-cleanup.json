@@ -1,0 +1,218 @@
+{
+  "backup": "/home/yuyuan/UNITY_Project/.backups/codex-inherited-stale-assets-20260916",
+  "changes": [
+    {
+      "archived_unused_asset": "Assets/Prefabs/TactileMesh.prefab"
+    },
+    {
+      "archived_unused_asset": "Assets/Readme.asset"
+    },
+    {
+      "file": "Assets/Scenes/Teleoperation.unity",
+      "removed_missing_component": "1648979498",
+      "name": "",
+      "guid": "a79441f348de89743a2939f4d699eac1"
+    },
+    {
+      "file": "Assets/Scenes/Teleoperation.unity",
+      "removed_missing_component": "2006155232",
+      "name": "",
+      "guid": "a79441f348de89743a2939f4d699eac1"
+    },
+    {
+      "archived_unused_asset": "Assets/Settings/DefaultVolumeProfile.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/Settings/Mobile_RPAsset.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/Settings/Mobile_Renderer.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/Settings/PC_RPAsset.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/Settings/PC_Renderer.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/Settings/SampleSceneProfile.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/Settings/UniversalRenderPipelineGlobalSettings.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/XR/Loaders/OculusLoader.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/XR/Loaders/SimulationLoader.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/XR/Resources/XRSimulationRuntimeSettings.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/XR/Settings/OculusSettings.asset"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "-8570066234395032843",
+      "name": "DisplayUtilitiesFeature Android",
+      "guid": "dfde4033cbc8045a69c465b226fd4284"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "-6973422553277364509",
+      "name": "OpenXRLifeCycleFeature Standalone",
+      "guid": "323d71788dcf5ca4b9cb3c4a90e38335"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "-6609367170312785666",
+      "name": "ARCameraFeature Standalone",
+      "guid": "7e567abbf4d944210acb6315178bb015"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "-6056795608909761278",
+      "name": "ARAnchorFeature Android",
+      "guid": "85fd4a84074c74cb183c18e803dabb9e"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "-4343582118990536830",
+      "name": "AROcclusionFeature Standalone",
+      "guid": "8b9b8cd1fcf8499eb57f194da9698fcd"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "-4141291225844108027",
+      "name": "AROcclusionFeature Android",
+      "guid": "8b9b8cd1fcf8499eb57f194da9698fcd"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "-4019783423789907708",
+      "name": "ARPlaneFeature Android",
+      "guid": "d00bb9c182ae8406ca03773119fa07ea"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "-3648619362862556597",
+      "name": "OpenXRLifeCycleFeature Android",
+      "guid": "323d71788dcf5ca4b9cb3c4a90e38335"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "-2671362525261123480",
+      "name": "ARMeshFeature Android",
+      "guid": "f2a13300a9e14cacbb01ed5d6ae84e69"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "-2666216093886251363",
+      "name": "BoundaryVisibilityFeature Android",
+      "guid": "4f61610f95074135a9fd060fc37c4788"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "-2351687690049845895",
+      "name": "ARSessionFeature Android",
+      "guid": "076937beb8763d94790d2e9cc1248ac8"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "-1463759874950962160",
+      "name": "DisplayUtilitiesFeature Standalone",
+      "guid": "dfde4033cbc8045a69c465b226fd4284"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "479213521868694793",
+      "name": "ColocationDiscoveryFeature Standalone",
+      "guid": "651d103057d74c4d8e51d0b368d3d98b"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "1214941962294863213",
+      "name": "ARSessionFeature Standalone",
+      "guid": "076937beb8763d94790d2e9cc1248ac8"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "1917567745799321963",
+      "name": "ARPlaneFeature Standalone",
+      "guid": "d00bb9c182ae8406ca03773119fa07ea"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "2103727683812632166",
+      "name": "BoundaryVisibilityFeature Standalone",
+      "guid": "4f61610f95074135a9fd060fc37c4788"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "2716718235894929659",
+      "name": "ARAnchorFeature Standalone",
+      "guid": "85fd4a84074c74cb183c18e803dabb9e"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "2806026523423546612",
+      "name": "ColocationDiscoveryFeature Android",
+      "guid": "651d103057d74c4d8e51d0b368d3d98b"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "3544868054922427208",
+      "name": "ARCameraFeature Android",
+      "guid": "7e567abbf4d944210acb6315178bb015"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "5118031172080988757",
+      "name": "ARMeshFeature Standalone",
+      "guid": "f2a13300a9e14cacbb01ed5d6ae84e69"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "5889000517083088336",
+      "name": "ARBoundingBoxFeature Android",
+      "guid": "dc65ec7c51504536bd51a47e3cb8fb6a"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "6484225454401985030",
+      "name": "ARRaycastFeature Standalone",
+      "guid": "4ec7ac3a07bc448fbb43bbcff14d5b12"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "6599225679604025724",
+      "name": "ARRaycastFeature Android",
+      "guid": "4ec7ac3a07bc448fbb43bbcff14d5b12"
+    },
+    {
+      "file": "Assets/XR/Settings/OpenXR Package Settings.asset",
+      "removed_missing_component": "7189342797590894353",
+      "name": "ARBoundingBoxFeature Standalone",
+      "guid": "dc65ec7c51504536bd51a47e3cb8fb6a"
+    },
+    {
+      "archived_unused_asset": "Assets/XR/Settings/XRSimulationSettings.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/XR/UserSimulationSettings/Resources/XRSimulationPreferences.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/XR/UserSimulationSettings/SimulationEnvironmentAssetsManager.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/XRI/Settings/Resources/InteractionLayerSettings.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/XRI/Settings/Resources/XRDeviceSimulatorSettings.asset"
+    },
+    {
+      "archived_unused_asset": "Assets/XRI/Settings/XRInteractionEditorSettings.asset"
+    }
+  ]
+}

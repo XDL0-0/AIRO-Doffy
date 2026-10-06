@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LeRobot Tightness Annotator</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div id="startup" class="startup">Loading dataset…</div>
+    <div id="app" class="app hidden">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">LeRobot v3 · local annotation</p>
+          <h1 id="dataset-name">Tightness Annotator</h1>
+          <p id="dataset-path" class="dataset-path"></p>
+        </div>
+        <div class="progress-block">
+          <div class="progress-copy">
+            <strong id="progress-count">0 / 0 annotated</strong>
+            <span id="remaining-count">0 remaining</span>
+          </div>
+          <div class="progress-track"><span id="progress-bar"></span></div>
+          <span id="progress-percent">0%</span>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="sidebar">
+          <label class="jump-label" for="episode-jump">Jump to episode</label>
+          <div class="jump-row">
+            <input id="episode-jump" type="number" min="0" inputmode="numeric" />
+            <button id="jump-button" class="small-button">Go</button>
+          </div>
+          <div id="episode-list" class="episode-list" aria-label="Episode navigator"></div>
+        </aside>
+
+        <main class="main-panel">
+          <section class="episode-header">
+            <div>
+              <p class="eyebrow">Current episode</p>
+              <h2 id="episode-title">Episode 0</h2>
+            </div>
+            <div id="annotation-status" class="status-badge unannotated">Not annotated</div>
+            <label class="camera-control" for="camera-select">
+              Camera
+              <select id="camera-select"></select>
+            </label>
+          </section>
+
+          <section class="viewer-card">
+            <div class="viewer">
+              <img id="video-frame" alt="Current synchronized camera frame" />
+              <div id="frame-loading" class="frame-loading">Loading frame…</div>
+              <div id="frame-error" class="frame-error hidden"></div>
+            </div>
+
+            <div class="frame-readout">
+              <strong id="frame-count">Frame 0 / 0</strong>
+              <span id="time-readout">0.000 s</span>
+              <span id="fps-readout">0 FPS</span>
+            </div>
+
+            <div id="timeline-shell" class="timeline-shell neutral">
+              <div id="label-track" class="label-track"></div>
+              <div id="transition-marker" class="transition-marker hidden"></div>
+              <input id="timeline" type="range" min="0" max="0" value="0" step="1" aria-label="Episode frame timeline" />
+              <div class="timeline-labels"><span>0</span><span id="timeline-end">0</span></div>
+            </div>
+
+            <div class="transport" aria-label="Frame navigation">
+              <button data-step="-10">−10</button>
+              <button data-step="-1">−1</button>
+              <button id="play-button" class="play-button">▶ Play</button>
+              <button data-step="1">+1</button>
+              <button data-step="10">+10</button>
+            </div>
+          </section>
+
+          <section class="annotation-card">
+            <div class="annotation-copy">
+              <p class="eyebrow">Episode annotation</p>
+              <h3 id="selection-title">Choose a transition</h3>
+              <p id="selection-summary" class="selection-summary">
+                Scrub to the first securely tightened frame, then mark it.
+              </p>
+            </div>
+
+            <div class="annotation-actions">
+              <button id="mark-button" class="primary-action">T · Mark current frame tight</button>
+              <button id="no-tight-button" class="no-tight-action">No tight grasp</button>
+              <button id="clear-button" class="ghost-action">Clear draft</button>
+            </div>
+
+            <div class="save-row">
+              <span id="save-message" class="save-message"></span>
+              <button id="save-button" class="secondary-action">S · Save</button>
+              <button id="save-next-button" class="primary-action">Enter · Save &amp; next</button>
+            </div>
+          </section>
+
+          <nav class="episode-nav" aria-label="Episode navigation">
+            <button id="previous-episode">P · Previous episode</button>
+            <button id="next-episode">N · Next episode</button>
+          </nav>
+
+          <p class="shortcut-help">
+            ←/→ one frame · Shift+←/→ ten · Space play/pause · T mark · S save · Enter save &amp; next
+          </p>
+        </main>
+      </div>
+    </div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

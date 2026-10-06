@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from config import Config
-from udp import UDPManager
+from doffy_teleop.config import Config
+from doffy_teleop.media.udp_manager import UDPManager
 
 
 class FakeRawSocket:
@@ -70,7 +70,7 @@ class FakeCameraManager:
 class UDPManagerTests(unittest.TestCase):
     def make_manager(self, camera_num=2):
         cameras = FakeCameraManager(camera_num=camera_num)
-        with patch("udp.U.UdpComms", side_effect=FakeUdpComms):
+        with patch("doffy_teleop.media.udp_manager.U.UdpComms", side_effect=FakeUdpComms):
             manager = UDPManager(Config(), camera_manager=cameras)
         return manager, cameras
 
@@ -113,7 +113,7 @@ class UDPManagerTests(unittest.TestCase):
     def test_socket_initialization_failure_releases_cameras(self) -> None:
         cameras = FakeCameraManager(camera_num=1)
         with (
-            patch("udp.U.UdpComms", side_effect=OSError("bind failed")),
+            patch("doffy_teleop.media.udp_manager.U.UdpComms", side_effect=OSError("bind failed")),
             self.assertRaisesRegex(OSError, "bind failed"),
         ):
             UDPManager(Config(), camera_manager=cameras)

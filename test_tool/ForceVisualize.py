@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from force_filter import WrenchFilter
+from doffy_teleop.sensors.force_filter import WrenchFilter
 
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -117,13 +117,13 @@ class TactileSource:
 
     @staticmethod
     def _reader_name() -> str:
-        from config import Config
+        from doffy_teleop.config import Config
 
         return Config().TACTILE_READER
 
     @staticmethod
     def _create_reader():
-        from config import Config
+        from doffy_teleop.config import Config
 
         cfg = Config()
         if cfg.TACTILE_READER == "ble4":
@@ -131,7 +131,7 @@ class TactileSource:
             from sensor_comm_dds.communication.readers.magtouch_ble_reader import (
                 MagTouchBleReaderConfig,
             )
-            from tactile_4point import FourPointTactileBleReader
+            from doffy_teleop.sensors.tactile_4point import FourPointTactileBleReader
 
             return FourPointTactileBleReader(
                 config=MagTouchBleReaderConfig(
@@ -154,7 +154,7 @@ class TactileSource:
                 reset_trigger_threshold=cfg.CONTROLLER_RESET_TRIGGER_THRESHOLD,
             )
 
-        from tactile import MagtouchIliasSerialReader, MagtouchIliasSerialReaderConfig
+        from doffy_teleop.sensors.tactile import MagtouchIliasSerialReader, MagtouchIliasSerialReaderConfig
 
         return MagtouchIliasSerialReader(
             config=MagtouchIliasSerialReaderConfig(
@@ -270,7 +270,7 @@ class URForceSource:
             from airo_robots.manipulators.hardware.ur_rtde_torque import (
                 URrtdeTorque as URrtde,
             )
-            from config import Config
+            from doffy_teleop.config import Config
 
             cfg = Config()
             kwargs = {"initial_joint_configuration": cfg.INITIAL_JOINT}
@@ -746,7 +746,7 @@ def run_shared_force_visualizer(
     freedrive_after_zero: bool,
     force_panel_range: float,
 ) -> None:
-    from visualizer import start_visualizer
+    from doffy_teleop.visualization.dashboard import start_visualizer
 
     visualizer_handle = start_visualizer(
         moving_average_window=1,
@@ -925,8 +925,8 @@ def tcp_xyz_experiment_deltas(values: list[float] | None) -> list[tuple[float, f
 
 def main() -> None:
     args = parse_args()
-    from config import Config
-    from visualizer_config import VisualizerConfig
+    from doffy_teleop.config import Config
+    from doffy_teleop.visualization.config import VisualizerConfig
 
     cfg = Config()
     viz_cfg = VisualizerConfig()

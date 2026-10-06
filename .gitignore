@@ -1,86 +1,118 @@
-# Python
+# Python bytecode, package builds and tool caches
 __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
-dist/
-build/
 *.egg
+build/
+dist/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+*.cache
+*.cache.*
 
-# IDE
+# Workstation environments and editor/agent settings
+.env
+.env.*
+!.env.example
+.venv/
+.venvs/
+venv/
+env/
 .idea/
 .vscode/
+/.agents/
+/.claude/
+/.codex/
+/AGENTS.md
+/pyrightconfig.json
+/reminder.md
 *.swp
 *.swo
 
-# Environment
-.env
-.venv/
-env/
-venv/
+# Published scope: teleop, BODY visualization, dataset tools and their tests.
+# Other local research and simulation code stays on disk.
+/policies/
+/experiments/
+/doffy_teleop/deployment/
+/doffy_teleop/jev_shadow/
+/doffy_teleop/seahorse/
+/doffy_teleop/runtime/seahorse.py
+/inference.py
+/eval_policy.py
+/seahorse_teleop.py
+/docs/jev_realman_shadow.md
 
-# Model Weights and Checkpoints (NEVER upload to git)
-*.pt
-*.pth
-*.ckpt
-*.bin
-*.safetensors
-*.onnx
-checkpoints/
-**/checkpoints/
+# Policy, Jev and Seahorse tests and analysis tools are local-only.
+/tests/test_eval_*.py
+/tests/test_consensus_*.py
+/tests/test_dp_*.py
+/tests/test_jev_*.py
+/tests/test_seahorse_*.py
+/test_tool/eval_with_datasets.py
+/test_tool/measure_*.py
+/test_tool/plot_*.py
+/test_tool/replay_consensus_checkpoints.py
+/test_tool/README_consensus_importance.md
+/test_tool/test_pt2.py
+
+# Local cluster jobs, manuscripts, audit records and evaluation bundles
+/.gpulab/
+/paper/
+/evidence/
+/final_policies_test/
+/docs/teleop_refactor/pre-refactor-git-status.txt
+
+# Generated run outputs, downloaded data and trained models
+output/
 outputs/
-outputs/**
-
-# Datasets and Recordings (NEVER upload to git)
 datasets/
-datasets/**
 data/
-data/**
-*.parquet
-*.npz
-*.npy
-*.h5
-*.hdf5
-torque_log.npz
+checkpoints/
+wandb/
 eval_results/
 eval_dataset_plots/
+/policies/downloaded/
+*.[pP][tT]
+*.[pP][tT][hH]
+*.[cC][kK][pP][tT]
+*.[bB][iI][nN]
+*.[sS][aA][fF][eE][tT][eE][nN][sS][oO][rR][sS]
+*.[oO][nN][nN][xX]
+*.[pP][aA][rR][qQ][uU][eE][tT]
+*.[nN][pP][zZ]
+*.[nN][pP][yY]
+*.[hH]5
+*.[hH][dD][fF]5
 
-# Evaluation rollouts, videos, and logs
-policies/output/
-policies/output/**
-*.mp4
-*.avi
-*.log
+# Generated videos, logs and source/data archives (including uppercase suffixes)
+*.[mM][pP]4
+*.[aA][vV][iI]
+*.[mM][oO][vV]
+*.[mM][kK][vV]
+*.[wW][eE][bB][mM]
+*.[lL][oO][gG]
 *.jsonl
+*.[zZ][iI][pP]
+*.[tT][aA][rR]
+*.[tT][gG][zZ]
+*.[gG][zZ]
+*.[bB][zZ]2
+*.[xX][zZ]
+*.7z
+*.[rR][aA][rR]
 
-# Project-specific policies
-policies/*
-!policies/realman_beaver/
-!policies/realman_beaver/**
-policies/realman_beaver/**/__pycache__/
-policies/realman_beaver/**/*.py[cod]
-policies/realman_beaver/**/*.pt
-policies/realman_beaver/**/checkpoints/
-
-# Temporary and Scratch files
+# Temporary task files
 scratch/
-scratch/**
 agent_deliverables/
 agent_tasks/
-upload_to_github.sh
-
-# Cache files and directories
-.cache/
-**/.cache/
-.pytest_cache/
-**/.pytest_cache/
-.mypy_cache/
-**/.mypy_cache/
-.ruff_cache/
-**/.ruff_cache/
-.ipynb_checkpoints/
-**/.ipynb_checkpoints/
-*.cache
-*.cache.*
+/upload_to_github.sh
 *.tmp
 *.temp
+
+# Publish only the selected VR APK; older local builds stay local.
+*.[aA][pP][kK]
+!/apk/AIRO_Doffy_v0.9.7_arm64_code18.apk

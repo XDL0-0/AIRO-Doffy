@@ -20,9 +20,9 @@ Running this conversion script will take approximately 30 minutes.
 
 import shutil
 import cv2
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 import h5py
-import tyro
+import argparse
 import glob
 import os
 import re
@@ -71,7 +71,7 @@ REPO_NAME = "/home/idlab504/VR_TELEOP/b2b_nofinecontrol"  # Name of the output d
 # RAW_DATASET_NAMES = 'pick_cube'  # For simplicity we will combine multiple Libero datasets into one training dataset
 
 
-def main(data_dir: str, *, push_to_hub: bool = False):
+def main(data_dir: str = "./test", *, push_to_hub: bool = False):
     # Clean up any existing dataset in the output directory
     output_path = Path(REPO_NAME)
     # if output_path.exists():
@@ -171,4 +171,11 @@ def main(data_dir: str, *, push_to_hub: bool = False):
 
 
 if __name__ == "__main__":
-    main('./test')
+    parser = argparse.ArgumentParser(description="Convert HDF5 episodes to LeRobot format.")
+    parser.add_argument("--data-dir", "--data_dir", default="./test", help="Directory containing HDF5 episodes")
+    parser.add_argument(
+        "--push-to-hub", "--push_to_hub", action="store_true",
+        help="Compatibility flag; this script currently writes only local data",
+    )
+    args = parser.parse_args()
+    main(args.data_dir, push_to_hub=args.push_to_hub)

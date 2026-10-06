@@ -32,9 +32,9 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from brainco_hand import BrainCoHandDriver, openxr_to_brainco_joints
-from config import Config
-from parse_vr import detect_packet_type, parse_hand_data
+from doffy_teleop.robots.brainco_hand import BrainCoHandDriver, openxr_to_brainco_joints
+from doffy_teleop.config import Config
+from doffy_teleop.protocol.parse_vr import detect_packet_type, parse_hand_data
 
 
 def hand_test_config() -> Config:
