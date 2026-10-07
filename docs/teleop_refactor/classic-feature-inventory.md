@@ -1,6 +1,6 @@
 # classic Quest 遥操作功能清单
 
-> Public copy: local paths, device identifiers and site addresses are anonymized; recorded results and version/hash data are unchanged.
+> Public copy: local paths, device identifiers and site addresses are anonymized; recorded test results and version information are retained.
 
 ## 范围与判定口径
 

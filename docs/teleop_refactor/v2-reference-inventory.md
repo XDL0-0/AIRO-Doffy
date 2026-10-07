@@ -1,6 +1,6 @@
 # AIRO-DOFFY-v2 参考仓库盘点
 
-> Public copy: local paths, device identifiers and site addresses are anonymized; recorded results and version/hash data are unchanged.
+> Public copy: local paths, device identifiers and site addresses are anonymized; recorded test results and version information are retained.
 
 审计日期：2026-09-16\
 目标：为 `AIRO-Doffy` 的 Unity + PC 全功能重构提供可复用代码、协议、测试和缺口清单。\

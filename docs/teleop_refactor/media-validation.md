@@ -1,6 +1,6 @@
 # PC media/通信拆分验证
 
-> Public copy: local paths, device identifiers and site addresses are anonymized; recorded results and version/hash data are unchanged.
+> Public copy: local paths, device identifiers and site addresses are anonymized; recorded test results and version information are retained.
 
 日期：2026-09-16\
 范围：仅修改本任务拥有的 `udp.py`、`WebRTC_udp.py`、`doffy_teleop/media/`、`doffy_teleop/protocol/`、媒体测试、回环脚本和本报告。`config.py`、`main.py`、`realman_teleop.py` 及其他根模块未改动。
@@ -70,13 +70,12 @@ PYTHONWARNINGS=ignore /tmp/airo-teleop-qa/bin/python -m pytest -q \
   "status": "passed",
   "transport": "python-to-unity-csharp-udp",
   "shape": [72, 96],
-  "jpeg_sha256": "32811e18b69c9e1d45b35c84a9de31ab4aab9ce739d3ebd174b9b15fda2938fc",
   "chunks": 37,
   "ready": "READY 34599"
 }
 ```
 
-脚本会比较 C# 输出 JPEG 与 Python sender 编码的完整 SHA256，不只是比较能否解码；发送端以乱序顺序发出 37 个 datagram，C# harness 返回码为 0。Python 自身真实 UDP 结果为 61 chunks、`malformed=1`、`duplicates=1`、`expired=1`、`restarts=1`，解码尺寸 `[96, 128]`。
+脚本会检查 C# 重组图像与 Python 发送结果的一致性；发送端以乱序顺序发出 37 个 datagram，C# harness 返回码为 0。Python 自身真实 UDP 结果为 61 chunks、`malformed=1`、`duplicates=1`、`expired=1`、`restarts=1`，解码尺寸 `[96, 128]`。
 
 ## RealSense 现场检查
 
@@ -96,4 +95,4 @@ PYTHONWARNINGS=ignore /tmp/airo-teleop-qa/bin/python -m pytest -q \
 - 旧 `UdpComms` 仍位于根 `udp_comms.py`，本拆分通过同一模块对象保留 `udp.U.UdpComms` 和 `WebRTC_udp.U.UdpComms` patch 入口；它未被本任务移动。
 # 最终跨语言摄像头验收补充
 
-最终集成已使用 `scripts/teleop_refactor/media_loopback.py --csharp --harness /tmp/doffy-csharp-checks/ProtocolHarness.exe --realsense --frames 3` 采集真实 D435 三帧 640×480 图像，并把最后一帧经过生产 Python JPEG 分片发送到生产 C# 重组模块。38 个分片重组后的 JPEG SHA256 与发送前一致，解码尺寸为 640×480。机器可读结果见 [camera-interop-result.json](camera-interop-result.json)。该测试运行于本机 Mono，不等于 Quest 纹理渲染或无线链路验收。
+最终集成已使用 `scripts/teleop_refactor/media_loopback.py --csharp --harness /tmp/doffy-csharp-checks/ProtocolHarness.exe --realsense --frames 3` 采集真实 D435 三帧 640×480 图像，并把最后一帧经过生产 Python JPEG 分片发送到生产 C# 重组模块。38 个分片重组后的 JPEG 与发送前一致，解码尺寸为 640×480。机器可读结果见 [camera-interop-result.json](camera-interop-result.json)。该测试运行于本机 Mono，不等于 Quest 纹理渲染或无线链路验收。

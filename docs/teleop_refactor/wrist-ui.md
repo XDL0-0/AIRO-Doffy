@@ -112,7 +112,6 @@ Built Android ARM64/IL2CPP successfully and installed with `adb install -r` on t
 
 - APK: `/path/to/unity/App_output/AIRO_Doffy_refactored.apk` (93,376,271 bytes).
 - Package: `org.airolab.doffy.teleoperation`, version 0.8.0 / code 8.
-- Installed APK SHA-256 verified equal to fresh build: `46bedcbb87086877894153ae9cc1dcdfbaf7d8b942fd0b202a9548e6918ac678`.
 - Device package last update: 2026-09-28 13:31:26.
 - Launched `com.unity3d.player.UnityPlayerGameActivity`: Status ok; process remained running. No wrist UI exceptions or fatal startup errors found in captured process log.
 - Build log: `/tmp/doffy-wrist-quest-build.log`; startup log: `/tmp/doffy-wrist-quest-startup.log`.

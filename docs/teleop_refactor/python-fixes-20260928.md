@@ -1,6 +1,6 @@
 # Teleoperation 修复与验收（2026-09-28）
 
-> Public copy: local paths, device identifiers and site addresses are anonymized; recorded results and version/hash data are unchanged.
+> Public copy: local paths, device identifiers and site addresses are anonymized; recorded test results and version information are retained.
 
 本轮修复了 [先前审计](python-audit-20260928.md) 复现的录制死锁、并发命令丢失、LeRobot 撤销后统计错误、配置未传递、启动失败资源泄漏及 UDP 接收线程不退出问题，并通过真机验证发现和修正了状态推送周期单位错误。Python 相关测试 **232 项通过，另有 3 个参数子测试通过**。手环版已构建并安装为 **0.9.4 / versionCode 13**，包名仍为独立的 `org.airolab.doffy.bracelet`。
 
@@ -74,7 +74,6 @@ DOFFY_UNITY_PROJECT=/path/to/unity/CodexBracelet \
 
 - 项目：`/path/to/unity/CodexBracelet`。
 - APK：`/path/to/unity/App_output/AIRO_Doffy_bracelet.apk`。
-- SHA-256：`1277555568d5f58fe885cd2c1e28116cbc60fca7da1be5b480660b335bd6d184`。
 - 旧版保存至：`/path/to/unity/App_output/bracelet-v0.9.3/AIRO_Doffy_bracelet.apk`。
 - C# 验证：18 项录制/手部发送检查、10 项追踪保护检查、47 项协议/生命周期检查；97 个 runtime 与 3 个 editor 源文件编译通过，Unity Android build 成功。
 - `adb install -r` 成功，设备 package 信息确认版本 0.9.4 / 13。

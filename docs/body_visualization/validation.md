@@ -1,6 +1,6 @@
 # 验证记录
 
-> Public copy: local paths, device identifiers and site addresses are anonymized; recorded results and version/hash data are unchanged.
+> Public copy: local paths, device identifiers and site addresses are anonymized; recorded test results and version information are retained.
 
 历史实现记录日期：2026-10-05；发布 APK 信息更新于 2026-10-06。下方保留各次实现和安装记录；最新发布 APK 见文末 **0.9.7 发布 APK**，BODY 追踪失效冻结的实现记录见 **0.9.6 追踪失效冻结**。未运行机器人 teleop。
 
@@ -19,10 +19,8 @@
 - APK：`/path/to/unity/App_output/body-visualization/AIRO_Doffy_bracelet_body_visualization.apk`
 - 包名：`org.airolab.doffy.bracelet`，版本 `0.9.4` / versionCode `13`，沿用现有项目版本设置。
 - 大小：93,415,049 字节。
-- SHA256：`8a937327f924fc6632c333b18d808f359d53ba6dd9b1f0bf7ac2d7d0f0255d79`。
 - 日志：`/tmp/doffy-bracelet-body-visualization-build.log`，包含 `DOFFY Quest build succeeded`。
 - APK manifest 已确认 `com.oculus.permission.BODY_TRACKING` 和 `arm64-v8a`。
-- 构建前 APK 备份：`/path/to/unity/App_output/before-body-visualization/1277555568d5f58fe885cd2c1e28116cbc60fca7da1be5b480660b335bd6d184/AIRO_Doffy_bracelet.apk`。
 
 安装到已连接的 Quest 后即可运行新发送器：
 
@@ -43,7 +41,6 @@ adb install -r /path/to/unity/App_output/body-visualization/AIRO_Doffy_bracelet_
 - Unity native Play：`WristUIValidation.RunPlaySmoke` 退出码 0；日志 `/tmp/doffy-bracelet-v095-body-play-smoke.log`。真实 Meta ray/poke 事件经 Canvas 路由到 Session 新按钮，检查默认 OFF 无 socket/无数据、ON 真实本机 UDP、OFF 立即关 socket 且不发 heartbeat、重新开启、页面关闭重开、组件停用和重建。机器人会话、WRM、标定和追踪模式保持原状态。此 headless 检查仍有原有缺失 Meta native 库日志，不能替代头显中的物理交互验收。
 - Android ARM64：Unity 构建退出码 0，日志 `/tmp/doffy-bracelet-v095-body-build.log`。
 - 当次 APK：`/path/to/unity/App_output/body-visualization-v0.9.5/AIRO_Doffy_bracelet_body_visualization.apk`，版本 **0.9.5 / code 14**，93,413,329 字节。
-- SHA256：`555650d4b51f48fd5dfbbe05d21cead287b1b261c2d4c357bc70b9876ba3e49c`。
 - 已通过 `adb install -r` 安装到 Quest 3 `QUEST_SERIAL_REDACTED`，返回 Success；设备查询确认 0.9.5/code14，BODY_TRACKING 权限 granted=true。
 - 应用冷启动 `am start -W` 返回 Status ok，进程仍运行；所检查的启动日志没有 BODY sender 的 NullReference/MissingReference 或 fatal 异常。
 
@@ -68,17 +65,16 @@ adb install -r /path/to/unity/App_output/body-visualization/AIRO_Doffy_bracelet_
 - 本地冻结预览 `output/body_visualization/tracking_hold_preview.png` 明确标记 DEMO，不随源码上传；已检查冻结骨架、状态、原始 confidence 和帧龄显示。
 - Android ARM64 构建退出码 0；日志 `/tmp/doffy-bracelet-v096-body-hold-build.log` 包含 `DOFFY Quest build succeeded`。
 - APK：`/path/to/unity/App_output/body-visualization-v0.9.6/AIRO_Doffy_bracelet_body_visualization.apk`，包名 `org.airolab.doffy.bracelet`，**0.9.6 / code 15**，93,417,833 字节，BODY_TRACKING 权限声明存在。
-- SHA256：`0c046644dde56e557ed69857565001139ab5d6e9a37c4e989b74d71dbc296f54`。
 - 安装尚未执行：构建后 `adb devices` 未识别到连接的 Quest。上一条已确认的设备安装记录为 0.9.5/code14；0.9.6 APK 已就绪，需连接设备后安装并实际观察 SDK 的手臂追踪标记。
 
 ## 0.9.7 发布 APK
 
-> 2026-10-07 发布关联审计：以下安装、签名及设备检查为原有历史记录，本次未重跑。实际发布文件的哈希、Android 版本、ARM64 ABI 和 Unity `6000.5.6f1` 已重新核验；后续公开的 Unity 项目已固定到 `811d0b4f9e9d6368a7fb2402943b41eb324c7167` 的 `AIRO-Doffy/`，其 package lock 确认 Meta XR `205.0.0`。专用 `BuildMetaUpdateArm64Only` 入口设置 code18，覆盖项目默认 code16。该发布后快照与 APK 的元数据及保留的 BODY 源码一致；原始构建 revision 与逐字节重建仍未验证。详见[发布记录](../../apk/RELEASE.md)。
+> 发布版本与 Unity 项目入口见[发布说明](../../apk/RELEASE.md)。以下为历史设备检查记录，本次文档整理未重新运行。
 
 - 发布文件：[AIRO_Doffy_v0.9.7_arm64_code18.apk](../../apk/AIRO_Doffy_v0.9.7_arm64_code18.apk)，Android ARM64，版本 **0.9.7 / code 18**，包名 `com.AIROLab.AIRODOFFY`。
-- 大小：92,549,501 字节；SHA256：`3a1e95322c83c865ba6729a5317bcc06b60875241c78c03d8e28752db6d24a4e`。机器可读信息见 [APK manifest](../../apk/manifest.json)。
+- 大小：92,549,501 字节。机器可读信息见 [APK manifest](../../apk/manifest.json)。
 - 包含 BODY 发送代码，签名验证通过，Quest 3 安装及应用启动成功。
-- 每次启动 BODY 发送默认 **OFF**。在 Session 页面设置并 Apply PC 地址，再切换 **Body data: OFF → ON**；独立查看人体姿态无需 Start session。
+- 每次启动 BODY 发送默认 **OFF**。在 **Teleop Config → Connection & input** 设置并 Apply PC 地址，再在 **System Setting** 切换 **Body data: OFF → ON**；独立查看人体姿态无需 Start Teleop。
 - 头显实际界面、交互和真实 BODY 姿态仍未验收。签名、安装和启动成功不能替代这些检查，也不能替代机器人联动及 CAN-FD 时序验收。
 
 从仓库根目录安装：

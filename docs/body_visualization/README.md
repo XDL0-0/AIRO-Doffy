@@ -36,7 +36,7 @@ cd /path/to/AIRO-Doffy
 
 ## Quest 端
 
-完整项目现已公开于 [AIRO-DOFFY-APP / AIRO-Doffy，固定 SHA `811d0b4`](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/811d0b4f9e9d6368a7fb2402943b41eb324c7167/AIRO-Doffy)。请打开该子目录；仓库根目录仍是历史项目。以下三份 BODY 源码与发布时保留的副本逐字节一致。该提交是发布后的源码快照，尚未证明原 APK 的逐字节可复现性，详见[发布关联审计](../../apk/RELEASE.md)。
+Unity 项目位于 [AIRO-DOFFY-APP / AIRO-Doffy](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/811d0b4f9e9d6368a7fb2402943b41eb324c7167/AIRO-Doffy)。请打开该子目录；仓库根目录是历史项目。版本和构建说明见[发布说明](../../apk/RELEASE.md)。
 
 - `Assets/Teleop/UpperLimb/UpperLimbAkmManager.cs`：提供当前已采样身体状态的只读副本，复用原来的追踪所有者。
 - `Assets/Teleop/UpperLimb/BodyPoseTelemetrySender.cs`：场景加载后自动创建，默认关闭；在 System Setting 中开启发送后，以 25 Hz 向已配置 PC 地址的 UDP 8015 发送诊断数据。
