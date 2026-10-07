@@ -1,6 +1,6 @@
 # Python teleoperation 审计（2026-09-28）
 
-> Public copy: local paths, device identifiers and site addresses are anonymized; recorded results and version/hash data are unchanged.
+> Public copy: local paths, device identifiers and site addresses are anonymized; recorded test results and version information are retained.
 
 > 本文保留修复前的发现与复现记录。后续代码修复、网络恢复和验收结果见
 > [修复验收记录](python-fixes-20260928.md)；下文的旧地址、失败结果和测试数量不代表修复后的状态。
@@ -26,7 +26,7 @@
 | UDP 控制/手柄/手部 | 本地回环通过 | 实际 UDP socket；C、H、HB、Start/Stop/Undo、三个 zoom 端口 |
 | Python → 当前 C# 状态包 | 本地回环通过 | `rightTCP` 位置、wxyz 四元数、力数据被当前 C# 解析器接受 |
 | WebSocket + WebRTC 视频 | 本地回环通过 | 生产 Python 信令服务完成 hello/ack、offer/answer、真实 aiortc 连接与视频解码、stop_video 清理 |
-| 当前 Unity C# 图像组帧 | 本地回环通过 | Python 发出的 37 个 JPEG 分片由当前 C# assembler 重建，字节与 SHA256 一致 |
+| 当前 Unity C# 图像组帧 | 本地回环通过 | Python 发出的 37 个 JPEG 分片由当前 C# assembler 重建，图像与发送结果一致 |
 | HDF5 / LeRobot Undo 正常路径 | 部分通过 | 文件/episode 元数据/编号与继续录制通过；LeRobot 聚合统计仍有明确错误，见下文 |
 | 真实 RealSense D435 | 通过 | 640×480 RGB uint8，10 次采样得到 10 个不同采集时间戳，关闭后取帧线程全部退出 |
 | 主要 Python 模块导入 | 通过 | 基础环境可导入 main、realman_teleop、udp、WebRTC_udp、dataset、brainco_hand、beaver |

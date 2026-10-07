@@ -2,7 +2,7 @@
 
 Airo-Doffy is a VR teleoperation system for controlling UR and RealMan robots with a Meta Quest headset. It supports controller and hand tracking, live camera streaming, and demonstration recording.
 
-This repository contains the Python runtime and Quest APK. The Unity app is maintained in [AIRO-DOFFY-APP](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/811d0b4f9e9d6368a7fb2402943b41eb324c7167/AIRO-Doffy).
+This repository contains the Python runtime and Quest APK. The Unity app is maintained in [AIRO-DOFFY-APP](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/main/AIRO-Doffy).
 
 ## Features
 
@@ -81,11 +81,9 @@ git checkout 811d0b4f9e9d6368a7fb2402943b41eb324c7167
 3. Open `Assets/Scenes/Teleoperation.unity` and run **Tools → DOFFY → Validate scene**.
 4. For the v0.9.7 / code 18 package, use **Tools → DOFFY → Build Meta ARM64-only update APK**.
 
-This is a post-release source snapshot; the original APK build revision remains unverified. See the [release record](apk/RELEASE.md) and [APK manifest](apk/manifest.json) for source mapping, versions, and SHA256.
-
 ## Documentation
 
 - [Detailed usage: teleoperation, teaching, replay, and protocols](docs/usage.md)
 - [BODY visualization](docs/body_visualization/README.md)
 - [Python module layout](docs/module-layout.md)
-- [Validation records](docs/teleop_refactor/README.md#验证与复现)
+- [Release notes](apk/RELEASE.md)

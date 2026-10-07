@@ -14,7 +14,7 @@
 | 追踪 guard | 10 项事件/生命周期检查通过 | 实际 guard 源码，SDK 事件由测试适配器触发 |
 | 控制器跨语言 UDP | C# fr-FR 格式化→Python 生产解析通过 | 31 字段、轴值、按钮、frame；没有发送到机器人 |
 | TCP/力跨语言 UDP | Python 生产封装→C# 生产解析通过 | 已知坐标/力变换与 wxyz 顺序一致；不含 Unity Transform 渲染 |
-| 真实 D435 图像→C# | 三帧 640×480 采集通过；最后一帧经生产 UDP 分片→生产 C# 重组后 JPEG SHA256 一致 | 本机真实相机、真实 UDP、Mono 执行 C#；非 Quest 无线链路 |
+| 真实 D435 图像→C# | 三帧 640×480 采集通过；最后一帧经生产 UDP 分片→生产 C# 重组后 JPEG 与发送前一致 | 本机真实相机、真实 UDP、Mono 执行 C#；非 Quest 无线链路 |
 | Python WebRTC | aiortc 实际协商、视频解码与消息往返通过 | localhost；非 Unity native peer |
 | C# WebSocket | 实际 ClientWebSocket↔aiohttp 通过 | 64 并发发送、分片中文/emoji、重连、1 MiB 上限；非 native WebRTC |
 

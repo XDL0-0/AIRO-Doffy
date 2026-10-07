@@ -17,7 +17,7 @@
 - C#：82 runtime + 1 Editor 文件 API 编译，0 错误/警告；846 脚本引用静态审计，0 错误。
 - 生产纯 C#：47 协议/数学/生命周期、10 追踪事件、25 异步会话行为检查通过；Core 设置/状态测试通过。
 - 实际 C# ClientWebSocket↔Python aiohttp、Python aiortc WebRTC 回环、双向控制器/TCP UDP 均通过。
-- 真实 D435 三帧采集及最后一帧传到生产 C# JPEG 重组器通过，640×480、38 分片、JPEG SHA256 一致。
+- 真实 D435 三帧采集及最后一帧传到生产 C# JPEG 重组器通过，640×480、38 分片、JPEG 与发送前一致。
 
 ## 未完成的硬件验收
 

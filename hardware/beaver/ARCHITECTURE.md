@@ -88,7 +88,7 @@ acquisition stack or temporal synchronization.
 
 - A saved source snapshot is archived at
   [`firmware_archive/2026-09-03-source/`](firmware_archive/2026-09-03-source/),
-  with provenance in [`SOURCE_PROVENANCE.md`](firmware_archive/2026-09-03-source/SOURCE_PROVENANCE.md).
+  with archive details in [`SOURCE_PROVENANCE.md`](firmware_archive/2026-09-03-source/SOURCE_PROVENANCE.md).
   It was audited from the two identical saved copies under `Downloads`.
 - The snapshot implements two ESP32-S3 hardware I2C buses (GPIO 8/9 and
   12/13), dynamically scans up to six VL53L7CX devices per bus, and has a

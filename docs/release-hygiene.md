@@ -3,7 +3,7 @@
 This patch separates local setup from reproducible robot settings. Historical
 validation records contain anonymized paths, device placeholders and example
 network addresses; their test outcomes, pending acceptance items, SDK versions,
-APK hashes/sizes and experiment parameters are retained. Placeholder paths do
+APK versions, sizes and experiment parameters are retained. Placeholder paths do
 not assert that a local Unity project is available in this repository.
 
 ## Reviewed classification
@@ -105,7 +105,7 @@ documents, JSON and SVG. It rejects personal home paths, recognizable Quest IDs,
 labeled device serials and RFC1918 IPv4 literals unless an exact file/address pair
 has a documented exception. New exceptions need review and a reason; a private
 subnet is never globally allowed. Loopback, wildcard binds, documentation-only
-addresses and cryptographic hashes remain valid.
+addresses remain valid.
 
 GitHub Actions runs on pull requests and pushes to `main`. Requiring the
 `source-hygiene` job in branch protection is a separate repository setting; this
