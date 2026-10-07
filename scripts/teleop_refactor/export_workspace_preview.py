@@ -33,7 +33,7 @@ def build(page):
     if page=='Session':
         card('Connect to your workstation',0,176)
         text('Keep Quest and PC on the same network.',272,250,22,MUTED)
-        rect(272,271,588,64,BG);text('10.10.131.72',290,312,25)
+        rect(272,271,588,64,BG);text('192.0.2.11',290,312,25)
         button('Apply',878,274,190)
         card('Input & reference',196,142)
         button('Controllers',272,435,247,True);button('Hand tracking',537,435,247);button('Mirror mode',802,435,266)

@@ -1,6 +1,6 @@
 # Unity WebRTC refactor validation
 
-本次提交只涉及 Unity 视频链路的信令、PeerConnection receiver 和会话编排。Unity 项目位于 `/home/yuyuan/UNITY_Project/Codex`，目标缓存 SDK 为 `com.unity.webrtc 3.0.0`；没有修改 AppManager、核心 UI、场景或其他代理负责的媒体协议文件。
+本次提交只涉及 Unity 视频链路的信令、PeerConnection receiver 和会话编排。Unity 项目位于 `/path/to/unity/Codex`，目标缓存 SDK 为 `com.unity.webrtc 3.0.0`；没有修改 AppManager、核心 UI、场景或其他代理负责的媒体协议文件。
 
 ## 代码边界
 
@@ -16,9 +16,10 @@
 使用已提供的缓存程序集进行源码/API 编译（不启动 Unity Editor）：
 
 ```bash
-python3 /home/yuyuan/AIRO-Doffy/scripts/teleop_refactor/compile_unity_sources.py \
-  --project /home/yuyuan/UNITY_Project/Codex \
-  --reference /home/yuyuan/UNITY_Project/classic \
+python3 scripts/teleop_refactor/compile_unity_sources.py \
+  --project /path/to/unity/Codex \
+  --reference /path/to/unity/classic \
+  --editor-data /path/to/Unity/Hub/Editor/6000.5.6f1/Editor/Data \
   --output /tmp/airo-teleop-unity-webrtc
 ```
 
@@ -28,7 +29,7 @@ python3 /home/yuyuan/AIRO-Doffy/scripts/teleop_refactor/compile_unity_sources.py
 
 ```bash
 /tmp/airo-teleop-qa/bin/python -m pytest -q \
-  /home/yuyuan/AIRO-Doffy/tests/test_webrtc_csharp_source.py
+  tests/test_webrtc_csharp_source.py
 ```
 
 结果：`1 passed`。pytest 会编译实际 `VideoSignalingClient.cs`、`SignalingEnvelopeCodec.cs` 和 `WebSocketMessageReader.cs`，启动本机 aiohttp WebSocket server，再运行 embedded Mono C# client。该真实交互覆盖 64 个重叠 `SendAsync`、服务端把多字节中文/emoji 从 UTF-8 codepoint 中间拆成两帧、服务端 close 后 `OnDisconnected`、同一 client 重连，以及超过 1 MiB 的 inbound message 被拒绝并断开；C# runner 输出 `REAL_WEBRTC_SIGNALING_CHECKS_PASS`。

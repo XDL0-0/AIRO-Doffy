@@ -27,8 +27,8 @@
 
 ## 备份
 
-- `/home/yuyuan/UNITY_Project/.backups/codex-before-refactor-20260916.tar.gz`
-- `/home/yuyuan/UNITY_Project/.backups/pc-teleop-baseline-20260916.tar.gz`
-- `/home/yuyuan/UNITY_Project/.backups/codex-inherited-stale-assets-20260916`
+- `/path/to/unity/.backups/codex-before-refactor-20260916.tar.gz`
+- `/path/to/unity/.backups/pc-teleop-baseline-20260916.tar.gz`
+- `/path/to/unity/.backups/codex-inherited-stale-assets-20260916`
 
 PC 基线来自任务开始时的工作树，而非 git HEAD；保留用户已有实验、评估、数据和论文修改。未启动机器人控制或策略训练任务。

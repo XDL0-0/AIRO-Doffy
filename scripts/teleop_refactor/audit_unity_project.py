@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections import defaultdict
 import json
 from pathlib import Path
@@ -13,8 +14,8 @@ SCRIPT = re.compile(r"m_Script: \{fileID: (-?\d+), guid: ([0-9a-f]{32}), type: \
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project", type=Path, default=Path("/home/yuyuan/UNITY_Project/Codex"))
-    parser.add_argument("--package-cache", type=Path, default=Path("/home/yuyuan/UNITY_Project/classic/Library/PackageCache"))
+    parser.add_argument("--project", type=lambda value: Path(value).expanduser().resolve(), default=os.environ.get("DOFFY_UNITY_PROJECT"), required=not os.environ.get("DOFFY_UNITY_PROJECT"))
+    parser.add_argument("--package-cache", type=lambda value: Path(value).expanduser().resolve(), default=os.environ.get("DOFFY_UNITY_PACKAGE_CACHE"), required=not os.environ.get("DOFFY_UNITY_PACKAGE_CACHE"))
     args = parser.parse_args()
     local = defaultdict(list)
     package_guids = set()

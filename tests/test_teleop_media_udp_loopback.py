@@ -5,6 +5,7 @@ import hashlib
 import os
 from pathlib import Path
 import select
+import shutil
 import subprocess
 import time
 import unittest
@@ -88,8 +89,7 @@ class RealUdpJpegLoopbackTests(unittest.TestCase):
     @unittest.skipUnless(
         Path("/tmp/teleop-protocol-tests.exe").exists()
         and Path(
-            "/home/yuyuan/Unity/Hub/Editor/6000.5.6f1/Editor/"
-            "Data/MonoBleedingEdge/bin/mono"
+            os.environ.get("DOFFY_MONO") or shutil.which("mono") or "mono"
         ).exists(),
         "Unity C# protocol harness is not installed",
     )
@@ -102,8 +102,7 @@ class RealUdpJpegLoopbackTests(unittest.TestCase):
         receiver.close()
         output_path = Path(f"/tmp/teleop-python-to-csharp-{os.getpid()}.jpg")
         mono = (
-            "/home/yuyuan/Unity/Hub/Editor/6000.5.6f1/Editor/"
-            "Data/MonoBleedingEdge/bin/mono"
+            os.environ.get("DOFFY_MONO") or shutil.which("mono") or "mono"
         )
         process = subprocess.Popen(
             [mono, "/tmp/teleop-protocol-tests.exe", "receive", str(port), str(output_path)],

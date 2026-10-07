@@ -1,5 +1,6 @@
 """Run continuous bracelet geometry/contact regression checks against production C#."""
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -7,8 +8,8 @@ import tempfile
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--project', type=Path, default=Path('/home/yuyuan/UNITY_Project/CodexBracelet'))
-    parser.add_argument('--mono-bin', type=Path, default=Path('/home/yuyuan/Unity/Hub/Editor/6000.5.6f1/Editor/Data/MonoBleedingEdge/bin'))
+    parser.add_argument('--project', type=lambda value: Path(value).expanduser().resolve(), default=os.environ.get("DOFFY_UNITY_PROJECT"), required=not os.environ.get("DOFFY_UNITY_PROJECT"))
+    parser.add_argument('--mono-bin', type=lambda value: Path(value).expanduser().resolve(), default=os.environ.get("DOFFY_MONO_BIN"), required=not os.environ.get("DOFFY_MONO_BIN"))
     args = parser.parse_args()
     sources = [args.project / 'Assets/Teleop/UI' / name for name in ('BraceletDragMath.cs', 'WristDetentTracker.cs')]
     sources.append(Path(__file__).parent / 'csharp/BraceletDragHarness.cs')

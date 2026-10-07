@@ -282,7 +282,10 @@ def main(episode_num, dataset_dir, record_rate, if_multi):
 
 if __name__ == '__main__':
     episode_num = 1
-    dataset_dir = "/home/idlab504/PycharmProjects/airo-doffy/datasets/InsertPowerStrip_hdf5"
+    import argparse
+    parser = argparse.ArgumentParser(description="Visualize HDF5 episodes")
+    parser.add_argument("--dataset-dir", required=True, help="Local HDF5 dataset directory")
+    dataset_dir = os.path.expanduser(parser.parse_args().dataset_dir)
 
     if not os.path.exists(dataset_dir):
         os.makedirs(dataset_dir, exist_ok=True)

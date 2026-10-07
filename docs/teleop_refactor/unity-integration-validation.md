@@ -1,6 +1,6 @@
 # Unity 集成验收记录
 
-日期：2026-09-16。新工程 `/home/yuyuan/UNITY_Project/Codex`，参考 `/home/yuyuan/UNITY_Project/classic`。源代码/API 编译使用参考工程缓存的 Unity 6000.5.6f1、Meta XR 205.0.0、WebRTC 3.0.0 程序集；没有绕过 Editor 授权。
+日期：2026-09-16。新工程 `/path/to/unity/Codex`，参考 `/path/to/unity/classic`。源代码/API 编译使用参考工程缓存的 Unity 6000.5.6f1、Meta XR 205.0.0、WebRTC 3.0.0 程序集；没有绕过 Editor 授权。
 
 ## 已取得的证据
 
@@ -25,9 +25,9 @@
 执行了真正的 Editor 场景验收命令：
 
 ```bash
-/home/yuyuan/Unity/Hub/Editor/6000.5.6f1/Editor/Unity \
+/path/to/Unity/Hub/Editor/6000.5.6f1/Editor/Unity \
   -batchmode -nographics -quit \
-  -projectPath /home/yuyuan/UNITY_Project/Codex \
+  -projectPath /path/to/unity/Codex \
   -executeMethod Doffy.Editor.TeleopBuild.ValidateScene \
   -logFile /tmp/doffy-unity-final-validation.log
 ```

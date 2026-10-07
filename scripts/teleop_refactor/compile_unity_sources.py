@@ -7,17 +7,18 @@ Unity's actual Editor/build validation is a separate required check.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import subprocess
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project", type=Path, default=Path("/home/yuyuan/UNITY_Project/Codex"))
-    parser.add_argument("--reference", type=Path, default=Path("/home/yuyuan/UNITY_Project/classic"))
-    parser.add_argument("--editor-data", type=Path, default=Path("/home/yuyuan/Unity/Hub/Editor/6000.5.6f1/Editor/Data"))
+    parser.add_argument("--project", type=lambda value: Path(value).expanduser().resolve(), default=os.environ.get("DOFFY_UNITY_PROJECT"), required=not os.environ.get("DOFFY_UNITY_PROJECT"))
+    parser.add_argument("--reference", type=lambda value: Path(value).expanduser().resolve(), default=os.environ.get("DOFFY_UNITY_REFERENCE_PROJECT"), required=not os.environ.get("DOFFY_UNITY_REFERENCE_PROJECT"))
+    parser.add_argument("--editor-data", type=lambda value: Path(value).expanduser().resolve(), default=os.environ.get("DOFFY_UNITY_EDITOR_DATA"), required=not os.environ.get("DOFFY_UNITY_EDITOR_DATA"))
     parser.add_argument("--include-editor", action="store_true", help="also check the scene validator and build entry point")
-    parser.add_argument("--output", type=Path, default=Path("/tmp/airo-teleop-csharp"))
+    parser.add_argument("--output", type=lambda value: Path(value).expanduser().resolve(), default=Path("/tmp/airo-teleop-csharp"))
     args = parser.parse_args()
     candidates = list((args.reference / "Library/Bee/artifacts").glob("*E.dag/Assembly-CSharp.rsp"))
     if not candidates:

@@ -1,5 +1,8 @@
 # Meta 人体姿态可视化
 
+Local paths and network addresses in this documentation are anonymized examples;
+see [local setup and validation paths](../release-hygiene.md) before running checks.
+
 `teleop_body_visualizer.py` 默认只打开人体骨架窗口，**不连接 RealMan、不启动机器人或相机，也不等待 teleop 手柄数据**。窗口显示 Meta 实际输出的身体关节，帮助检查肩、肘、腕、手指、躯干，以及全身模式下的腿部姿态。默认显示单个放大的 3D 骨架，可切换正面、侧面、俯视和四视图。
 
 ## 启动
@@ -8,23 +11,23 @@
 
 ```bash
 # 只检查 Quest 人体数据，不需要 RealMan、相机或机器人会话
-/home/yuyuan/.venvs/airo-teleop/bin/python /home/yuyuan/AIRO-Doffy/teleop_body_visualizer.py
+./.venv/bin/python teleop_body_visualizer.py
 
 # 需要同时运行 RealMan teleop 时才显式添加此参数
-/home/yuyuan/.venvs/airo-teleop/bin/python /home/yuyuan/AIRO-Doffy/teleop_body_visualizer.py --teleop realman
+./.venv/bin/python teleop_body_visualizer.py --teleop realman
 
 # 合成姿态演示，不需要 Quest 或机器人
-/home/yuyuan/.venvs/airo-teleop/bin/python /home/yuyuan/AIRO-Doffy/teleop_body_visualizer.py --demo
+./.venv/bin/python teleop_body_visualizer.py --demo
 
 # 使用原 main.py teleop 入口
-/home/yuyuan/.venvs/airo-teleop/bin/python /home/yuyuan/AIRO-Doffy/teleop_body_visualizer.py --teleop classic
+./.venv/bin/python teleop_body_visualizer.py --teleop classic
 ```
 
 根目录命令保持不变，也可从仓库目录使用包入口（参数相同）：
 
 ```bash
-cd /home/yuyuan/AIRO-Doffy
-/home/yuyuan/.venvs/airo-teleop/bin/python -m doffy_teleop.runtime.body_visualizer
+cd /path/to/AIRO-Doffy
+./.venv/bin/python -m doffy_teleop.runtime.body_visualizer
 ```
 
 可选参数：`--bind-ip 0.0.0.0`、`--body-port 8015`、`--hz 30`、`--stale-after 0.5`。修改端口时也要修改 Quest `BodyPoseTelemetrySender.destinationPort`。`--save-preview /absolute/path/preview.png` 输出明确标记 DEMO 的合成姿态 PNG，不启动机器人、不监听 UDP。
@@ -105,12 +108,12 @@ cd /home/yuyuan/AIRO-Doffy
 ## 验证
 
 ```bash
-cd /home/yuyuan/AIRO-Doffy
-/home/yuyuan/.venvs/airo-teleop/bin/python -m pytest -q \
+cd /path/to/AIRO-Doffy
+./.venv/bin/python -m pytest -q \
   tests/test_body_visualization.py tests/test_teleop_body_visualizer.py \
   tests/test_body_module_imports.py tests/test_teleop_refactor_boundaries.py \
   tests/test_body_pose_hold.py tests/test_body_tracking_protocol.py
-/home/yuyuan/.venvs/airo-teleop/bin/python teleop_body_visualizer.py \
+./.venv/bin/python teleop_body_visualizer.py \
   --save-preview output/body_visualization/preview.png
 ```
 

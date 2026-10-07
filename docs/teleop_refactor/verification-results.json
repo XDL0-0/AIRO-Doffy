@@ -1,6 +1,6 @@
 {
   "date": "2026-09-16",
-  "unity_project": "/home/yuyuan/UNITY_Project/Codex",
+  "unity_project": "/path/to/unity/Codex",
   "meta_xr_all_in_one": "205.0.0",
   "runtime_source_api_compile": {"files": 82, "errors": 0, "warnings": 0},
   "editor_tool_source_api_compile": {"files": 1, "errors": 0, "warnings": 0},

@@ -20,7 +20,7 @@ if cfg.ROBOT_TYPE == "realman":
     input("press enter to continue")
     robot.stop_freedrive()
 else:
-    robot = URrtde("10.42.0.162", URrtde.UR3E_CONFIG)
+    robot = URrtde(cfg.UR_IP, URrtde.UR3E_CONFIG)
 # robot = URrtde("localhost", URrtde.UR5E_CONFIG)
     robot.rtde_control.servoStop()
     robot.rtde_control.teachMode()  # start freedrive

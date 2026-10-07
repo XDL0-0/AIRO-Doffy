@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -21,13 +22,6 @@ from pathlib import Path
 from typing import Any
 
 
-UNITY_PROJECT = Path("/home/yuyuan/UNITY_Project/CodexBracelet")
-UNITY_MONO_BIN = Path("/home/yuyuan/Unity/Hub/Editor/6000.5.6f1/Editor/Data/MonoBleedingEdge/bin")
-DEFAULT_SOURCE = UNITY_PROJECT / "Assets/Teleop/Protocol/BodyPoseWireFormat.cs"
-DEFAULT_OVR_PLUGIN = (
-    UNITY_PROJECT
-    / "Library/PackageCache/com.meta.xr.sdk.core@c0efcbf2ba70/Scripts/OVRPlugin.cs"
-)
 HERE = Path(__file__).resolve().parent
 HARNESS = HERE / "BodyPoseWireFormatHarness.cs"
 MAX_UDP_PAYLOAD_BYTES = 65507
@@ -358,13 +352,13 @@ def run_checks(source: Path, ovr_plugin: Path, mcs: Path, mono: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE, help="BodyPoseWireFormat.cs to compile")
-    parser.add_argument("--ovr-plugin", type=Path, default=DEFAULT_OVR_PLUGIN, help="installed OVRPlugin.cs enum source")
-    parser.add_argument("--mcs", type=Path, default=UNITY_MONO_BIN / "mcs", help="Unity bundled Mono C# compiler")
-    parser.add_argument("--mono", type=Path, default=UNITY_MONO_BIN / "mono", help="Unity bundled Mono runtime")
+    parser.add_argument("--source", type=Path, default=os.environ.get("DOFFY_BODY_WIRE_SOURCE"), required=not os.environ.get("DOFFY_BODY_WIRE_SOURCE"), help="BodyPoseWireFormat.cs to compile")
+    parser.add_argument("--ovr-plugin", type=Path, default=os.environ.get("DOFFY_OVR_PLUGIN"), required=not os.environ.get("DOFFY_OVR_PLUGIN"), help="installed OVRPlugin.cs enum source")
+    parser.add_argument("--mcs", type=Path, default=os.environ.get("DOFFY_MCS"), required=not os.environ.get("DOFFY_MCS"), help="Unity bundled Mono C# compiler")
+    parser.add_argument("--mono", type=Path, default=os.environ.get("DOFFY_MONO"), required=not os.environ.get("DOFFY_MONO"), help="Unity bundled Mono runtime")
     args = parser.parse_args()
     try:
-        run_checks(args.source.resolve(), args.ovr_plugin.resolve(), args.mcs.resolve(), args.mono.resolve())
+        run_checks(args.source.expanduser().resolve(), args.ovr_plugin.expanduser().resolve(), args.mcs.expanduser().resolve(), args.mono.expanduser().resolve())
     except (AssertionError, OSError, subprocess.SubprocessError) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1

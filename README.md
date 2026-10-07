@@ -38,7 +38,7 @@ Edit [`doffy_teleop/config.py`](doffy_teleop/config.py) for your setup:
 - Select `TRACKING_MODE` (`controller` or `hand`) and `VIDEO_TRANSPORT` (`webrtc` or `udp`).
 - Configure the mounted tool, optional sensors, `DATASET_DIR`, and `DATASET_TYPE`.
 
-The Quest and PC must be able to reach each other over the network.
+Set `DOFFY_PC_IP`, `DOFFY_VR_IP`, `DOFFY_UR_IP`, and `DOFFY_REALMAN_STATE_PUSH_IP` in your shell to supply local network addresses. The PC/Quest/UR defaults are documentation examples; replace them before use. See [local setup](docs/release-hygiene.md#local-network-setup). The Quest and PC must be able to reach each other over the network.
 
 ## Usage
 

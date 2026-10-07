@@ -2,9 +2,9 @@
 
 ## Scope and evidence
 
-本审计只读检查了当前 `/home/yuyuan/AIRO-Doffy` 中的
+本审计只读检查了当前 `/path/to/AIRO-Doffy` 中的
 `doffy_teleop/control`、`doffy_teleop/runtime`、`doffy_teleop/robots`，并以
-`/home/yuyuan/UNITY_Project/.backups/pc-teleop-baseline-20260916.tar.gz`
+`/path/to/unity/.backups/pc-teleop-baseline-20260916.tar.gz`
 解出的快照作为唯一实现基线。对照文件为快照的
 `realman_teleop.py`、`robot_teleop.py`、`main.py`、`robot_backend.py` 和
 `eval_config.py`；没有扫描数据集、权重，也没有连接或操作机器人。

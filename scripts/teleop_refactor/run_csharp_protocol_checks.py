@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -10,10 +11,10 @@ import tempfile
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project", type=Path, default=Path("/home/yuyuan/UNITY_Project/Codex"))
-    parser.add_argument("--mono-bin", type=Path, default=Path("/home/yuyuan/Unity/Hub/Editor/6000.5.6f1/Editor/Data/MonoBleedingEdge/bin"))
-    parser.add_argument("--package-cache", type=Path, default=Path("/home/yuyuan/UNITY_Project/classic/Library/PackageCache"))
-    parser.add_argument("--export-dir", type=Path, help="keep compiled harness for cross-language socket checks")
+    parser.add_argument("--project", type=lambda value: Path(value).expanduser().resolve(), default=os.environ.get("DOFFY_UNITY_PROJECT"), required=not os.environ.get("DOFFY_UNITY_PROJECT"))
+    parser.add_argument("--mono-bin", type=lambda value: Path(value).expanduser().resolve(), default=os.environ.get("DOFFY_MONO_BIN"), required=not os.environ.get("DOFFY_MONO_BIN"))
+    parser.add_argument("--package-cache", type=lambda value: Path(value).expanduser().resolve(), default=os.environ.get("DOFFY_UNITY_PACKAGE_CACHE"), required=not os.environ.get("DOFFY_UNITY_PACKAGE_CACHE"))
+    parser.add_argument("--export-dir", type=lambda value: Path(value).expanduser().resolve(), help="keep compiled harness for cross-language socket checks")
     args = parser.parse_args()
     sources = [args.project / "Assets/Teleop/Protocol/JpegFrameAssembler.cs",
                args.project / "Assets/Teleop/Networking/DatagramReceiver.cs",

@@ -67,13 +67,14 @@ def load_act_dataset(act_dataset_path):
             'n_steps': n_steps,
         }
 
-REPO_NAME = "/home/idlab504/VR_TELEOP/b2b_nofinecontrol"  # Name of the output dataset, also used for the Hugging Face Hub
+REPO_NAME = "local/b2b_nofinecontrol"  # Override with --repo-id for a Hub namespace.
 # RAW_DATASET_NAMES = 'pick_cube'  # For simplicity we will combine multiple Libero datasets into one training dataset
 
 
-def main(data_dir: str = "./test", *, push_to_hub: bool = False):
+def main(data_dir: str = "./test", *, push_to_hub: bool = False,
+         output_dir: str = "./datasets/b2b_nofinecontrol", repo_id: str = REPO_NAME):
     # Clean up any existing dataset in the output directory
-    output_path = Path(REPO_NAME)
+    output_path = Path(output_dir).expanduser().resolve()
     # if output_path.exists():
     #     shutil.rmtree(output_path)
     hdf5_files = sorted(glob.glob(os.path.join(data_dir, "*.hdf5")))
@@ -87,7 +88,8 @@ def main(data_dir: str = "./test", *, push_to_hub: bool = False):
     # LeRobot assumes that dtype of image data is `image`
     if not output_path.exists():
         dataset = LeRobotDataset.create(
-            repo_id=REPO_NAME,
+            repo_id=repo_id,
+            root=output_path,
             robot_type="ur3e",
             fps=10,
             features={
@@ -118,7 +120,7 @@ def main(data_dir: str = "./test", *, push_to_hub: bool = False):
             image_writer_processes=5,
         )
     else:
-        dataset = LeRobotDataset(repo_id=REPO_NAME)
+        dataset = LeRobotDataset(repo_id=repo_id, root=output_path)
 
 
     # Loop over raw Libero datasets and write episodes to the LeRobot dataset
@@ -177,5 +179,7 @@ if __name__ == "__main__":
         "--push-to-hub", "--push_to_hub", action="store_true",
         help="Compatibility flag; this script currently writes only local data",
     )
+    parser.add_argument("--output-dir", default="./datasets/b2b_nofinecontrol", help="Local output dataset directory")
+    parser.add_argument("--repo-id", default=REPO_NAME, help="Dataset identifier, e.g. username/b2b_nofinecontrol")
     args = parser.parse_args()
-    main(args.data_dir, push_to_hub=args.push_to_hub)
+    main(args.data_dir, push_to_hub=args.push_to_hub, output_dir=args.output_dir, repo_id=args.repo_id)

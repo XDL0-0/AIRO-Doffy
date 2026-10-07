@@ -1,6 +1,6 @@
 # Unity 会话核心验收
 
-新工程：`/home/yuyuan/UNITY_Project/Codex`。Classic 保持只读。原脚本移至 `Assets/Teleop` 时保留 `.meta` GUID；迁移清单见 [unity-source-migration.json](unity-source-migration.json)。
+新工程：`/path/to/unity/Codex`。Classic 保持只读。原脚本移至 `Assets/Teleop` 时保留 `.meta` GUID；迁移清单见 [unity-source-migration.json](unity-source-migration.json)。
 
 ## 实现
 

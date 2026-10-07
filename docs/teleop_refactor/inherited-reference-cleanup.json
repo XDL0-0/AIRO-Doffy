@@ -1,5 +1,5 @@
 {
-  "backup": "/home/yuyuan/UNITY_Project/.backups/codex-inherited-stale-assets-20260916",
+  "backup": "/path/to/unity/.backups/codex-inherited-stale-assets-20260916",
   "changes": [
     {
       "archived_unused_asset": "Assets/Prefabs/TactileMesh.prefab"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """Launch the LeRobot v3.0 tightness annotator from dataset_tool."""
-# python -m dataset_tool.annotate_tightness --dataset-root /home/yuyuan/AIRO-Doffy/datasets/WRM_grasp_cylinder_different_sizes_lero_recollect_gray
+# python -m dataset_tool.annotate_tightness --dataset-root datasets/WRM_grasp_cylinder_different_sizes_lero_recollect_gray
 from __future__ import annotations
 
 import sys

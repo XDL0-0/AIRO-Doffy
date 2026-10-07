@@ -1,8 +1,10 @@
 # classic Quest 遥操作功能清单
 
+> Public copy: local paths, device identifiers and site addresses are anonymized; recorded results and version/hash data are unchanged.
+
 ## 范围与判定口径
 
-这是对 `/home/yuyuan/UNITY_Project/classic` 的只读盘点，快照日期为 2026-09-16。检查了：
+这是对 `/path/to/unity/classic` 的只读盘点，快照日期为 2026-09-16。检查了：
 
 - `Assets/Scripts`（包括 `New`、`MultipleVideoStream`、`TCP`、`Force`、`Tactile Visualization`、`UpperLimb`、`VirtualRobot`、`Unused`、`Viz`）；
 - `Assets/Editor/TactARSceneSetup.cs`；
@@ -27,7 +29,7 @@
 | 对象/路径 | 组件和实际接线 | 初始状态与意义 | 代码路径 |
 |---|---|---|---|
 | `AppManager` | `AppManager`；IP 输入 `485358093`、WebRTC 数量输入 `2134343646`、状态文字 `1985840377`、Start `192050695`、控制模式文字 `972898708`、重定位按钮 `566497589`、WebRTC 按钮 `1078572146`、1/2/3 路面板、Add UDP 按钮和 `VideoWindowManager` 已接入。`teleopConfig=0`、`sessionStateText=0`、`recalibrateButton=0`、`debugInfoToggle=0`、`menuPanel=0`、`controlModeButton=0`、`versionText=0`。 | 组件活动，但关键配置资产和部分可选 UI 没有序列化引用；控制模式按钮仍由场景的持久 `UnityEvent` 直接调用，所以不能仅依据 `controlModeButton=0` 判断按钮无效。 | `Assets/Scripts/New/AppManager.cs:1-577`；V0.6 场景约 `22853-22878`，V0.7 同位置 |
-| `UdpSocket` | 8001/8003/8005 三个发送端点；IP 输入和提示文字已接入，后台接收线程启动。 | 活动；默认 hard-code IP 为 `10.10.131.72`，启动时再读 `PlayerPrefs`。 | `Assets/Scripts/UdpSocket.cs:1-213` |
+| `UdpSocket` | 8001/8003/8005 三个发送端点；IP 输入和提示文字已接入，后台接收线程启动。 | 活动；默认 hard-code IP 为 `192.0.2.11`，启动时再读 `PlayerPrefs`。 | `Assets/Scripts/UdpSocket.cs:1-213` |
 | `DualControllerSender` | `udpSocket=1442753682`、`stateSending=1`；状态文字为空。 | 活动；每 10 ms 取左右 Touch，先过 `CanSendTeleopData` 安全门。 | `Assets/Scripts/DualControllerSender.cs:1-126` |
 | `HandTrackingManager` | `HandTrackingSender`；左右 `OVRHand`/`OVRSkeleton` 已接入，`stateSending=1`、`sendRateHz=60`、`useBinaryProtocol=0`、`onlySendWhenTracked=1`、`skipWhenControllerActive=1`。 | 活动；本场景实际发送文本 H 协议且为 60 Hz，不是脚本默认的 binary/30 Hz。 | `Assets/Scripts/HandTrackingSender.cs:1-206` |
 | `TrackingModeManager` | `dualControllerSender=1108104674`、`handTrackingSender=140660024`、`modeText=2059397721`，`currentMode=0`；`Hand_controller_change_button` 持久调用 `ToggleTrackingMode`。 | 活动；启动读 `cfg_trackingMode`，0=Controllers、1=Hands，并只启用一个 sender。 | `Assets/Scripts/TrackingModeManager.cs:1-67`；场景约 `56319-56331`（V0.6）、`57071-57083`（V0.7） |
@@ -70,7 +72,7 @@
 | ID / 状态 | 用户操作与效果 | 输入、输出、依赖 | 应保留的行为 | 测试/验收方法 | 代码路径 |
 |---|---|---|---|---|---|
 | **F-001** Active scene wiring：会话启动/停止 | 启动应用，填写 IP/路数，按 `Start Streaming`；再次按下停止；左手柄 Start 可停止，追踪丢失后右手柄 Start 可触发重校准。 | `AppManager`、`UdpSocket`、`TeleopReferenceFrame`、WebRTC manager；状态 `Idle → Streaming`，开启视频时经过 `VideoConnecting`，停止经过 `Stopping`。 | 开始时清错、保存 PlayerPrefs、校准 teleop frame、按钮改为 `Stop Streaming`；停止时关闭视频、清 frame、恢复菜单/`System Ready`；视频失败只降级视频状态，仍保留 teleop。 | 无视频开启/停止各一次；检查状态文字和 Start 文案；抓包确认停止后姿态包停止；开启 WebRTC 后断信令，确认状态提示视频不可用而控制会话未被误停。 | `New/AppManager.cs:80-227, 247-365`；`TeleopSessionState.cs:1-20` |
-| **F-002** Active scene wiring：IP、配置与 UDP 基础通道 | 在 IP 输入框写合法/非法地址并结束编辑；重启后检查保存值。 | 文本 UTF-8 发往同一目标的 UDP 8001（姿态）、8003（录制）、8005（控制）；接收线程异步收包并主线程显示错误/状态。`PlayerPrefs` keys：`cfg_ip`、`cfg_trackingMode`、`cfg_sendRateHz`、`cfg_useBinary`、`cfg_numWebRTC`。 | 合法 IP 才更新 endpoint；非法输入显示 invalid/不应崩溃；关闭时停止线程并释放 socket；持久化值优先于默认值。 | 输入 `10.10.131.72` 与非法字符串；检查提示、目标地址和重启恢复；发送空消息/断网后确认不会卡住主线程。 | `UdpSocket.cs:46-213`；`AppManager.cs:151-192` |
+| **F-002** Active scene wiring：IP、配置与 UDP 基础通道 | 在 IP 输入框写合法/非法地址并结束编辑；重启后检查保存值。 | 文本 UTF-8 发往同一目标的 UDP 8001（姿态）、8003（录制）、8005（控制）；接收线程异步收包并主线程显示错误/状态。`PlayerPrefs` keys：`cfg_ip`、`cfg_trackingMode`、`cfg_sendRateHz`、`cfg_useBinary`、`cfg_numWebRTC`。 | 合法 IP 才更新 endpoint；非法输入显示 invalid/不应崩溃；关闭时停止线程并释放 socket；持久化值优先于默认值。 | 输入 `192.0.2.11` 与非法字符串；检查提示、目标地址和重启恢复；发送空消息/断网后确认不会卡住主线程。 | `UdpSocket.cs:46-213`；`AppManager.cs:151-192` |
 | **F-003** Active scene wiring：双手柄姿态 | 手握左右 Touch，移动/转动、摇杆、扳机、握把、A/X、B/Y、摇杆按下。 | OVR `LTouch`/`RTouch`；每 10 ms（100 Hz）采样，经过 Mirror/View 变换；UDP8001 文本：`C,<frame_id>,<timestamp_ns>,<leftData>,<rightData>`，每侧含 type、position xyz、rotation xyzw、joystick xy、trigger、grip、A/X、B/Y、joystickPress。 | 只在 `AppManager.CanSendTeleopData` 为真时发；单帧同时采左右，使用 monotonic frame/timestamp；落后超过 30 ms 对齐当前时间且最多 3 次追赶，避免爆发；保留按钮边沿/轴值语义和坐标符号。 | 假接收器统计约 100 Hz；静止时 frame/timestamp 单调；分别按每个按钮确认对应字段；停止 streaming 或 tracking lost 后确认无 C 包；Mirror 与 View 各做固定姿态对照。 | `DualControllerSender.cs:1-126`；`TeleopControlModeManager.cs:117-150` |
 | **F-004** Active scene wiring：手部骨骼发送 | 切换到 Hands，手掌/手指移动、摘掉控制器；切回 Controllers。 | 左右 `OVRHand`/`OVRSkeleton`，要求 tracked 且至少 26 bones；场景实际文本 H：`H,<L/R>,<frame_id>,<timestamp_ns>,wrist pos+quat,26×bone xyz`，UDP8001，60 Hz；binary `HB,<base64>` 仍是脚本支持协议。 | `onlySendWhenTracked`、`skipWhenControllerActive` 过滤必须保留；手部位置经过 `TeleopReferenceFrame.TransformWorldPoint`；TrackingModeManager 只允许当前模式 sender 发。 | 佩戴/摘下手部追踪，统计 L/R H 包；不足 26 bones 或控制器连接时应跳过；切 mode 后旧 sender 无包、新 sender 有包；检查 60 Hz 和 frame/timestamp。 | `HandTrackingSender.cs:1-206`；`TrackingModeManager.cs:22-61` |
 | **F-005** Active scene wiring：手柄/手部模式 | 点击 `Hand_controller_change_button` 多次；重启应用。 | `TrackingModeManager`、两个 sender、`cfg_trackingMode`、`Hand_controller_change_TEXT`。 | 按钮在 Controllers/Hands 间循环，持久化；ApplyMode 开启一个 sender、关闭另一个，文字同步；上肢 WRM UI 读取同一 key 时，Hands 模式应禁用 WRM。 | 点击后检查文字、两 sender `stateSending`；重启确认模式保持；V0.7 进入 Hands 时 WRM 按钮不可用且已开启 WRM 自动关闭。 | `TrackingModeManager.cs:1-67`；`UpperLimbAkmUi.cs:81-160` |
@@ -128,9 +130,9 @@
 
 ### `TeleopConfigUpperLimb.asset` 与实际运行默认值
 
-`Assets/Settings/TeleopConfigUpperLimb.asset` 序列化为：`defaultServerIP=192.168.43.198`、pose 8001、control 8005、virtual robot 8011、tactile 8012、signaling 8765、UDP video base 8000、默认 WebRTC track 1、send rate 30、binary=1、三个 safety bool 均为 1。
+`Assets/Settings/TeleopConfigUpperLimb.asset` 序列化为：`defaultServerIP=192.0.2.16`、pose 8001、control 8005、virtual robot 8011、tactile 8012、signaling 8765、UDP video base 8000、默认 WebRTC track 1、send rate 30、binary=1、三个 safety bool 均为 1。
 
-两个目标场景的 `AppManager.teleopConfig` 都是 `{fileID: 0}`。因此 `AppManager.ApplyConfigDefaults()` 不会读取上述 asset，实际初始 IP 是代码字段的 `10.10.131.72`，其余端口仍按代码字段 8001/8005/8012/8765/8000；`PreventSleep`、tracking pause、recalibrate 也因为 null config 走 `true`。这是行为事实，不是 asset 的推断。
+两个目标场景的 `AppManager.teleopConfig` 都是 `{fileID: 0}`。因此 `AppManager.ApplyConfigDefaults()` 不会读取上述 asset，实际初始 IP 是代码字段的 `192.0.2.11`，其余端口仍按代码字段 8001/8005/8012/8765/8000；`PreventSleep`、tracking pause、recalibrate 也因为 null config 走 `true`。这是行为事实，不是 asset 的推断。
 
 `PlayerPrefs` 加载发生在 `AppManager.Start` 的 `LoadConfig()`，所以旧设备上已有 `cfg_ip`、mode、rate、binary、track count 会覆盖这些初始值。迁移必须决定是接入 asset 并保持旧 PlayerPrefs 优先，还是显式兼容现有 hard-code fallback。
 
@@ -160,7 +162,7 @@ HD receiver 需要保留 12-byte 大端分片头、最多 8 个 frame buffer、�
 
 ## 迁移优先级与主要风险
 
-1. **配置资产未接入是首要风险。** 场景 `teleopConfig=0`，运行 IP 是 `10.10.131.72`，而同目录 asset 写的是 `192.168.43.198`。如果新 AppManager 直接绑定 asset，首次运行目标会变；如果只迁移 scene wiring，asset 的安全/端口字段永远不起作用。需定义明确优先级：旧 PlayerPrefs、asset、还是代码 fallback，并对旧设备做一次升级验收。
+1. **配置资产未接入是首要风险。** 场景 `teleopConfig=0`，运行 IP 是 `192.0.2.11`，而同目录 asset 写的是 `192.0.2.16`。如果新 AppManager 直接绑定 asset，首次运行目标会变；如果只迁移 scene wiring，asset 的安全/端口字段永远不起作用。需定义明确优先级：旧 PlayerPrefs、asset、还是代码 fallback，并对旧设备做一次升级验收。
 2. **8012/8005 的端口所有权必须显式设计。** 当前 8012 由活动 `TCPPoseReceiver` 使用，`ForceSensorReceiver` 8013 inactive，VideoWindowManager tactile 接收关闭；8005 同时是 AppManager 控制、V0.7 WRM、旧窗口 resolution 的潜在通道。恢复 Focus UI 或 WRM 后若无仲裁，会产生解析冲突/丢包/重复状态。
 3. **安全 gate 是发送器的共同前置条件。** `DualControllerSender` 与 `HandTrackingSender` 都直接依赖 `AppManager.CanSendTeleopData`；tracking lost、recalibration、Stopping 任一状态都应禁发。新 UI 的 Start/状态实现不能只改文字而绕过 `NeedsRecalibration`。
    `UpperLimbAkmManager` 是已验证的例外：其 WRM loop 只检查 `WrmEnabled`，所以“统一安全 gate”若要改变此行为必须在迁移决策和回归中明确记录。

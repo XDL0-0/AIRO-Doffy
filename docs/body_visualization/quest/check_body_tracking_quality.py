@@ -10,13 +10,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import subprocess
 import tempfile
 from pathlib import Path
 
 
-UNITY_PROJECT = Path("/home/yuyuan/UNITY_Project/CodexBracelet")
-MONO_BIN = Path("/home/yuyuan/Unity/Hub/Editor/6000.5.6f1/Editor/Data/MonoBleedingEdge/bin")
 HERE = Path(__file__).resolve().parent
 EXPECTED = {
     "high": (True, 0.75),
@@ -37,8 +36,8 @@ EXPECTED = {
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project", type=Path, default=UNITY_PROJECT)
-    parser.add_argument("--mono-bin", type=Path, default=MONO_BIN)
+    parser.add_argument("--project", type=lambda value: Path(value).expanduser().resolve(), default=os.environ.get("DOFFY_UNITY_PROJECT"), required=not os.environ.get("DOFFY_UNITY_PROJECT"))
+    parser.add_argument("--mono-bin", type=lambda value: Path(value).expanduser().resolve(), default=os.environ.get("DOFFY_MONO_BIN"), required=not os.environ.get("DOFFY_MONO_BIN"))
     args = parser.parse_args()
     sources = [
         args.project / "Assets/Teleop/UpperLimb/BodyPoseTelemetrySender.cs",

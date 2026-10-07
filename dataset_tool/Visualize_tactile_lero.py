@@ -377,14 +377,14 @@ def main():
     cfg = config.Config()
 
     # --- Key modification: Path parsing ---
-    # Assume cfg.DATASET_DIR = "/home/user/datasets/data"
-    # And your actual dataset folder is "/home/user/datasets/data_lero"
+    # Assume cfg.DATASET_DIR = "/path/to/datasets/data"
+    # And your actual dataset folder is "/path/to/datasets/data_lero"
     dataset_dir = Path(cfg.DATASET_DIR + "_lero")
 
     # repo_id is usually the folder name (e.g. "WipeBoard_lero")
     repo_id = dataset_dir.name
 
-    # root must be the parent directory containing the folder (e.g. "/home/user/datasets")
+    # root must be the parent directory containing the folder (e.g. "/path/to/datasets")
     root = dataset_dir
     tolerance_s = kwargs.pop("tolerance_s")
 

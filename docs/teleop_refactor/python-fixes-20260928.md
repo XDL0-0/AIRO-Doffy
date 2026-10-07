@@ -1,5 +1,7 @@
 # Teleoperation 修复与验收（2026-09-28）
 
+> Public copy: local paths, device identifiers and site addresses are anonymized; recorded results and version/hash data are unchanged.
+
 本轮修复了 [先前审计](python-audit-20260928.md) 复现的录制死锁、并发命令丢失、LeRobot 撤销后统计错误、配置未传递、启动失败资源泄漏及 UDP 接收线程不退出问题，并通过真机验证发现和修正了状态推送周期单位错误。Python 相关测试 **232 项通过，另有 3 个参数子测试通过**。手环版已构建并安装为 **0.9.4 / versionCode 13**，包名仍为独立的 `org.airolab.doffy.bracelet`。
 
 ## 修复内容
@@ -29,8 +31,8 @@ LeRobot 统计回归测试实际保存值 0、10，撤销 10，再保存 20；�
 
 | 用途 | 当前地址 |
 |---|---|
-| PC 与 Quest 通信，`PC_IP` | `10.10.130.209` |
-| Quest，`VR_IP` | `10.10.131.245` |
+| PC 与 Quest 通信，`PC_IP` | `192.0.2.10` |
+| Quest，`VR_IP` | `192.0.2.20` |
 | PC 机器人网卡，`REALMAN_STATE_PUSH_IP` | `192.168.1.100` |
 | RealMan API | `192.168.1.18:8080` |
 
@@ -46,12 +48,12 @@ LeRobot 统计回归测试实际保存值 0、10，撤销 10，再保存 20；�
 
 ## Python 验证
 
-环境为 `/home/yuyuan/.venvs/airo-teleop`；具体依赖、重建方法及继承范围见 [环境说明](teleop-environment.md)。该环境继承本机已安装的 SDK / Torch 等包，约束文件是本机兼容性配置，并非跨平台完整 lockfile。
+环境为 `.venv`；具体依赖、重建方法及继承范围见 [环境说明](teleop-environment.md)。该环境继承本机已安装的 SDK / Torch 等包，约束文件是本机兼容性配置，并非跨平台完整 lockfile。
 
 ```bash
 HF_HUB_OFFLINE=1 MPLBACKEND=Agg \
-DOFFY_UNITY_PROJECT=/home/yuyuan/UNITY_Project/CodexBracelet \
-/home/yuyuan/.venvs/airo-teleop/bin/python -m pytest -q \
+DOFFY_UNITY_PROJECT=/path/to/unity/CodexBracelet \
+./.venv/bin/python -m pytest -q \
   tests/test_realman_teleop_loop.py tests/test_wrm_akm.py \
   tests/test_realsense_camera.py tests/test_vr_coordinate_mapping.py \
   tests/test_teleop_refactor_imports.py tests/test_teleop_refactor_boundaries.py \
@@ -70,22 +72,22 @@ DOFFY_UNITY_PROJECT=/home/yuyuan/UNITY_Project/CodexBracelet \
 
 ## Quest 构建与安装
 
-- 项目：`/home/yuyuan/UNITY_Project/CodexBracelet`。
-- APK：`/home/yuyuan/UNITY_Project/App_output/AIRO_Doffy_bracelet.apk`。
+- 项目：`/path/to/unity/CodexBracelet`。
+- APK：`/path/to/unity/App_output/AIRO_Doffy_bracelet.apk`。
 - SHA-256：`1277555568d5f58fe885cd2c1e28116cbc60fca7da1be5b480660b335bd6d184`。
-- 旧版保存至：`/home/yuyuan/UNITY_Project/App_output/bracelet-v0.9.3/AIRO_Doffy_bracelet.apk`。
+- 旧版保存至：`/path/to/unity/App_output/bracelet-v0.9.3/AIRO_Doffy_bracelet.apk`。
 - C# 验证：18 项录制/手部发送检查、10 项追踪保护检查、47 项协议/生命周期检查；97 个 runtime 与 3 个 editor 源文件编译通过，Unity Android build 成功。
 - `adb install -r` 成功，设备 package 信息确认版本 0.9.4 / 13。
 
-应用启动后 OpenXR 初始化，但很快进入暂停，未到达 `AppManager.Start()` 日志。因此没有确认当前应用保存的服务器 IP，也没有完成佩戴时的 Unity UI→Python→机器人闭环。使用时请在头显设置中确认目标 PC IP 为 `10.10.130.209`。
+应用启动后 OpenXR 初始化，但很快进入暂停，未到达 `AppManager.Start()` 日志。因此没有确认当前应用保存的服务器 IP，也没有完成佩戴时的 Unity UI→Python→机器人闭环。使用时请在头显设置中确认目标 PC IP 为 `192.0.2.10`。
 
 ## 使用与边界
 
 从仓库目录启动：
 
 ```bash
-cd /home/yuyuan/AIRO-Doffy
-/home/yuyuan/.venvs/airo-teleop/bin/python realman_teleop.py
+cd /path/to/AIRO-Doffy
+./.venv/bin/python realman_teleop.py
 ```
 
 Undo 语义保持：当前有未保存帧时丢弃本次录制；否则删除最后一个已保存 episode。若 LeRobot episode 共享一个视频容器，保留集引用的容器不会删除，也不会物理裁切其中已撤销片段。

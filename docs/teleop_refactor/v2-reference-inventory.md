@@ -1,8 +1,10 @@
 # AIRO-DOFFY-v2 参考仓库盘点
 
+> Public copy: local paths, device identifiers and site addresses are anonymized; recorded results and version/hash data are unchanged.
+
 审计日期：2026-09-16\
 目标：为 `AIRO-Doffy` 的 Unity + PC 全功能重构提供可复用代码、协议、测试和缺口清单。\
-范围：只读检查 `/home/yuyuan/AIRO-DOFFY-v2` 的当前工作树、文档和测试；未检查大数据、权重及 `outputs/` 内容，也未修改 v2。
+范围：只读检查 `/path/to/AIRO-DOFFY-v2` 的当前工作树、文档和测试；未检查大数据、权重及 `outputs/` 内容，也未修改 v2。
 
 ## 结论先行
 
@@ -23,7 +25,7 @@
 | `src/airo_doffy/apps/collect.py` | `airo-doffy-collect`，要求 `--session-factory` 或环境变量 | 接口清楚，但没有可直接运行的全功能 collection composition |
 | `src/airo_doffy/apps/deployment.py`（未跟踪） | 基本 UR/RealMan deployment；可选 Matplotlib；另有 RM75 policy-evaluation composition | 适合作为实验起点；当前实现仍是基本路径，RealMan joint 的 IK 责任推给 CAN-FD executor，且未接入所有 v2 组件 |
 | `src/airo_doffy/apps/evaluate.py`（未跟踪） | 先校验 checkpoint，再加载外部 `beaver_policies` adapter，运行 RM75 评估 | 是独立评估工具，不是通用 Unity teleop；外部 policy/Beaver 依赖和硬件仍需部署验证 |
-| `configs/default.yaml`、`configs/robots/*.yaml` | 当前是 JSON-compatible YAML；支持分层、环境变量和 `--set` | 配置机制可复用，但当前 default 写入了 `10.135.223.48`、`10.135.223.229`，RealMan profile 写入 `192.168.1.18`；这与文档所说的“默认无地址”冲突，应在新 PC 配置中清除运行现场地址 |
+| `configs/default.yaml`、`configs/robots/*.yaml` | 当前是 JSON-compatible YAML；支持分层、环境变量和 `--set` | 配置机制可复用，但当前 default 写入了 `192.0.2.13`、`192.0.2.21`，RealMan profile 写入 `192.168.1.18`；这与文档所说的“默认无地址”冲突，应在新 PC 配置中清除运行现场地址 |
 | `scripts/` | 诊断、dataset 转换/回放、视频和轨迹 benchmark | 可按需迁移 CLI；当前树已删除多项旧脚本，不能假设 v1 脚本兼容 |
 | `unity/` | 只有 `unity/README.md` | 无客户端实现，只有协议边界说明 |
 
@@ -69,14 +71,14 @@
 在 v2 当前工作树中，未安装 editable package 时需要显式设置 `PYTHONPATH=src`。已执行并通过：
 
 ```bash
-cd /home/yuyuan/AIRO-DOFFY-v2
+cd /path/to/AIRO-DOFFY-v2
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
-  /home/yuyuan/miniconda3/bin/python -m unittest discover -s tests -q
+  /path/to/source-env/bin/python -m unittest discover -s tests -q
 # Ran 316 tests in 1.462s
 # OK (skipped=7)
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
-  /home/yuyuan/miniconda3/bin/python -m compileall -q src tests
+  /path/to/source-env/bin/python -m compileall -q src tests
 # exit 0
 ```
 

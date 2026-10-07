@@ -1,10 +1,10 @@
 # Wrist UI implementation
 
-Active Unity project: `/home/yuyuan/UNITY_Project/Codex`, Unity 6000.5.6f1, Meta XR 205.0.0.
+Active Unity project: `/path/to/unity/Codex`, Unity 6000.5.6f1, Meta XR 205.0.0.
 Scene: `Assets/Scenes/Teleoperation.unity`. The classic project and PC robot protocols are unchanged.
 
 Interaction uses the existing [Meta canvas integration](https://developers.meta.com/horizon/documentation/unity/unity-isdk-canvas-integration/) and the installed SDK APIs.
-Pre-change sources/scene: `/home/yuyuan/UNITY_Project/.backups/wrist-ui-20260928`.
+Pre-change sources/scene: `/path/to/unity/.backups/wrist-ui-20260928`.
 
 ## Existing architecture and preserved behavior
 
@@ -91,26 +91,26 @@ Local verification results are recorded below. Headset comfort, physical poke re
 - Production visibility gate: **15 checks passed**, including dwell, hysteresis, immediate block and no reveal at rest after control stops.
 - Existing session regression suite: **TeleopCoreTests.RunAll + 25 coordinator checks passed**.
 
-Reproduce from `/home/yuyuan/AIRO-Doffy`:
+Reproduce from `/path/to/AIRO-Doffy`:
 
 ```bash
-python3 scripts/teleop_refactor/compile_unity_sources.py --reference /home/yuyuan/UNITY_Project/Codex --include-editor
-python3 scripts/teleop_refactor/audit_unity_project.py --package-cache /home/yuyuan/UNITY_Project/Codex/Library/PackageCache
+python3 scripts/teleop_refactor/compile_unity_sources.py --reference /path/to/unity/Codex --include-editor
+python3 scripts/teleop_refactor/audit_unity_project.py --package-cache /path/to/unity/Codex/Library/PackageCache
 python3 scripts/teleop_refactor/run_wrist_detents_checks.py
 python3 scripts/teleop_refactor/run_wrist_visibility_checks.py
 python3 scripts/teleop_refactor/run_csharp_session_checks.py
 ```
 
-Native validation logs: `/tmp/doffy-wrist-editor-validation.log`, `/tmp/doffy-wrist-play-smoke.log`. Run the Editor entry points above using Unity `-batchmode -nographics -projectPath /home/yuyuan/UNITY_Project/Codex -executeMethod ... -logFile ...`; `Validate` uses `-quit`, while `RunPlaySmoke` exits itself. The smoke check is intended for an idle host without a headset.
+Native validation logs: `/tmp/doffy-wrist-editor-validation.log`, `/tmp/doffy-wrist-play-smoke.log`. Run the Editor entry points above using Unity `-batchmode -nographics -projectPath /path/to/unity/Codex -executeMethod ... -logFile ...`; `Validate` uses `-quit`, while `RunPlaySmoke` exits itself. The smoke check is intended for an idle host without a headset.
 
 The initial source-validation pass did not build an APK. The subsequent device deployment is recorded below. No additional scene wiring or package installation is required.
 
 
 ## Quest deployment — 2026-09-28
 
-Built Android ARM64/IL2CPP successfully and installed with `adb install -r` on the connected Quest 3, preserving app data. OpenXR Android validation initially failed because additive interaction features had no base controller profile; enabled the existing `OculusTouchControllerProfile Android` in `Assets/XR/Settings/OpenXR Package Settings.asset` and rebuilt successfully. The previous settings asset and APK are backed up under `/home/yuyuan/UNITY_Project/.backups/wrist-ui-20260928/`.
+Built Android ARM64/IL2CPP successfully and installed with `adb install -r` on the connected Quest 3, preserving app data. OpenXR Android validation initially failed because additive interaction features had no base controller profile; enabled the existing `OculusTouchControllerProfile Android` in `Assets/XR/Settings/OpenXR Package Settings.asset` and rebuilt successfully. The previous settings asset and APK are backed up under `/path/to/unity/.backups/wrist-ui-20260928/`.
 
-- APK: `/home/yuyuan/UNITY_Project/App_output/AIRO_Doffy_refactored.apk` (93,376,271 bytes).
+- APK: `/path/to/unity/App_output/AIRO_Doffy_refactored.apk` (93,376,271 bytes).
 - Package: `org.airolab.doffy.teleoperation`, version 0.8.0 / code 8.
 - Installed APK SHA-256 verified equal to fresh build: `46bedcbb87086877894153ae9cc1dcdfbaf7d8b942fd0b202a9548e6918ac678`.
 - Device package last update: 2026-09-28 13:31:26.
