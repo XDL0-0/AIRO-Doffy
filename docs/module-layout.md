@@ -1,6 +1,6 @@
 # Python module layout
 
-The project is named **doffy-teleop**; Python imports and `python -m` commands use the underscore module name `doffy_teleop`. The teleoperation implementation is owned by that package. The published repository root contains five Python CLI launchers, so the teleop, teach/recollect and BODY launch commands remain usable. Shared library code uses the canonical package paths below.
+The project is named **Airo-Doffy**; Python imports and `python -m` commands use the underscore module name `doffy_teleop`. The teleoperation implementation is owned by that package. The published repository root contains five Python CLI launchers, so the teleop, teach/recollect and BODY launch commands remain usable. Shared library code uses the canonical package paths below.
 
 The upload covers UR/RealMan teleop, WRM, BrainCo, Beaver, VR/camera services, BODY visualization, dataset tools and related tests. This migration preserves their runtime defaults, robot constraints, recording schema and existing datasets; it does not require regenerating data. Local Seahorse, policy training/inference/evaluation, Jev and standalone experiments are outside the upload scope.
 
