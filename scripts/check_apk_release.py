@@ -16,8 +16,17 @@ import zipfile
 
 
 SOURCE_REPOSITORY = "XDL0-0/AIRO-DOFFY-APP"
-# A single immutable, documented historical gap, never a version-range exemption.
-LEGACY_SHA256 = "3a1e95322c83c865ba6729a5317bcc06b60875241c78c03d8e28752db6d24a4e"
+# The published Editor entrypoint overrides saved package/code settings. Bind this
+# reviewed interpretation to the entire script, rather than guessing with C# regexes.
+# Any script change requires reviewing its effective build settings again.
+BUILD_SCRIPT = "Assets/Teleop/Editor/TeleopBuild.cs"
+REVIEWED_BUILD_PROFILES = {
+    ("Doffy.Editor.TeleopBuild.BuildMetaUpdateArm64Only",
+     "4689f6ec958e184cb9705ad1f99e52ab4805ff3e5fbd26b37698e237ab777fa6"): {
+        "package": "com.AIROLab.AIRODOFFY", "version_name": "0.9.7",
+        "version_code": 18, "abi": "arm64-v8a",
+    },
+}
 
 
 def require(condition: bool, message: str) -> None:
@@ -106,16 +115,31 @@ def check_source(manifest: dict, fetch=fetch_source_file) -> None:
             "Meta XR version must be checked against the pinned packages-lock.json")
     require(re.fullmatch(r"\d+\.\d+\.\d+", str(build.get("meta_xr_all_version"))) is not None,
             "missing exact Meta XR All-in-One version")
-    read = lambda path: fetch(source["repository"], revision, path)
+    project_path = source.get("project_path", "")
+    require(isinstance(project_path, str) and (project_path == "" or
+            all(re.fullmatch(r"[A-Za-z0-9_.-]+", part) and part not in (".", "..")
+                for part in project_path.split("/"))), "invalid source.project_path")
+    prefix = project_path + "/" if project_path else ""
+    read = lambda path: fetch(source["repository"], revision, prefix + path)
     project_version = read("ProjectSettings/ProjectVersion.txt")
     require(f"m_EditorVersion: {build['unity_version']}" in project_version.splitlines(),
             "Unity source version differs from APK")
-    settings = read("ProjectSettings/ProjectSettings.asset")
-    for key, expected in (("bundleVersion", manifest["version_name"]),
-                          ("AndroidBundleVersionCode", str(manifest["version_code"]))):
-        match = re.search(rf"^\s*{key}:\s*(.*?)\s*$", settings, re.MULTILINE)
-        require(match is not None and match.group(1).strip("\"'") == expected,
-                f"Unity source {key} differs from APK")
+    if build.get("entrypoint"):
+        require(build.get("script") == BUILD_SCRIPT, "unexpected build script path")
+        script = read(BUILD_SCRIPT)
+        digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
+        profile = REVIEWED_BUILD_PROFILES.get((build["entrypoint"], digest))
+        require(profile is not None, "unreviewed build entrypoint/script: review effective build settings")
+        require(build.get("script_sha256") == digest, "build script hash differs from manifest")
+        for key, expected in profile.items():
+            require(manifest.get(key) == expected, f"build entrypoint {key} differs from APK")
+    else:
+        settings = read("ProjectSettings/ProjectSettings.asset")
+        for key, expected in (("bundleVersion", manifest["version_name"]),
+                              ("AndroidBundleVersionCode", str(manifest["version_code"]))):
+            match = re.search(rf"^\s*{key}:\s*(.*?)\s*$", settings, re.MULTILINE)
+            require(match is not None and match.group(1).strip("\"'") == expected,
+                    f"Unity source {key} differs from APK")
     packages = json.loads(read("Packages/manifest.json"))["dependencies"]
     locked = json.loads(read("Packages/packages-lock.json"))["dependencies"]
     version = build["meta_xr_all_version"]
@@ -124,7 +148,7 @@ def check_source(manifest: dict, fetch=fetch_source_file) -> None:
             "Meta XR locked version mismatch")
 
 
-def validate(root: Path, allow_known_unmapped: bool = False, fetch=fetch_source_file) -> str:
+def validate(root: Path, fetch=fetch_source_file) -> str:
     manifest = json.loads((root / "apk/manifest.json").read_text())
     filename = manifest["file"]
     require(isinstance(filename, str) and Path(filename).name == filename
@@ -139,12 +163,6 @@ def validate(root: Path, allow_known_unmapped: bool = False, fetch=fetch_source_
     for key in ("file", "package", "version_name", "version_code", "abi", "bytes", "sha256"):
         require(manifest.get(key) == actual[key], f"APK {key} differs from manifest")
     require(manifest["build"]["unity_version"] == actual["unity_version"], "APK Unity version mismatch")
-    source = manifest.get("source", {})
-    if allow_known_unmapped and source.get("status") == "unavailable":
-        require(actual["sha256"] == LEGACY_SHA256, "historical exception does not cover this APK")
-        require(source.get("revision") is None and bool(source.get("reason", "").strip()),
-                "historical source gap must have null revision and an explanation")
-        return "WARNING: known v0.9.7 source gap; APK identity passed, source reproducibility NOT verified"
     check_source(manifest, fetch)
     return "PASS: APK identity and public Unity source metadata agree (not a reproducible-build proof)"
 
@@ -152,11 +170,9 @@ def validate(root: Path, allow_known_unmapped: bool = False, fetch=fetch_source_
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument("--allow-known-unmapped", action="store_true",
-                        help="audit only: allow the exact historical v0.9.7 hash; never use for release")
     args = parser.parse_args()
     try:
-        print(validate(args.root.resolve(), args.allow_known_unmapped))
+        print(validate(args.root.resolve()))
     except (ValueError, KeyError, IndexError, TypeError, OSError, struct.error,
             zipfile.BadZipFile, subprocess.CalledProcessError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)

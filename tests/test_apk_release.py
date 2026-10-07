@@ -1,6 +1,7 @@
 """Exercise the release gate against the real APK and controlled source records."""
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -10,7 +11,7 @@ import unittest
 from unittest.mock import Mock, patch
 import zipfile
 
-from scripts.check_apk_release import apk_identity, check_source, validate
+from scripts.check_apk_release import BUILD_SCRIPT, apk_identity, check_source, validate
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,9 +59,6 @@ class ApkReleaseTests(unittest.TestCase):
                                      "revision": None, "reason": "Controlled test fixture"},
                              build={"unity_version": "6000.5.6f1", "meta_xr_all_version": "205.0.0",
                                     "meta_xr_version_status": "reported_unverified"})
-        allowlist = patch("scripts.check_apk_release.LEGACY_SHA256", identity["sha256"])
-        allowlist.start()
-        self.addCleanup(allowlist.stop)
         self.write_manifest()
 
     def write_manifest(self):
@@ -94,12 +92,7 @@ class ApkReleaseTests(unittest.TestCase):
         self.assertEqual(identity["package"], "com.example.fixture")
         self.assertEqual((identity["version_name"], identity["version_code"]), ("0.9.7", 18))
 
-    def test_audit_mode_warns_without_claiming_source_verification(self):
-        fetch = Mock(side_effect=AssertionError("legacy audit must not fetch guessed source"))
-        self.assertIn("NOT verified", validate(self.root, True, fetch))
-        fetch.assert_not_called()
-
-    def test_strict_release_rejects_current_gap(self):
+    def test_strict_release_rejects_unavailable_source(self):
         with self.assertRaisesRegex(ValueError, "source status must be pinned"):
             validate(self.root)
 
@@ -112,15 +105,15 @@ class ApkReleaseTests(unittest.TestCase):
                 self.manifest[field] = value
                 self.write_manifest()
                 with self.assertRaisesRegex(ValueError, field):
-                    validate(self.root, True)
+                    validate(self.root)
 
     def test_extra_apk_outside_apk_directory_is_rejected(self):
         (self.root / "unrecorded.APK").write_bytes(b"unrecorded release")
         subprocess.run(["git", "add", "unrecorded.APK"], cwd=self.root, check=True)
         with self.assertRaisesRegex(ValueError, "unmanifested APK"):
-            validate(self.root, True)
+            validate(self.root)
 
-    def test_future_binary_cannot_reuse_historical_exception(self):
+    def test_changed_binary_still_requires_a_source_pin(self):
         # A ZIP/APK can carry a trailing byte; metadata remains readable while hash changes.
         target = self.root / "apk" / self.apk.name
         with target.open("ab") as stream:
@@ -128,14 +121,8 @@ class ApkReleaseTests(unittest.TestCase):
         identity = apk_identity(target)
         self.manifest.update({key: identity[key] for key in ("sha256", "bytes")})
         self.write_manifest()
-        with self.assertRaisesRegex(ValueError, "exception does not cover"):
-            validate(self.root, True)
-
-    def test_historical_exception_rejects_guessed_revision(self):
-        self.manifest["source"]["revision"] = "a" * 40
-        self.write_manifest()
-        with self.assertRaisesRegex(ValueError, "null revision"):
-            validate(self.root, True)
+        with self.assertRaisesRegex(ValueError, "source status must be pinned"):
+            validate(self.root)
 
     def test_pinned_source_success_uses_exact_revision(self):
         self.manifest, _, fetch = self.pinned()
@@ -170,6 +157,49 @@ class ApkReleaseTests(unittest.TestCase):
                 files[path] = content
                 with self.assertRaisesRegex(ValueError, error):
                     check_source(manifest, fetch)
+
+    def test_source_project_subdirectory(self):
+        manifest, files, _ = self.pinned()
+        manifest["source"]["project_path"] = "AIRO-Doffy"
+        nested = {"AIRO-Doffy/" + path: text for path, text in files.items()}
+        fetch = Mock(side_effect=lambda repo, sha, path: nested[path])
+        check_source(manifest, fetch)
+        self.assertTrue(all(call.args[2].startswith("AIRO-Doffy/") for call in fetch.call_args_list))
+
+    def test_invalid_project_paths_fail_before_network(self):
+        for path in ("../other", "/AIRO-Doffy", "AIRO-Doffy//", "foo?ref=main"):
+            with self.subTest(path=path):
+                manifest, _, fetch = self.pinned()
+                manifest["source"]["project_path"] = path
+                with self.assertRaisesRegex(ValueError, "project_path"):
+                    check_source(manifest, fetch)
+                fetch.assert_not_called()
+
+    def test_reviewed_entrypoint_overrides_saved_code(self):
+        manifest, files, fetch = self.pinned()
+        files["ProjectSettings/ProjectSettings.asset"] = "  bundleVersion: 0.9.7\n  AndroidBundleVersionCode: 16\n"
+        script = "// controlled reviewed build-profile fixture\n"
+        files[BUILD_SCRIPT] = script
+        method = "Doffy.Editor.TeleopBuild.BuildMetaUpdateArm64Only"
+        digest = hashlib.sha256(script.encode()).hexdigest()
+        manifest["build"].update(entrypoint=method, script=BUILD_SCRIPT, script_sha256=digest)
+        expected = {key: manifest[key] for key in ("package", "version_name", "version_code", "abi")}
+        with patch("scripts.check_apk_release.REVIEWED_BUILD_PROFILES", {(method, digest): expected}):
+            check_source(manifest, fetch)
+            manifest["version_code"] = 19
+            with self.assertRaisesRegex(ValueError, "entrypoint version_code"):
+                check_source(manifest, fetch)
+            manifest["version_code"] = 18
+            files[BUILD_SCRIPT] += "// changed build settings\n"
+            with self.assertRaisesRegex(ValueError, "unreviewed build"):
+                check_source(manifest, fetch)
+
+    def test_unknown_entrypoint_is_rejected(self):
+        manifest, files, fetch = self.pinned()
+        manifest["build"].update(entrypoint="Unknown.Build", script=BUILD_SCRIPT)
+        files[BUILD_SCRIPT] = "// unknown profile"
+        with self.assertRaisesRegex(ValueError, "unreviewed build"):
+            check_source(manifest, fetch)
 
     def test_unreachable_source_fails_closed(self):
         manifest, _, _ = self.pinned()

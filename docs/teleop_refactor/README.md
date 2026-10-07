@@ -33,7 +33,7 @@ Unity 新工程：`/home/yuyuan/UNITY_Project/Codex`。PC 工程：`/home/yuyuan
 
 ## 验证与复现
 
-**公开复现范围限制（2026-10-07 审计）**：下方 Unity/C# 命令依赖工作站上的完整工程和缓存。公开仓库仅包含部分 C# 副本、测试与文档，未包含当前 v0.9.7 的完整 Unity 工程或 source SHA。`AIRO-DOFFY-APP` 的历史 `v0.6.0` 标签不能填补该缺口；不要将本机路径或历史验证结果作为公开 APK 可复现的证明。详见[发布关联审计](../../apk/RELEASE.md)。
+**公开源码更新（2026-10-07）**：完整 Unity 项目现位于 [固定提交 `811d0b4` 的 `AIRO-Doffy/` 子目录](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/811d0b4f9e9d6368a7fb2402943b41eb324c7167/AIRO-Doffy)，包含场景、`.meta`、构建脚本和 package lock。下方是历史本机验证命令，使用时应替换为实际 checkout 路径。code18 对应 `Doffy.Editor.TeleopBuild.BuildMetaUpdateArm64Only`，不是默认 code16 构建。发布后源码快照不等于已验证的旧 APK 逐字节重建，详见[发布关联审计](../../apk/RELEASE.md)。
 
 本次上传子集的 Python 验收结果：**433 项测试、12 项子测试通过，3 项跳过**。测试范围按保留的 teleop、BODY、dataset tools 及相关测试筛选，未向导入路径添加外部 simulation 目录。此结果与下方历史完整工作树回归记录分开，也不替代 Unity/Quest 或机器人实机验收。
 

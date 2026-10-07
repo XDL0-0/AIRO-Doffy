@@ -33,7 +33,7 @@ cd /home/yuyuan/AIRO-Doffy
 
 ## Quest 端
 
-历史构建记录将本次修改指向本机 `/home/yuyuan/UNITY_Project/CodexBracelet`。**该完整工程及对应 v0.9.7 的 source SHA 尚未公开，本次审计无法访问该本机路径**。公开的 `AIRO-DOFFY-APP` 历史版本不能重建当前 APK，详见[发布关联审计](../../apk/RELEASE.md)。记录中的相关文件为：
+完整项目现已公开于 [AIRO-DOFFY-APP / AIRO-Doffy，固定 SHA `811d0b4`](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/811d0b4f9e9d6368a7fb2402943b41eb324c7167/AIRO-Doffy)。请打开该子目录；仓库根目录仍是历史项目。以下三份 BODY 源码与发布时保留的副本逐字节一致。该提交是发布后的源码快照，尚未证明原 APK 的逐字节可复现性，详见[发布关联审计](../../apk/RELEASE.md)。
 
 - `Assets/Teleop/UpperLimb/UpperLimbAkmManager.cs`：提供当前已采样身体状态的只读副本，复用原来的追踪所有者。
 - `Assets/Teleop/UpperLimb/BodyPoseTelemetrySender.cs`：场景加载后自动创建，默认关闭；在 Session 中开启发送后，以 25 Hz 向已配置 PC 地址的 UDP 8015 发送诊断数据。

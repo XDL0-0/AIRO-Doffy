@@ -2,9 +2,9 @@
 
 > **Latest VR APK**: [AIRO Doffy v0.9.7, code 18, Android ARM64](apk/AIRO_Doffy_v0.9.7_arm64_code18.apk), package `com.AIROLab.AIRODOFFY`. This build includes BODY telemetry; enable it in the Session page as described below.
 >
-> **Source availability**: the complete Unity source revision for **v0.9.7/code18 is unavailable in the public repositories**. [AIRO-DOFFY-APP at `994a672`](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/994a672175af58fc4f14b92f2ca10b4595c8e0a9) is the historical `v0.6.0` source snapshot, without BODY telemetry; it is **not** a source pin for this APK. See the [release provenance and audit](apk/RELEASE.md). Classic controller/video protocols retain compatibility with the historical app.
+> **Unity source**: [AIRO-Doffy project at `811d0b4`](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/811d0b4f9e9d6368a7fb2402943b41eb324c7167/AIRO-Doffy), published on 2026-10-07 with the v0.9.7/BODY implementation. Use `Doffy.Editor.TeleopBuild.BuildMetaUpdateArm64Only` for the code18 Meta package. This is a post-release source snapshot; the original APK build revision and bit-for-bit reproducibility remain unverified. See [release provenance](apk/RELEASE.md). The repository root / `v0.6.0` tag is historical and has no BODY telemetry.
 
-The project is named **doffy-teleop**; its Python module uses an underscore, `doffy_teleop`. The teleoperation implementation lives in `doffy_teleop/`; the five public root Python files are CLI launchers for teleop, teach/recollect and BODY workflows. Library imports use the packaged paths listed in the [module layout and migration guide](docs/module-layout.md). Historical local build notes report Meta XR 205.0.0; its exact package lock for this APK has not been verified. See the [feature inventory, UI previews and validation status](docs/teleop_refactor/README.md); headset display, interaction and robot hardware acceptance remain pending.
+The project is named **doffy-teleop**; its Python module uses an underscore, `doffy_teleop`. The teleoperation implementation lives in `doffy_teleop/`; the five public root Python files are CLI launchers for teleop, teach/recollect and BODY workflows. Library imports use the packaged paths listed in the [module layout and migration guide](docs/module-layout.md). The pinned Unity source uses Unity 6000.5.6f1 and locks Meta XR All-in-One to 205.0.0. See the [feature inventory, UI previews and validation status](docs/teleop_refactor/README.md); headset display, interaction and robot hardware acceptance remain pending.
 
 A high-performance codebase for controlling robot manipulators (UR3e, UR5e, RealMan, or compatible backends) using VR controllers or hand tracking via UDP. It features camera streaming to the VR headset via **HD chunked UDP** or **WebRTC** (aiortc), low-latency robot control, tactile sensing integration, and dataset recording (HDF5 & LeRobot formats).
 
@@ -52,7 +52,7 @@ path. Unity/Quest and robot hardware acceptance remain separate; see the
 - **Python 3.10+** (Recommended: Conda environment `airo-mono`)
 - **Robot**: Compatible robot backend, such as UR3e/UR5e with RTDE enabled or RealMan over its network API.
 - **Cameras**: Intel RealSense Cameras.
-- **VR Setup**: Meta Quest running the [v0.9.7 ARM64 APK](apk/AIRO_Doffy_v0.9.7_arm64_code18.apk). The public [historical Unity snapshot](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/994a672175af58fc4f14b92f2ca10b4595c8e0a9) does not reproduce this APK; see [source availability](apk/RELEASE.md).
+- **VR Setup**: Meta Quest running the [v0.9.7 ARM64 APK](apk/AIRO_Doffy_v0.9.7_arm64_code18.apk). Unity project: [AIRO-Doffy at the pinned source SHA](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/811d0b4f9e9d6368a7fb2402943b41eb324c7167/AIRO-Doffy); open this subfolder, not the historical project at the repository root.
 
 ### 2. Install the VR APK
 
@@ -68,7 +68,7 @@ on Quest 3 succeeded. Headset display, interaction and real BODY pose acceptance
 remain pending. Version, size and SHA256 are recorded in
 [the APK manifest](apk/manifest.json) and [the validation record](docs/body_visualization/validation.md#097-发布-apk).
 
-The binary was published by commit [`a3d1233`](https://github.com/XDL0-0/AIRO-Doffy/commit/a3d1233c53d82f35394f68f0c8d2faa2a4857c81), which identifies this PC/APK repository, **not the Unity build source**. Unity `6000.5.6f1` is verified from the APK; Meta XR `205.0.0` is reported in local build notes. The complete Unity project and build-source SHA are still missing. The [release record](apk/RELEASE.md) explains the evidence and the required check for future releases.
+The binary was published by commit [`a3d1233`](https://github.com/XDL0-0/AIRO-Doffy/commit/a3d1233c53d82f35394f68f0c8d2faa2a4857c81), which identifies this PC/APK repository, **not the Unity build source**. Unity `6000.5.6f1` is verified from the APK. The subsequently published source is pinned to `811d0b4f9e9d6368a7fb2402943b41eb324c7167` and its package lock confirms Meta XR `205.0.0`. Its code18 build entrypoint overrides the saved code16 settings. Source/binary metadata agree, but the original build checkout and a bit-for-bit rebuild have not been verified. The [release record](apk/RELEASE.md) explains the evidence and the release check.
 
 BODY sending is **OFF on every app launch**. In **Session**, set and Apply the
 PC address, then switch **Body data: OFF → ON** to send BODY data to UDP 8015.

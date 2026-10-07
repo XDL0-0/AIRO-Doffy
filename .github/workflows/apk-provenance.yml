@@ -20,9 +20,5 @@ jobs:
           python-version: '3.12'
       - name: Test the provenance guard
         run: python -m unittest discover -s tests -p test_apk_release.py -v
-      - name: Audit repository APK (one historical exception)
-        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type != 'tag')
-        run: python scripts/check_apk_release.py --allow-known-unmapped
-      - name: Require source pin for release, tag or manual preflight
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
+      - name: Require APK identity and pinned Unity source metadata
         run: python scripts/check_apk_release.py

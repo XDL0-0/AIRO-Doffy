@@ -26,23 +26,36 @@
   },
   "source": {
     "repository": "XDL0-0/AIRO-DOFFY-APP",
-    "revision": null,
-    "status": "unavailable",
-    "reason": "No complete v0.9.7/BODY Unity project or matching source revision was found in the public refs and reachable history of either repository. Historical build notes refer to a local CodexBracelet project, which was not available for this audit. BODY component copies are not the complete build source.",
+    "revision": "811d0b4f9e9d6368a7fb2402943b41eb324c7167",
+    "project_path": "AIRO-Doffy",
+    "status": "pinned",
+    "relationship": "maintainer_published_post_release_snapshot",
+    "original_build_revision": null,
+    "reproducible_build_verified": false,
     "audited_date": "2026-10-07",
-    "last_public_revision": "994a672175af58fc4f14b92f2ca10b4595c8e0a9",
-    "last_public_tag": "v0.6.0",
-    "reported_local_project": "/home/yuyuan/UNITY_Project/CodexBracelet",
-    "partial_sources": "docs/body_visualization/quest/",
+    "evidence": "The published project README identifies v0.9.7/code18. The ARM64 Meta build entrypoint matches the APK package/version/code, and all three BODY component files match the copies in the original distribution commit byte for byte. This is a post-release source publication, not proof of the original build checkout or a bit-for-bit rebuild.",
     "apk_vcs_info": "generate_error_reason: NO_SUPPORTED_VCS_FOUND"
   },
   "build": {
     "unity_version": "6000.5.6f1",
     "unity_version_evidence": "APK assets/bin/Data/globalgamemanagers serialized-file header",
     "meta_xr_all_version": "205.0.0",
-    "meta_xr_version_status": "reported_unverified",
-    "meta_xr_version_evidence": "docs/teleop_refactor/README.md and unity-integration-validation.md report 205.0.0; no package lock tied to this APK is available.",
+    "meta_xr_version_status": "source_lock_verified",
+    "meta_xr_version_evidence": "AIRO-Doffy/Packages/manifest.json and Packages/packages-lock.json at source.revision pin com.meta.xr.sdk.all to 205.0.0; this verifies the published source lock, not an embedded lock in the historical APK.",
     "ovrplugin_version_string": "1.205.0",
-    "ovrplugin_version_evidence": "Version string observed in APK lib/arm64-v8a/libOVRPlugin.so; not a full Meta XR package-lock verification."
+    "ovrplugin_version_evidence": "Version string observed in APK lib/arm64-v8a/libOVRPlugin.so; not a full Meta XR package-lock verification.",
+    "entrypoint": "Doffy.Editor.TeleopBuild.BuildMetaUpdateArm64Only",
+    "script": "Assets/Teleop/Editor/TeleopBuild.cs",
+    "script_sha256": "4689f6ec958e184cb9705ad1f99e52ab4805ff3e5fbd26b37698e237ab777fa6",
+    "saved_project_settings": {
+      "package": "org.airolab.doffy.bracelet",
+      "version_name": "0.9.7",
+      "version_code": 16
+    },
+    "entrypoint_overrides": {
+      "package": "com.AIROLab.AIRODOFFY",
+      "version_code": 18,
+      "abi": "arm64-v8a"
+    }
   }
 }
