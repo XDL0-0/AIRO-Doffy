@@ -36,15 +36,15 @@ cd /path/to/AIRO-Doffy
 
 ## Quest 端
 
-本次修改对应 `/path/to/unity/CodexBracelet`：
+完整项目现已公开于 [AIRO-DOFFY-APP / AIRO-Doffy，固定 SHA `811d0b4`](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/811d0b4f9e9d6368a7fb2402943b41eb324c7167/AIRO-Doffy)。请打开该子目录；仓库根目录仍是历史项目。以下三份 BODY 源码与发布时保留的副本逐字节一致。该提交是发布后的源码快照，尚未证明原 APK 的逐字节可复现性，详见[发布关联审计](../../apk/RELEASE.md)。
 
 - `Assets/Teleop/UpperLimb/UpperLimbAkmManager.cs`：提供当前已采样身体状态的只读副本，复用原来的追踪所有者。
-- `Assets/Teleop/UpperLimb/BodyPoseTelemetrySender.cs`：场景加载后自动创建，默认关闭；在 Session 中开启发送后，以 25 Hz 向已配置 PC 地址的 UDP 8015 发送诊断数据。
+- `Assets/Teleop/UpperLimb/BodyPoseTelemetrySender.cs`：场景加载后自动创建，默认关闭；在 System Setting 中开启发送后，以 25 Hz 向已配置 PC 地址的 UDP 8015 发送诊断数据。
 - `Assets/Teleop/Protocol/BodyPoseWireFormat.cs`：BODY v1 JSON 序列化与固定 SDK 关节名称/顺序。
 
 源文件及 `.meta` 副本保存在 [quest](quest/) 目录。已有项目应使用上面的实际工程；副本用于查阅和移植，不能直接用完整 manager 覆盖另一版本的自定义修改。
 
-在 Quest 的 **Session** 页面设置并 Apply 这台 PC 的 IP，然后将 **Body data: OFF** 切换为 **Body data: ON**。每次启动应用默认关闭，关闭按钮立即停止 BODY 数据并关闭诊断 socket。该开关独立于 Start/Stop session、WRM、手柄和手部控制数据；**只查看人体姿态时无需按 Start session、开启 WRM 或完成机器人标定**。PC 的 BODY 默认监听所有本机网卡。需要身体追踪权限、佩戴头显并保持应用获得焦点。
+在 Quest 的 **Teleop Config → Connection & input** 中设置并 Apply 这台 PC 的 IP，然后在 **System Setting** 中将 **Body data: OFF** 切换为 **Body data: ON**。每次启动应用默认关闭，关闭按钮立即停止 BODY 数据并关闭诊断 socket。该开关独立于 Start/Stop Teleop、WRM、手柄和手部控制数据；**只查看人体姿态时无需按 Start Teleop、开启 WRM 或完成机器人标定**。PC 的 BODY 默认监听所有本机网卡。需要身体追踪权限、佩戴头显并保持应用获得焦点。
 
 使用仓库提供的 [v0.9.7/code18 Android ARM64 APK](../../apk/AIRO_Doffy_v0.9.7_arm64_code18.apk)，包名为 `com.AIROLab.AIRODOFFY`，包含 BODY 发送代码。可从仓库根目录执行 `adb install -r apk/AIRO_Doffy_v0.9.7_arm64_code18.apk` 安装。旧版自动发送 BODY 的行为已改为手动开关；更早版本没有 BODY 数据。该 APK 已通过签名验证及 Quest 3 安装/启动检查，头显界面、交互和真实人体姿态仍未验收；具体记录见 [validation.md](validation.md#097-发布-apk)。
 
@@ -68,7 +68,7 @@ cd /path/to/AIRO-Doffy
 
 ## PC 模块职责
 
-项目对外名称为 `doffy-teleop`，Python 模块名使用下划线 `doffy_teleop`。实现位于该包内。`teleop_body_visualizer.py` 只调用包入口，`doffy_teleop/body_visualization.py` 保留模块化前 BODY API 的兼容导出。
+项目对外名称为 **Airo-Doffy**，Python 模块名使用下划线 `doffy_teleop`。实现位于该包内。`teleop_body_visualizer.py` 只调用包入口，`doffy_teleop/body_visualization.py` 保留模块化前 BODY API 的兼容导出。
 
 | 模块 | 职责 |
 | --- | --- |

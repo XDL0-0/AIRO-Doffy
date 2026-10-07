@@ -1,4 +1,4 @@
-# DOFFY 遥操作重构
+# Airo-Doffy 遥操作重构
 
 Local paths and network addresses in this documentation are anonymized examples;
 see [local setup and validation paths](../release-hygiene.md) before running checks.
@@ -11,13 +11,13 @@ Unity 新工程：`/path/to/unity/Codex`。PC 工程：`/path/to/AIRO-Doffy`。
 
 [Classic 完整功能盘点](classic-feature-inventory.md) 区分了 21 项功能和 7 项运行时自动创建机制，以及当前场景与历史可选功能。[架构与通信契约](architecture.md) 说明两端的模块边界、端口与坐标约定。[逐项迁移验收](feature-parity.md) 标明已验证和仍待真机验收的范围。
 
-新空间工作台包含 Session、Cameras、Alignment、Upper limb、Display、Help 六页，底部固定会话、录制与重校准操作。数字键盘支持 PC 地址和相机端口；相机窗口可以移动、缩放、排列及关闭。新工作台支持 Meta ray/poke，保留原 rig 的手部和手柄能力。机器人反馈过期时会标出 STALE，并隐藏陈旧力箭头；该提示不等于机器人急停。
+当前空间工作台包含 Teleop Config、Camera、WRM Setting、System Setting、Exit APP 五页；Teleop Config 内包含 Connection & input 和 Alignment。主按钮为 Start/Stop Teleop，独立录制面板提供 Start recording、Stop recording 和 Undo episode → Confirm undo。数字键盘支持 PC 地址和相机端口；相机窗口可以移动、缩放、排列及关闭。新工作台支持 Meta ray/poke，保留原 rig 的手部和手柄能力。机器人反馈过期时会标出 STALE，并隐藏陈旧力箭头；该提示不等于机器人急停。
 
 布局预览：[连接页](workspace-session.svg)、[相机页](workspace-cameras.svg)。这些 SVG 是设计预览，**不是 Unity/Quest 运行截图**。真正的工作台由 `WorkspaceShell` 在进入 Play/运行场景时构建。
 
 ## PC 结构
 
-项目名称为 `doffy-teleop`，Python 模块名称使用下划线 `doffy_teleop`。
+项目名称为 **Airo-Doffy**，Python 模块名称使用下划线 `doffy_teleop`。
 
 - `doffy_teleop/config.py`、`doffy_teleop/utils.py`：中央配置、滤波、安全检查和通用辅助函数。
 - `doffy_teleop/protocol/`：Classic C/H/HB、录制、视频控制、JPEG 分片、信令信封。
@@ -35,6 +35,8 @@ Unity 新工程：`/path/to/unity/Codex`。PC 工程：`/path/to/AIRO-Doffy`。
 上传范围是 UR/RealMan 遥操作、WRM、BrainCo、Beaver、VR/摄像头、BODY 可视化、dataset tools 及相关测试、协议源码和文档。Seahorse、策略训练/推理/评估、Jev 与独立 experiments 留在本地研究工作树中，不属于此次上传。
 
 ## 验证与复现
+
+**公开源码更新（2026-10-07）**：完整 Unity 项目现位于 [固定提交 `811d0b4` 的 `AIRO-Doffy/` 子目录](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/811d0b4f9e9d6368a7fb2402943b41eb324c7167/AIRO-Doffy)，包含场景、`.meta`、构建脚本和 package lock。下方是历史本机验证命令，使用时应替换为实际 checkout 路径。code18 对应 `Doffy.Editor.TeleopBuild.BuildMetaUpdateArm64Only`，不是默认 code16 构建。发布后源码快照不等于已验证的旧 APK 逐字节重建，详见[发布关联审计](../../apk/RELEASE.md)。
 
 本次上传子集的 Python 验收结果：**433 项测试、12 项子测试通过，3 项跳过**。测试范围按保留的 teleop、BODY、dataset tools 及相关测试筛选，未向导入路径添加外部 simulation 目录。此结果与下方历史完整工作树回归记录分开，也不替代 Unity/Quest 或机器人实机验收。
 
@@ -65,9 +67,9 @@ python3 scripts/teleop_refactor/audit_unity_project.py
 
 ## Unity / Quest 验收入口
 
-使用 Unity **6000.5.6f1** 打开新工程，打开 `Assets/Scenes/Teleoperation.unity`，进入 Play 查看工作台。菜单 `Tools → DOFFY → Validate scene` 检查场景，`Build Quest APK` 构建 Android ARM64 / IL2CPP。
+使用 Unity **6000.5.6f1** 打开新工程，打开 `Assets/Scenes/Teleoperation.unity`，进入 Play 查看工作台。菜单 `Tools → DOFFY → Validate scene` 检查场景；`Build Meta ARM64-only update APK` 构建 v0.9.7/code18 Android ARM64 / IL2CPP 包。普通 `Build Quest APK` 使用不同包名和 code16。
 
-早期重构验证时，本机 Unity Editor 返回许可证缺失，且 ADB 未发现 Quest。当前发布的 [v0.9.7/code18 ARM64 APK](../../apk/AIRO_Doffy_v0.9.7_arm64_code18.apk) 已通过签名验证及 Quest 3 安装/启动检查，包含默认关闭、需在 Session 中启用的 BODY 发送代码；记录见 [BODY 验证](../body_visualization/validation.md#097-发布-apk)。Quest 头显实际界面、无线视频、射线/手部交互、真实 BODY 姿态及机器人实机验收仍未完成。源码/API 编译、本机传输与安装/启动检查不替代这些验收，未完成项不标记通过。
+早期重构验证时，本机 Unity Editor 返回许可证缺失，且 ADB 未发现 Quest。当前发布的 [v0.9.7/code18 ARM64 APK](../../apk/AIRO_Doffy_v0.9.7_arm64_code18.apk) 已通过签名验证及 Quest 3 安装/启动检查，包含默认关闭、需在 System Setting 中启用的 BODY 发送代码；记录见 [BODY 验证](../body_visualization/validation.md#097-发布-apk)。Quest 头显实际界面、无线视频、射线/手部交互、真实 BODY 姿态及机器人实机验收仍未完成。源码/API 编译、本机传输与安装/启动检查不替代这些验收，未完成项不标记通过。
 
 ## 备份与已有工作
 
