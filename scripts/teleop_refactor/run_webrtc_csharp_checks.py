@@ -45,7 +45,7 @@ from aiohttp import web, WSMsgType
 state = {"concurrent": 0, "connection": 0}
 unicode_message = json.dumps(
     {"type": "unicode", "session_id": "session-a",
-     "payload": {"text": "分片🙂"}}, ensure_ascii=False, separators=(",", ":")
+     "payload": {"text": "\u5206\u7247🙂"}}, ensure_ascii=False, separators=(",", ":")
 ).encode("utf-8")
 
 

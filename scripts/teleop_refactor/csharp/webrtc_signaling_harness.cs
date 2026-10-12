@@ -53,12 +53,12 @@ internal static class WebRtcSignalingHarness
         // time, so this verifies the production send gate instead of relying on ordering.
         Task[] sends = Enumerable.Range(0, 64).Select(index =>
             client.SendAsync("concurrent", "session-a",
-                "{\"index\":" + index + ",\"text\":\"并发🙂\"}"))
+                "{\"index\":" + index + ",\"text\":\"\u5e76\u53d1🙂\"}"))
             .ToArray();
         await Task.WhenAll(sends);
         VideoSignalingClient.Envelope received = await Wait(unicode.Task, "fragmented UTF-8 envelope");
         Check(received.SessionId == "session-a", "fragmented envelope session id mismatch");
-        Check(received.PayloadJson.Contains("分片🙂"), "fragmented UTF-8 payload was corrupted");
+        Check(received.PayloadJson.Contains("\u5206\u7247🙂"), "fragmented UTF-8 payload was corrupted");
 
         await client.SendAsync("close", "session-a", "{}");
         await Wait(disconnected.Task, "close disconnect event");

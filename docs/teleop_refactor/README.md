@@ -1,79 +1,79 @@
-# Airo-Doffy 遥操作重构
+# Airo-Doffy teleoperation refactor
 
 Local paths and network addresses in this documentation are anonymized examples;
 see [local setup and validation paths](../release-hygiene.md) before running checks.
 
-Unity 新工程：`/path/to/unity/Codex`。PC 工程：`/path/to/AIRO-Doffy`。
+New Unity project: `/path/to/unity/Codex`. PC project: `/path/to/AIRO-Doffy`.
 
-旧 Codex 已先归档再删除，新工程以 Classic 的 XR rig、有效场景和协议为基础重建。Classic 与 AIRO-DOFFY-v2 参考工程没有修改。Meta XR All-in-One 固定为官方 registry 核实的最新稳定版 **205.0.0**；Audio 85.0.0、Voice 85.0.1 是该版本指定的依赖，并非遗漏升级。
+The old Codex project was archived before deletion; the new project was rebuilt from Classic's XR rig, valid scene, and protocols. The Classic and AIRO-DOFFY-v2 reference projects were not modified. Meta XR All-in-One is pinned to **205.0.0**, the latest stable version verified in the official registry; Audio 85.0.0 and Voice 85.0.1 are dependencies specified by that version, rather than missed upgrades.
 
-## 功能与界面
+## Features and interface
 
-[Classic 完整功能盘点](classic-feature-inventory.md) 区分了 21 项功能和 7 项运行时自动创建机制，以及当前场景与历史可选功能。[架构与通信契约](architecture.md) 说明两端的模块边界、端口与坐标约定。[逐项迁移验收](feature-parity.md) 标明已验证和仍待真机验收的范围。
+The [complete Classic feature inventory](classic-feature-inventory.md) distinguishes 21 features and 7 runtime automatic creation mechanisms, as well as the current scene and historical optional features. [Architecture and communication contracts](architecture.md) describes module boundaries, ports, and coordinate conventions on both sides. [Migration acceptance by feature](feature-parity.md) identifies what has been verified and what still requires actual device acceptance checks.
 
-当前空间工作台包含 Teleop Config、Camera、WRM Setting、System Setting、Exit APP 五页；Teleop Config 内包含 Connection & input 和 Alignment。主按钮为 Start/Stop Teleop，独立录制面板提供 Start recording、Stop recording 和 Undo episode → Confirm undo。数字键盘支持 PC 地址和相机端口；相机窗口可以移动、缩放、排列及关闭。新工作台支持 Meta ray/poke，保留原 rig 的手部和手柄能力。机器人反馈过期时会标出 STALE，并隐藏陈旧力箭头；该提示不等于机器人急停。
+The current spatial workspace has five pages: Teleop Config, Camera, WRM Setting, System Setting, and Exit APP; Teleop Config contains Connection & input and Alignment. The main button is Start/Stop Teleop, and a separate recording panel provides Start recording, Stop recording, and Undo episode → Confirm undo. The numeric keypad supports PC addresses and camera ports; camera windows can be moved, resized, arranged, and closed. The new workspace supports Meta ray/poke and retains the original rig's hand and controller capabilities. When robot feedback becomes stale, it is marked STALE and stale force arrows are hidden; this indication is not a robot emergency stop.
 
-布局预览：[连接页](workspace-session.svg)、[相机页](workspace-cameras.svg)。这些 SVG 是设计预览，**不是 Unity/Quest 运行截图**。真正的工作台由 `WorkspaceShell` 在进入 Play/运行场景时构建。
+Layout previews: [Session page](workspace-session.svg), [Cameras page](workspace-cameras.svg). These SVGs are design previews, **not Unity/Quest runtime screenshots**. The actual workspace is built by `WorkspaceShell` when entering Play/running the scene.
 
-## PC 结构
+## PC structure
 
-项目名称为 **Airo-Doffy**，Python 模块名称使用下划线 `doffy_teleop`。
+The project name is **Airo-Doffy**; the Python module name uses an underscore: `doffy_teleop`.
 
-- `doffy_teleop/config.py`、`doffy_teleop/utils.py`：中央配置、滤波、安全检查和通用辅助函数。
-- `doffy_teleop/protocol/`：Classic C/H/HB、录制、视频控制、JPEG 分片、信令信封。
-- `doffy_teleop/media/`：相机帧、UDP 视频、WebRTC peer、WebSocket 信令及媒体编排。
-- `doffy_teleop/sensors/`：Beaver、串口/BLE MagTouch 与六维力滤波。
-- `doffy_teleop/control/`：输入映射、目标约束、CAN-FD 循环与远程 IK。
-- `doffy_teleop/robots/`：机器人后端、夹爪、BrainCo 手与 Classic 控制实现。
-- `doffy_teleop/recording/`：数据 schema、HDF5/LeRobot 录制服务、轨迹回放及重采集界面。
-- `doffy_teleop/runtime/`：Classic、RealMan、教学采集、重采集和 BODY 查看器的启动、线程生命周期和发布；本地 `seahorse.py` 不属于上传范围。
-- `doffy_teleop/visualization/`：力/触觉/相机/数据仪表板、BODY 绘图及显示配置。
-- `doffy_teleop/body_visualization.py`：BODY 查看器 API 的兼容导出。
+- `doffy_teleop/config.py`, `doffy_teleop/utils.py`: central configuration, filtering, safety checks, and general helpers.
+- `doffy_teleop/protocol/`: Classic C/H/HB, recording, video control, JPEG fragmentation, and signaling envelopes.
+- `doffy_teleop/media/`: camera frames, UDP video, WebRTC peers, WebSocket signaling, and media orchestration.
+- `doffy_teleop/sensors/`: Beaver, serial/BLE MagTouch, and six-axis force filtering.
+- `doffy_teleop/control/`: input mapping, target constraints, CAN-FD loops, and remote IK.
+- `doffy_teleop/robots/`: robot backends, grippers, BrainCo hands, and the Classic control implementation.
+- `doffy_teleop/recording/`: data schemas, HDF5/LeRobot recording services, trajectory replay, and the recollection interface.
+- `doffy_teleop/runtime/`: startup, thread lifecycles, and publishing for Classic, RealMan, teaching collection, recollection, and the BODY viewer; local `seahorse.py` is outside the upload scope.
+- `doffy_teleop/visualization/`: force/tactile/camera/data dashboards, BODY plotting, and display configuration.
+- `doffy_teleop/body_visualization.py`: compatibility exports for the BODY viewer API.
 
-公开根目录保留五个 CLI 启动器：`main.py`、`realman_teleop.py`、`realman_teachcollect.py`、`realman_recollect.py`、`teleop_body_visualizer.py`。这些命令和参数仍可使用；库实现使用 `doffy_teleop` 内的路径，旧根库 import 需要更新。`dataset_tool/` 保留数据集工具 CLI，回放与重采集 UI 实现在 `doffy_teleop/recording/`。目录职责、迁移映射和 `python -m` 命令见[模块布局说明](../module-layout.md)。遥操作运行默认参数、录制 schema、机器人约束及已有数据格式保持。
+The public root directory retains five CLI launchers: `main.py`, `realman_teleop.py`, `realman_teachcollect.py`, `realman_recollect.py`, and `teleop_body_visualizer.py`. These commands and arguments remain available; library implementations use paths within `doffy_teleop`, and old root-level library imports need updating. `dataset_tool/` retains dataset tool CLIs, while replay and recollection UI implementations reside in `doffy_teleop/recording/`. See the [module layout guide](../module-layout.md) for directory responsibilities, migration mappings, and `python -m` commands. Teleop runtime default arguments, recording schemas, robot constraints, and existing data formats are retained.
 
-上传范围是 UR/RealMan 遥操作、WRM、BrainCo、Beaver、VR/摄像头、BODY 可视化、dataset tools 及相关测试、协议源码和文档。Seahorse、策略训练/推理/评估、Jev 与独立 experiments 留在本地研究工作树中，不属于此次上传。
+The upload scope covers UR/RealMan teleoperation, WRM, BrainCo, Beaver, VR/cameras, BODY visualization, dataset tools, and related tests, protocol source, and documentation. Seahorse, policy training/inference/evaluation, Jev, and standalone experiments remain in the local research working tree and are outside this upload.
 
-## 验证与复现
+## Validation and reproduction
 
-**公开源码更新（2026-10-07）**：完整 Unity 项目现位于 [固定提交 `811d0b4` 的 `AIRO-Doffy/` 子目录](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/811d0b4f9e9d6368a7fb2402943b41eb324c7167/AIRO-Doffy)，包含场景、`.meta`、构建脚本和 package lock。下方是历史本机验证命令，使用时应替换为实际 checkout 路径。code18 对应 `Doffy.Editor.TeleopBuild.BuildMetaUpdateArm64Only`，不是默认 code16 构建。版本和构建说明见[发布说明](../../apk/RELEASE.md)。
+**Public source update (2026-10-07)**: the complete Unity project is now in the [`AIRO-Doffy/` subdirectory at pinned commit `811d0b4`](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/811d0b4f9e9d6368a7fb2402943b41eb324c7167/AIRO-Doffy), including scenes, `.meta` files, build scripts, and the package lock. The commands below are historical local validation commands; replace their paths with your actual checkout paths before use. code18 corresponds to `Doffy.Editor.TeleopBuild.BuildMetaUpdateArm64Only`, rather than the default code16 build. See the [release notes](../../apk/RELEASE.md) for version and build information.
 
-本次上传子集的 Python 验收结果：**433 项测试、12 项子测试通过，3 项跳过**。测试范围按保留的 teleop、BODY、dataset tools 及相关测试筛选，未向导入路径添加外部 simulation 目录。此结果与下方历史完整工作树回归记录分开，也不替代 Unity/Quest 或机器人实机验收。
+Python acceptance results for this uploaded subset: **433 tests and 12 subtests passed, 3 skipped**. Tests were selected for the retained teleop, BODY, dataset tools, and related tests; no external simulation directory was added to the import path. This result is separate from the historical full working-tree regression record below and does not replace Unity/Quest or robot hardware acceptance checks.
 
-以下是历史重构专项验证的复现命令。原始验证使用工作站已有依赖环境；当时 pytest 单独安装在 `/tmp/airo-teleop-qa`，未改变现有 conda 环境。
+The following commands reproduce the historical refactor-specific validation. The original validation used the workstation's existing dependency environment; pytest was installed separately in `/tmp/airo-teleop-qa` at the time, without changing the existing conda environment.
 
 ```bash
-# 生产 C# 协议、滤波及事件生命周期；SDK 事件用测试适配器触发。
+# Production C# protocols, filtering, and event lifecycles; SDK events use a test adapter.
 python3 scripts/teleop_refactor/run_csharp_protocol_checks.py --export-dir /tmp/doffy-csharp-checks
 
-# Core 状态、偏好持久化和 25 项异步会话时序检查。
+# Core state, preference persistence, and 25 asynchronous session timing checks.
 python3 scripts/teleop_refactor/run_csharp_session_checks.py
 
-# 双向实际 UDP：控制器数据、TCP 坐标和力。
+# Actual bidirectional UDP: controller data, TCP coordinates, and force.
 /tmp/airo-teleop-qa/bin/python scripts/teleop_refactor/csharp_interop.py
 
-# JPEG 乱序/丢包回环、生产 C# 接收器；显式指定才打开 RealSense。
+# JPEG out-of-order/packet-loss loopback, production C# receiver; RealSense opens only when explicitly requested.
 /tmp/airo-teleop-qa/bin/python scripts/teleop_refactor/media_loopback.py \
   --csharp --harness /tmp/doffy-csharp-checks/ProtocolHarness.exe --realsense --frames 3
 
-# 针对已有 Unity/Meta 缓存程序集的源代码/API 编译及静态引用检查。
+# Source/API compilation and static reference checks against existing Unity/Meta cached assemblies.
 python3 scripts/teleop_refactor/compile_unity_sources.py --include-editor
 python3 scripts/teleop_refactor/audit_unity_project.py
 ```
 
-历史完整工作树回归记录：698 项测试、95 项子测试通过，1 项既有策略配置/测试不一致失败（`ACTION_STEPS` 4 与预期 8）；该值在重构前快照中已存在。这份历史记录包含当前上传范围之外的本地研究测试，不能代替上方本次上传子集的验收结果。C# 专项包含 47 项协议/数学/生命周期、10 项追踪事件和 25 项异步会话检查，另通过 Core 设置/状态测试。
+Historical full working-tree regression record: 698 tests and 95 subtests passed, with 1 existing policy configuration/test mismatch failure (`ACTION_STEPS` 4 versus the expected 8); that value was already present in the pre-refactor snapshot. This historical record includes local research tests outside the current upload scope and cannot replace the acceptance results for this uploaded subset above. C# checks include 47 protocol/math/lifecycle, 10 tracking event, and 25 asynchronous session checks; Core settings/state tests also passed.
 
-证据分别见 [PC](pc-refactor-validation.md)、[媒体](media-validation.md)、[独立验收复核](acceptance-review.md) 和 [Unity 集成](unity-integration-validation.md)。
+See the evidence in [PC](pc-refactor-validation.md), [media](media-validation.md), [independent acceptance review](acceptance-review.md), and [Unity integration](unity-integration-validation.md).
 
-## Unity / Quest 验收入口
+## Unity / Quest acceptance entry point
 
-使用 Unity **6000.5.6f1** 打开新工程，打开 `Assets/Scenes/Teleoperation.unity`，进入 Play 查看工作台。菜单 `Tools → DOFFY → Validate scene` 检查场景；`Build Meta ARM64-only update APK` 构建 v0.9.7/code18 Android ARM64 / IL2CPP 包。普通 `Build Quest APK` 使用不同包名和 code16。
+Open the new project with Unity **6000.5.6f1**, open `Assets/Scenes/Teleoperation.unity`, and enter Play to view the workspace. The `Tools → DOFFY → Validate scene` menu checks the scene; `Build Meta ARM64-only update APK` builds a v0.9.7/code18 Android ARM64 / IL2CPP package. The regular `Build Quest APK` uses a different package name and code16.
 
-早期重构验证时，本机 Unity Editor 返回许可证缺失，且 ADB 未发现 Quest。当前发布的 [v0.9.7/code18 ARM64 APK](../../apk/AIRO_Doffy_v0.9.7_arm64_code18.apk) 已通过签名验证及 Quest 3 安装/启动检查，包含默认关闭、需在 System Setting 中启用的 BODY 发送代码；记录见 [BODY 验证](../body_visualization/validation.md#097-发布-apk)。Quest 头显实际界面、无线视频、射线/手部交互、真实 BODY 姿态及机器人实机验收仍未完成。源码/API 编译、本机传输与安装/启动检查不替代这些验收，未完成项不标记通过。
+During early refactor validation, the local Unity Editor reported a missing license and ADB detected no Quest. The currently released [v0.9.7/code18 ARM64 APK](../../apk/AIRO_Doffy_v0.9.7_arm64_code18.apk) has passed signature verification and Quest 3 installation/launch checks and includes BODY sending code that defaults to off and must be enabled in System Setting; see [BODY validation](../body_visualization/validation.md#097-release-apk). Acceptance checks for the actual Quest headset interface, wireless video, ray/hand interaction, real BODY poses, and robot hardware are still incomplete. Source/API compilation, local transport, and installation/launch checks do not replace these acceptance checks; incomplete items are not marked as passed.
 
-## 备份与已有工作
+## Backups and existing work
 
-- 旧 Codex：`/path/to/unity/.backups/codex-before-refactor-20260916.tar.gz`
-- PC 工作树源码/测试基线：`/path/to/unity/.backups/pc-teleop-baseline-20260916.tar.gz`
-- Classic 继承的失效资产清理：[明细](inherited-reference-cleanup.json)，原内容另行归档。
-- 重构前 git 状态保留在本机的 `pre-refactor-git-status.txt`，用于区别已有训练、评估、数据与论文改动，不随源码仓库上传。没有将这些既有修改回退或并入本次重构。
+- Old Codex: `/path/to/unity/.backups/codex-before-refactor-20260916.tar.gz`
+- PC working-tree source/test baseline: `/path/to/unity/.backups/pc-teleop-baseline-20260916.tar.gz`
+- Cleanup of invalid assets inherited from Classic: [details](inherited-reference-cleanup.json), with the original content archived separately.
+- The pre-refactor git status is retained locally in `pre-refactor-git-status.txt` to distinguish existing training, evaluation, data, and paper changes; it is not uploaded with the source repository. These existing changes were neither reverted nor incorporated into this refactor.

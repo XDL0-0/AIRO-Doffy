@@ -1,83 +1,83 @@
-# 验证记录
+# Validation record
 
 > Public copy: local paths, device identifiers and site addresses are anonymized; recorded test results and version information are retained.
 
-历史实现记录日期：2026-10-05；发布 APK 信息更新于 2026-10-06。下方保留各次实现和安装记录；最新发布 APK 见文末 **0.9.7 发布 APK**，BODY 追踪失效冻结的实现记录见 **0.9.6 追踪失效冻结**。未运行机器人 teleop。
+Historical implementation record date: 2026-10-05; release APK information updated on 2026-10-06. The implementation and installation records below are retained; see **0.9.7 release APK** at the end for the latest release APK and **0.9.6 freezing on tracking loss** for the BODY tracking-loss freezing implementation record. Robot teleop was not run.
 
-## 软件检查
+## Software checks
 
-- Python：`./.venv/bin/python -m pytest -q tests/test_body_visualization.py tests/test_teleop_body_visualizer.py`：**103 passed**。覆盖严格协议解析、本机真实 UDP、无效/缺失关节、断流、角度与投影、控件、可视化启动前失败、teleop 子进程监视与退出清理。
-- GUI：TkAgg 合成动画可打开，并通过退出回调关闭；生成的本地 `output/body_visualization/preview.png` 使用明确标注的合成数据，不随源码上传。已检查四个视图、底部角度和控件布局。
-- C# runtime：`scripts/teleop_refactor/compile_unity_sources.py --project /path/to/unity/CodexBracelet --reference /path/to/unity/CodexBracelet --output /tmp/codex-bracelet-body-compile`：**99 个 runtime 源文件编译通过**。
-- 协议：`docs/body_visualization/quest/check_body_wire_format.py`：**7 个严格 JSON 场景通过**，核对已安装 Meta SDK 的 70/84 个 joint 名称/ID、fr-FR 小数序列化、追踪失效、非有限数、有效零坐标，以及 8610–18601 字节的数据报大小。
-- 互操作：上述生产 C# 编码器输出的 **7 个数据报** 经真实 localhost UDP 传到生产 Python `BodyReceiver`，全部接受，拒绝数 0。
+- Python: `./.venv/bin/python -m pytest -q tests/test_body_visualization.py tests/test_teleop_body_visualizer.py`: **103 passed**. Covers strict protocol parsing, actual local UDP, invalid/missing joints, stream loss, angles and projection, controls, failures before visualization startup, teleop subprocess monitoring, and exit cleanup.
+- GUI: the TkAgg synthetic animation opens and closes through the exit callback; the generated local `output/body_visualization/preview.png` uses clearly labeled synthetic data and is not uploaded with the source. The four views, bottom angles, and control layout were inspected.
+- C# runtime: `scripts/teleop_refactor/compile_unity_sources.py --project /path/to/unity/CodexBracelet --reference /path/to/unity/CodexBracelet --output /tmp/codex-bracelet-body-compile`: **99 runtime source files compiled successfully**.
+- Protocol: `docs/body_visualization/quest/check_body_wire_format.py`: **7 strict JSON scenarios passed**, checking the installed Meta SDK's 70/84 joint names/IDs, fr-FR decimal serialization, tracking loss, non-finite numbers, valid zero coordinates, and datagram sizes of 8610–18601 bytes.
+- Interoperability: the **7 datagrams** output by the production C# encoder above were sent through actual localhost UDP to the production Python `BodyReceiver`; all were accepted, with 0 rejections.
 
-## Android 构建
+## Android build
 
-使用已有 `Doffy.Editor.TeleopBuild.BuildQuest` 完成 Unity Android ARM64 构建和场景检查，进程退出码 0。
+The existing `Doffy.Editor.TeleopBuild.BuildQuest` completed the Unity Android ARM64 build and scene checks with process exit code 0.
 
-- APK：`/path/to/unity/App_output/body-visualization/AIRO_Doffy_bracelet_body_visualization.apk`
-- 包名：`org.airolab.doffy.bracelet`，版本 `0.9.4` / versionCode `13`，沿用现有项目版本设置。
-- 大小：93,415,049 字节。
-- 日志：`/tmp/doffy-bracelet-body-visualization-build.log`，包含 `DOFFY Quest build succeeded`。
-- APK manifest 已确认 `com.oculus.permission.BODY_TRACKING` 和 `arm64-v8a`。
+- APK: `/path/to/unity/App_output/body-visualization/AIRO_Doffy_bracelet_body_visualization.apk`
+- Package name: `org.airolab.doffy.bracelet`, version `0.9.4` / versionCode `13`, retaining the existing project version settings.
+- Size: 93,415,049 bytes.
+- Log: `/tmp/doffy-bracelet-body-visualization-build.log`, containing `DOFFY Quest build succeeded`.
+- The APK manifest was confirmed to contain `com.oculus.permission.BODY_TRACKING` and `arm64-v8a`.
 
-安装到已连接的 Quest 后即可运行新发送器：
+Install on the connected Quest to run the new sender:
 
 ```bash
 adb install -r /path/to/unity/App_output/body-visualization/AIRO_Doffy_bracelet_body_visualization.apk
 ```
 
-## 尚需实际设备检查
+## Actual device checks still required
 
-佩戴 Quest、授予身体追踪权限、在连接界面设置本机 IP，启动 PC 的 `--visualization-only`。确认状态为 LIVE、接收频率接近 25 Hz，分别检查抬臂、屈肘、手指动作、转身和走动；失焦/摘下头显应显示 INVALID 或随后 STALE。只有实际收到腿部有效坐标后，才能验收全身姿态。机器人联动和实时 CAN-FD 时序尚未进行硬件验收。
+Wear the Quest, grant body tracking permission, set the local PC IP on the connection screen, and start the PC with `--visualization-only`. Confirm LIVE status and a receive rate near 25 Hz, and inspect arm raising, elbow bending, finger movement, turning, and walking individually; losing focus/removing the headset should show INVALID or subsequently STALE. Full-body poses can pass acceptance checks only after valid leg coordinates are actually received. Robot integration and real-time CAN-FD timing have not yet undergone hardware acceptance checks.
 
-## 0.9.5 修订：独立查看、大骨架与 Session 发送开关
+## 0.9.5 revision: independent viewing, large skeleton, and Session sending switch
 
-- 默认命令只运行身体 UDP 接收和 GUI，机器人 teleop 改为显式 `--teleop realman|classic`。实际 TkAgg 窗口检查确认无机器人模块导入、无 teleop 子进程启动。
-- 默认单个大骨架；实际鼠标事件验证四视图/单骨架、3D/Front/Side/Top、Zoom +/-、Fit pose。上半身按实际关节范围适配；二维投影也能显示关节名称和方向轴。
-- Python：上述两组测试 **113 passed**，包括新增显示按钮、投影标签/方向轴，以及默认禁止机器人启动的检查。
-- C#：**99 runtime + 4 Editor 文件**编译通过，7 个 BODY wire 检查通过。
-- Unity native Play：`WristUIValidation.RunPlaySmoke` 退出码 0；日志 `/tmp/doffy-bracelet-v095-body-play-smoke.log`。真实 Meta ray/poke 事件经 Canvas 路由到 Session 新按钮，检查默认 OFF 无 socket/无数据、ON 真实本机 UDP、OFF 立即关 socket 且不发 heartbeat、重新开启、页面关闭重开、组件停用和重建。机器人会话、WRM、标定和追踪模式保持原状态。此 headless 检查仍有原有缺失 Meta native 库日志，不能替代头显中的物理交互验收。
-- Android ARM64：Unity 构建退出码 0，日志 `/tmp/doffy-bracelet-v095-body-build.log`。
-- 当次 APK：`/path/to/unity/App_output/body-visualization-v0.9.5/AIRO_Doffy_bracelet_body_visualization.apk`，版本 **0.9.5 / code 14**，93,413,329 字节。
-- 已通过 `adb install -r` 安装到 Quest 3 `QUEST_SERIAL_REDACTED`，返回 Success；设备查询确认 0.9.5/code14，BODY_TRACKING 权限 granted=true。
-- 应用冷启动 `am start -W` 返回 Status ok，进程仍运行；所检查的启动日志没有 BODY sender 的 NullReference/MissingReference 或 fatal 异常。
+- The default command runs only body UDP reception and the GUI; robot teleop requires explicit `--teleop realman|classic`. Actual TkAgg window checks confirmed no robot module imports and no teleop subprocess launch.
+- A single large skeleton is the default; actual mouse events verified four-view/single-skeleton, 3D/Front/Side/Top, Zoom +/-, and Fit pose controls. The upper body fits the actual joint extent; 2D projections also display joint names and orientation axes.
+- Python: the two test groups above reported **113 passed**, including new display buttons, projection labels/orientation axes, and checks that robot startup is disabled by default.
+- C#: **99 runtime + 4 Editor files** compiled successfully, and 7 BODY wire checks passed.
+- Unity native Play: `WristUIValidation.RunPlaySmoke` exited with code 0; log: `/tmp/doffy-bracelet-v095-body-play-smoke.log`. Actual Meta ray/poke events were routed through Canvas to the new Session button, checking default OFF with no socket/data, ON with actual local UDP, OFF immediately closing the socket with no heartbeat, re-enabling, closing/reopening the page, disabling the component, and rebuilding it. Robot session, WRM, calibration, and tracking mode retained their original states. This headless check still contains the existing logs about missing Meta native libraries and cannot replace physical interaction acceptance checks in the headset.
+- Android ARM64: the Unity build exited with code 0; log: `/tmp/doffy-bracelet-v095-body-build.log`.
+- APK from that build: `/path/to/unity/App_output/body-visualization-v0.9.5/AIRO_Doffy_bracelet_body_visualization.apk`, version **0.9.5 / code 14**, 93,413,329 bytes.
+- Installed on Quest 3 `QUEST_SERIAL_REDACTED` using `adb install -r`, which returned Success; the device query confirmed 0.9.5/code14 and BODY_TRACKING permission granted=true.
+- Cold application launch with `am start -W` returned Status ok, and the process remained running; the inspected startup logs contained no BODY sender NullReference/MissingReference or fatal exceptions.
 
-使用时先在头显 Session 中设置并 Apply 本机 IP，再点击 **Body data: OFF → ON**。只查看姿态不需要 Start session。关闭 BODY 开关后，PC 会在默认 0.5 s 内显示 STALE。真实人体姿态和佩戴头显时的按钮触感仍需实际检查。
+To use it, first set and Apply the local PC IP in the headset's Session page, then click **Body data: OFF → ON**. Viewing poses alone does not require Start session. After the BODY switch is turned off, the PC displays STALE within the default 0.5 s. Real body poses and the tactile feel of the button while wearing the headset still require actual checks.
 
-## PC 模块化整理
+## PC modularization
 
-- 实现按职责移入当前 `doffy_teleop` 的 `protocol`、`media`、`visualization` 和 `runtime`，详见 [模块职责](README.md#pc-模块职责)。根目录 `teleop_body_visualizer.py` 为 8 行入口；原 `doffy_teleop.body_visualization` 为 23 行兼容导出。原根目录命令及默认独立查看行为保持一致。
-- BODY、启动生命周期、架构边界及原媒体/协议/兼容导入测试：**140 passed, 1 skipped**。跳过的是现有 Unity JPEG C# 回环测试，缺少 `/tmp/teleop-protocol-tests.exe` 测试程序。
-- 新增独立导入测试：**2 passed**。`python -S` 下 BODY 解析/接收模块不打开 socket，不加载 NumPy、Matplotlib、相机、WebRTC 或机器人依赖；原协议/媒体公开导出保持可用。另在完整 teleop 环境中确认 **27 个实际公开导出**均指向原定义。
-- 根脚本从其他目录运行和包入口的 `--help` 均在 `python -S` 下通过。启动测试直接验证迁移后的实现模块及原 teleop 脚本路径。
-- 实际 TkAgg 独立窗口启动/关闭检查通过：没有 teleop 子进程和机器人/相机/WebRTC 模块导入，窗口和 BODY socket 正常清理。根入口成功生成 DEMO PNG 预览。
+- The implementation was moved by responsibility into `protocol`, `media`, `visualization`, and `runtime` in the current `doffy_teleop` package; see [module responsibilities](README.md#pc-module-responsibilities). The root-level `teleop_body_visualizer.py` is an 8-line entry point; the original `doffy_teleop.body_visualization` is a 23-line compatibility export module. The original root-level command and default independent viewing behavior remain unchanged.
+- BODY, startup lifecycle, architecture boundaries, and original media/protocol/compatibility import tests: **140 passed, 1 skipped**. The skipped test is the existing Unity JPEG C# loopback test, because the `/tmp/teleop-protocol-tests.exe` test program was missing.
+- New independent import tests: **2 passed**. Under `python -S`, BODY parsing/reception modules do not open sockets or load NumPy, Matplotlib, camera, WebRTC, or robot dependencies; original public protocol/media exports remain available. All **27 actual public exports** were also confirmed to point to their original definitions in the complete teleop environment.
+- Running the root script from another directory and `--help` for the package entry point both passed under `python -S`. Startup tests directly verified the migrated implementation modules and original teleop script paths.
+- Actual TkAgg independent window startup/close checks passed: no teleop subprocess or robot/camera/WebRTC module imports, and the window and BODY socket were cleaned up normally. The root entry point successfully generated a DEMO PNG preview.
 
-## 0.9.6 追踪失效冻结
+## 0.9.6 freezing on tracking loss
 
-- SDK 坐标有效不代表仍在主动追踪。APP 的 BODY 报文新增 `position_tracked` / `orientation_tracked`，保留实际 SDK 标记；BODY 显示质量采用 Meta `OVRBody` 的门槛 `confidence > 0.5`。失效时继续发送失效通知和诊断 confidence；WRM 采样、标定和机器人控制逻辑未修改。
-- PC 的 `visualization/body_pose.py` 缓存显示姿态。追踪失效、低置信度、空位置和断流时保留历史；此前已追踪的手臂关键关节转为 untracked 时冻结整条手臂。恢复后自动更新，界面分别显示新报文诊断与 `HOLDING` / `STALE`。最初无有效姿态时保持空白；不同发送端或 joint_set 不继承历史。
-- Python 六组测试 **170 passed**：BODY、tracked 字段、冻结/恢复、启动生命周期、独立导入及模块边界。包含低置信度下垂坐标、连续失效、已追踪手臂回退、缺失关节、投影视图/缩放、恢复，以及全身推测腿部继续更新的场景。
-- C# **99 runtime + 4 Editor** 编译通过；wire 检查 **8 场景**通过，最大数据报 22,885 字节；生产 sender 的纯 C# 适配测试 **13 场景**通过，覆盖置信度边界、失焦/暂停、恢复、异常数值、有效但 untracked 的 SDK 数据及 WRM 诊断。
-- 上述生产 C# sender 输出的 **13 个数据报**经真实 localhost UDP 传给 Python `BodyReceiver`，全部接受、拒绝 0；再交给生产 `BodyPoseHold` 验证冻结与恢复。
-- 实际 TkAgg 窗口和 localhost UDP 联合检查通过：先接收有效姿态，再接收低置信度下垂回退，窗口坐标保持一致且显示 `HOLDING`；恢复高质量数据后回到 `LIVE` 并更新坐标，退出正常释放资源。
-- 本地冻结预览 `output/body_visualization/tracking_hold_preview.png` 明确标记 DEMO，不随源码上传；已检查冻结骨架、状态、原始 confidence 和帧龄显示。
-- Android ARM64 构建退出码 0；日志 `/tmp/doffy-bracelet-v096-body-hold-build.log` 包含 `DOFFY Quest build succeeded`。
-- APK：`/path/to/unity/App_output/body-visualization-v0.9.6/AIRO_Doffy_bracelet_body_visualization.apk`，包名 `org.airolab.doffy.bracelet`，**0.9.6 / code 15**，93,417,833 字节，BODY_TRACKING 权限声明存在。
-- 安装尚未执行：构建后 `adb devices` 未识别到连接的 Quest。上一条已确认的设备安装记录为 0.9.5/code14；0.9.6 APK 已就绪，需连接设备后安装并实际观察 SDK 的手臂追踪标记。
+- Valid SDK coordinates do not mean active tracking continues. The APP's BODY messages add `position_tracked` / `orientation_tracked`, retaining the actual SDK flags; BODY display quality uses Meta `OVRBody`'s threshold, `confidence > 0.5`. Invalidity notifications and diagnostic confidence continue to be sent on invalid tracking; WRM sampling, calibration, and robot control logic were not changed.
+- The PC's `visualization/body_pose.py` caches the displayed pose. It retains history on tracking loss, low confidence, empty positions, and stream loss; when previously tracked key arm joints become untracked, it freezes the entire arm. Updates resume automatically on recovery, and the interface separately shows new-message diagnostics and `HOLDING` / `STALE`. The view stays blank until the first valid pose; different senders or joint_set values do not inherit history.
+- Six Python test groups reported **170 passed**: BODY, tracked fields, freezing/recovery, startup lifecycle, independent imports, and module boundaries. Scenarios include low-confidence drooping coordinates, repeated invalidity, fallback of previously tracked arms, missing joints, projection views/zoom, recovery, and continued updates of inferred full-body legs.
+- C#: **99 runtime + 4 Editor** files compiled successfully; **8 scenarios** passed the wire checks, with a maximum datagram size of 22,885 bytes; **13 scenarios** passed the production sender's pure C# adapter tests, covering confidence boundaries, focus loss/pause, recovery, abnormal numeric values, valid but untracked SDK data, and WRM diagnostics.
+- The **13 datagrams** output by the production C# sender above were passed through actual localhost UDP to Python `BodyReceiver`; all were accepted, with 0 rejections, then passed to the production `BodyPoseHold` to verify freezing and recovery.
+- Combined actual TkAgg window and localhost UDP checks passed: after a valid pose was received, a low-confidence drooping fallback was received; window coordinates remained unchanged and `HOLDING` was displayed. After high-quality data returned, the window returned to `LIVE` and updated coordinates; resources were released normally on exit.
+- The local freezing preview `output/body_visualization/tracking_hold_preview.png` is clearly marked DEMO and is not uploaded with the source; the frozen skeleton, status, raw confidence, and frame-age displays were inspected.
+- The Android ARM64 build exited with code 0; log `/tmp/doffy-bracelet-v096-body-hold-build.log` contains `DOFFY Quest build succeeded`.
+- APK: `/path/to/unity/App_output/body-visualization-v0.9.6/AIRO_Doffy_bracelet_body_visualization.apk`, package name `org.airolab.doffy.bracelet`, **0.9.6 / code 15**, 93,417,833 bytes, with the BODY_TRACKING permission declaration present.
+- Installation was not performed: after the build, `adb devices` did not detect a connected Quest. The last confirmed device installation record is 0.9.5/code14; the 0.9.6 APK is ready and requires connecting the device, installing it, and actually observing the SDK's arm tracking flags.
 
-## 0.9.7 发布 APK
+## 0.9.7 release APK
 
-> 发布版本与 Unity 项目入口见[发布说明](../../apk/RELEASE.md)。以下为历史设备检查记录，本次文档整理未重新运行。
+> See the [release notes](../../apk/RELEASE.md) for release versions and the Unity project entry point. The following are historical device check records; these checks were not rerun during this documentation cleanup.
 
-- 发布文件：[AIRO_Doffy_v0.9.7_arm64_code18.apk](../../apk/AIRO_Doffy_v0.9.7_arm64_code18.apk)，Android ARM64，版本 **0.9.7 / code 18**，包名 `com.AIROLab.AIRODOFFY`。
-- 大小：92,549,501 字节。机器可读信息见 [APK manifest](../../apk/manifest.json)。
-- 包含 BODY 发送代码，签名验证通过，Quest 3 安装及应用启动成功。
-- 每次启动 BODY 发送默认 **OFF**。在 **Teleop Config → Connection & input** 设置并 Apply PC 地址，再在 **System Setting** 切换 **Body data: OFF → ON**；独立查看人体姿态无需 Start Teleop。
-- 头显实际界面、交互和真实 BODY 姿态仍未验收。签名、安装和启动成功不能替代这些检查，也不能替代机器人联动及 CAN-FD 时序验收。
+- Release file: [AIRO_Doffy_v0.9.7_arm64_code18.apk](../../apk/AIRO_Doffy_v0.9.7_arm64_code18.apk), Android ARM64, version **0.9.7 / code 18**, package name `com.AIROLab.AIRODOFFY`.
+- Size: 92,549,501 bytes. See the [APK manifest](../../apk/manifest.json) for machine-readable information.
+- Includes BODY sending code, passed signature verification, and installed and launched successfully on Quest 3.
+- BODY sending defaults to **OFF** on each launch. Set and Apply the PC address in **Teleop Config → Connection & input**, then switch **Body data: OFF → ON** in **System Setting**; independent body pose viewing does not require Start Teleop.
+- The actual headset interface, interaction, and real BODY poses have not yet passed acceptance checks. Successful signature verification, installation, and launch cannot replace these checks or robot integration and CAN-FD timing acceptance checks.
 
-从仓库根目录安装：
+Install from the repository root:
 
 ```bash
 adb install -r apk/AIRO_Doffy_v0.9.7_arm64_code18.apk

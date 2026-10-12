@@ -1,91 +1,91 @@
-# Meta 人体姿态可视化
+# Meta body pose visualization
 
 Local paths and network addresses in this documentation are anonymized examples;
 see [local setup and validation paths](../release-hygiene.md) before running checks.
 
-`teleop_body_visualizer.py` 默认只打开人体骨架窗口，**不连接 RealMan、不启动机器人或相机，也不等待 teleop 手柄数据**。窗口显示 Meta 实际输出的身体关节，帮助检查肩、肘、腕、手指、躯干，以及全身模式下的腿部姿态。默认显示单个放大的 3D 骨架，可切换正面、侧面、俯视和四视图。
+`teleop_body_visualizer.py` opens only the body skeleton window by default. It **does not connect to RealMan, start robots or cameras, or wait for teleop controller data**. The window displays the body joints actually output by Meta to help inspect shoulder, elbow, wrist, finger, and torso poses, as well as leg poses in full-body mode. The default view is a single enlarged 3D skeleton, with front, side, top, and four-view options.
 
-## 启动
+## Launch
 
-推荐使用现有 teleop 环境。以下命令可以从任意目录执行：
+The existing teleop environment is recommended. Run these commands from the repository root.
 
 ```bash
-# 只检查 Quest 人体数据，不需要 RealMan、相机或机器人会话
+# Inspect Quest body data only; no RealMan, cameras, or robot session is required
 ./.venv/bin/python teleop_body_visualizer.py
 
-# 需要同时运行 RealMan teleop 时才显式添加此参数
+# Add this option explicitly only when running RealMan teleop at the same time
 ./.venv/bin/python teleop_body_visualizer.py --teleop realman
 
-# 合成姿态演示，不需要 Quest 或机器人
+# Synthetic pose demo; no Quest or robot is required
 ./.venv/bin/python teleop_body_visualizer.py --demo
 
-# 使用原 main.py teleop 入口
+# Use the original main.py teleop entry point
 ./.venv/bin/python teleop_body_visualizer.py --teleop classic
 ```
 
-根目录命令保持不变，也可从仓库目录使用包入口（参数相同）：
+The root-level command remains unchanged. The package entry point can also be used from the repository directory with the same arguments:
 
 ```bash
 cd /path/to/AIRO-Doffy
 ./.venv/bin/python -m doffy_teleop.runtime.body_visualizer
 ```
 
-可选参数：`--bind-ip 0.0.0.0`、`--body-port 8015`、`--hz 30`、`--stale-after 0.5`。修改端口时也要修改 Quest `BodyPoseTelemetrySender.destinationPort`。`--save-preview /absolute/path/preview.png` 输出明确标记 DEMO 的合成姿态 PNG，不启动机器人、不监听 UDP。
+Optional arguments: `--bind-ip 0.0.0.0`, `--body-port 8015`, `--hz 30`, and `--stale-after 0.5`. When changing the port, also update Quest `BodyPoseTelemetrySender.destinationPort`. `--save-preview /absolute/path/preview.png` outputs a synthetic pose PNG clearly marked DEMO, without starting a robot or listening for UDP.
 
-`--visualization-only` 仍可使用，与默认行为相同。只有指定 `--teleop realman` 或 `--teleop classic` 时，才会在可视化预检查完成后启动 teleop 子进程，沿用同一 Python 解释器和仓库目录。此模式下，关闭人体窗口或按 Ctrl-C 会向 teleop 发送 SIGINT，给现有运行时清理相机、机器人连接和录制的时间；teleop 提前退出也会关闭人体窗口并返回对应退出码。
+`--visualization-only` remains available and has the same behavior as the default. Only when `--teleop realman` or `--teleop classic` is specified does the visualizer start a teleop subprocess after visualization prechecks, using the same Python interpreter and repository directory. In this mode, closing the body window or pressing Ctrl-C sends SIGINT to teleop, giving the existing runtime time to clean up cameras, robot connections, and recording; if teleop exits early, the body window also closes and returns the corresponding exit code.
 
-## Quest 端
+## Quest side
 
-Unity 项目位于 [AIRO-DOFFY-APP / AIRO-Doffy](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/811d0b4f9e9d6368a7fb2402943b41eb324c7167/AIRO-Doffy)。请打开该子目录；仓库根目录是历史项目。版本和构建说明见[发布说明](../../apk/RELEASE.md)。
+The Unity project is in [AIRO-DOFFY-APP / AIRO-Doffy](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/811d0b4f9e9d6368a7fb2402943b41eb324c7167/AIRO-Doffy). Open that subdirectory; the repository root contains the historical project. See the [release notes](../../apk/RELEASE.md) for version and build information.
 
-- `Assets/Teleop/UpperLimb/UpperLimbAkmManager.cs`：提供当前已采样身体状态的只读副本，复用原来的追踪所有者。
-- `Assets/Teleop/UpperLimb/BodyPoseTelemetrySender.cs`：场景加载后自动创建，默认关闭；在 System Setting 中开启发送后，以 25 Hz 向已配置 PC 地址的 UDP 8015 发送诊断数据。
-- `Assets/Teleop/Protocol/BodyPoseWireFormat.cs`：BODY v1 JSON 序列化与固定 SDK 关节名称/顺序。
+- `Assets/Teleop/UpperLimb/UpperLimbAkmManager.cs`: provides a read-only copy of the currently sampled body state, reusing the existing tracking owner.
+- `Assets/Teleop/UpperLimb/BodyPoseTelemetrySender.cs`: created automatically after the scene loads and disabled by default; when sending is enabled in System Setting, it sends diagnostic data at 25 Hz to UDP 8015 at the configured PC address.
+- `Assets/Teleop/Protocol/BodyPoseWireFormat.cs`: BODY v1 JSON serialization and fixed SDK joint names/order.
 
-源文件及 `.meta` 副本保存在 [quest](quest/) 目录。已有项目应使用上面的实际工程；副本用于查阅和移植，不能直接用完整 manager 覆盖另一版本的自定义修改。
+Copies of the source files and their `.meta` files are stored in the [quest](quest/) directory. Existing projects should use the actual project above; the copies are for reference and porting, and the complete manager must not be used to overwrite custom changes in another version.
 
-在 Quest 的 **Teleop Config → Connection & input** 中设置并 Apply 这台 PC 的 IP，然后在 **System Setting** 中将 **Body data: OFF** 切换为 **Body data: ON**。每次启动应用默认关闭，关闭按钮立即停止 BODY 数据并关闭诊断 socket。该开关独立于 Start/Stop Teleop、WRM、手柄和手部控制数据；**只查看人体姿态时无需按 Start Teleop、开启 WRM 或完成机器人标定**。PC 的 BODY 默认监听所有本机网卡。需要身体追踪权限、佩戴头显并保持应用获得焦点。
+On the Quest, set this PC's IP in **Teleop Config → Connection & input** and Apply it, then switch **Body data: OFF** to **Body data: ON** in **System Setting**. Sending defaults to off on every application launch; turning it off immediately stops BODY data and closes the diagnostic socket. This switch is independent of Start/Stop Teleop, WRM, and controller and hand control data; **viewing body poses alone does not require pressing Start Teleop, enabling WRM, or completing robot calibration**. By default, the PC BODY receiver listens on all local network interfaces. Body tracking permission is required, and the headset must be worn with the application in focus.
 
-使用仓库提供的 [v0.9.7/code18 Android ARM64 APK](../../apk/AIRO_Doffy_v0.9.7_arm64_code18.apk)，包名为 `com.AIROLab.AIRODOFFY`，包含 BODY 发送代码。可从仓库根目录执行 `adb install -r apk/AIRO_Doffy_v0.9.7_arm64_code18.apk` 安装。旧版自动发送 BODY 的行为已改为手动开关；更早版本没有 BODY 数据。该 APK 已通过签名验证及 Quest 3 安装/启动检查，头显界面、交互和真实人体姿态仍未验收；具体记录见 [validation.md](validation.md#097-发布-apk)。
+Use the repository-provided [v0.9.7/code18 Android ARM64 APK](../../apk/AIRO_Doffy_v0.9.7_arm64_code18.apk), with package name `com.AIROLab.AIRODOFFY`, which includes BODY sending code. Install it from the repository root with `adb install -r apk/AIRO_Doffy_v0.9.7_arm64_code18.apk`. The previous automatic BODY sending behavior has been replaced by a manual switch; earlier versions have no BODY data. This APK has passed signature verification and Quest 3 installation/launch checks. The headset interface, interaction, and real body poses have not yet passed acceptance checks; see [validation.md](validation.md#097-release-apk) for the record.
 
-当前默认是 Meta `UpperBody`，包含 **70 个身体/手部关节**，不含腿部。窗口标记 `UPPER BODY · legs unavailable`，不会根据肘部进度、手柄位置或模板补出腿部。需要腿部时，在 Unity 的 `UpperLimbAkmManager` 上于追踪启动前启用 `requestFullBodyTracking`，并按平台要求配置全身追踪、重建 APK。支持时发送 `FullBody` 的 **84 个关节**；启动请求不支持时回退 UpperBody。运行中改变该字段不会重启追踪。
+The current default is Meta `UpperBody`, containing **70 body/hand joints** and no legs. The window is labeled `UPPER BODY · legs unavailable`; it does not infer legs from elbow progress, controller positions, or a template. To include legs, enable `requestFullBodyTracking` on Unity's `UpperLimbAkmManager` before tracking starts, configure full-body tracking as required by the platform, and rebuild the APK. When supported, it sends **84 joints** in `FullBody` mode; unsupported startup requests fall back to UpperBody. Changing the field at runtime does not restart tracking.
 
-身体位置使用 Unity world 坐标，与原 WRM 肩肘位置一致：X 向右、Y 向上、Z 向前，单位米。旋转是 XYZW 四元数。现有控制用的手部流可能经过 teleop 参考系变换，不能直接与这个 world 坐标骨架叠加。人体窗口的手指来自同一 BODY 帧，因此与躯干使用相同坐标。
+Body positions use Unity world coordinates, consistent with the original WRM shoulder/elbow positions: X right, Y up, Z forward, in meters. Rotations are XYZW quaternions. The hand stream used for existing controls may have undergone a teleop reference-frame transformation and cannot be directly overlaid with this world-coordinate skeleton. Fingers in the body window come from the same BODY frame and therefore share the torso's coordinate system.
 
-## 查看数据
+## Viewing data
 
-- 左侧身体为青色，右侧为橙色。默认显示一个大骨架，3D 图可拖动旋转。
-- `3D` / `Front` / `Side` / `Top` 按钮选择单个放大视图；`Four views` / `Single skeleton` 在四视图和单骨架之间切换。
-- `Zoom +` / `Zoom -` 放大缩小；`Fit pose` 恢复自动适配和跟随。上半身会按实际范围适配，不再固定占用完整身体的视野。
-- `Finger joints` 控制手指显示；`Joint names` 标记主要关节；`Joint axes (XYZ)` 显示有效四元数对应的红 X、绿 Y、蓝 Z 轴；`Follow hips` 让视窗跟随人体。
-- 顶部显示 frame ID、接收频率、PC 接收后的帧龄、有效关节数、数据源、丢弃的错误包数和 SDK confidence。
-- `LIVE` 为可用的新姿态。追踪失效、置信度不高于 0.5、无有效位置或断流时，保持最后一次有效姿态，显示 `HOLDING` 或 `STALE` 并将骨架变淡；恢复有效追踪后自动更新。尚未收到过有效姿态时保持空白。
-- 新版 APP 区分 SDK 的 `valid` 与 `tracked`：坐标有效也可能是失去追踪后的推测值。此前主动追踪过的肩臂/腕关节变为 untracked 时，冻结该侧整条手臂；个别无效或缺失关节保留历史位置。没有主动追踪历史的 SDK 推测关节仍可显示，例如全身模型的腿部。切换发送端或上半身/全身模式会清除历史，避免继承其他来源的姿态。
-- 顶部诊断仍显示当前收到的 frame、confidence、有效关节数；冻结时另外显示保持的关节数和有效姿态帧龄。角度从正在显示的姿态计算，冻结的姿态不会被当成 `LIVE`。原点坐标不会被误当成追踪失败。
-- 抬臂角相对于世界竖直向下方向，下垂 0°、水平 90°。肘/膝显示内角，伸直 180°，这些是从关节位置计算的几何角度。底部同时显示该 BODY 帧对应的 WRM alpha 和标定状态。
+- The left side of the body is cyan, and the right side is orange. A single large skeleton is shown by default; the 3D plot can be dragged to rotate it.
+- The `3D` / `Front` / `Side` / `Top` buttons select a single enlarged view; `Four views` / `Single skeleton` switches between four views and a single skeleton.
+- `Zoom +` / `Zoom -` zooms in and out; `Fit pose` restores automatic fitting and following. The upper body is fitted to its actual extent instead of occupying a fixed full-body field of view.
+- `Finger joints` controls finger visibility; `Joint names` labels major joints; `Joint axes (XYZ)` shows the red X, green Y, and blue Z axes corresponding to valid quaternions; `Follow hips` makes the viewport follow the body.
+- The top displays the frame ID, receive rate, frame age since PC reception, valid joint count, data source, discarded invalid packet count, and SDK confidence.
+- `LIVE` indicates a usable fresh pose. When tracking becomes invalid, confidence is at or below 0.5, no valid positions are available, or the stream stops, the last valid pose is retained, `HOLDING` or `STALE` is displayed, and the skeleton fades; updates resume automatically when valid tracking returns. The view stays blank until a valid pose has been received.
+- The newer APP distinguishes SDK `valid` from `tracked`: valid coordinates can be inferred values after tracking has been lost. When previously actively tracked shoulder/arm/wrist joints become untracked, the entire arm on that side freezes; individual invalid or missing joints retain their historical positions. SDK-inferred joints with no active tracking history can still be displayed, such as legs in a full-body model. Changing sender or upper-body/full-body mode clears history to avoid inheriting poses from another source.
+- The top diagnostics still show the currently received frame, confidence, and valid joint count; while frozen, they additionally show the number of held joints and the age of the valid pose. Angles are calculated from the displayed pose, and a frozen pose is not treated as `LIVE`. Coordinates at the origin are not mistaken for tracking failure.
+- Arm elevation is measured relative to the world vertical downward direction: 0° when hanging down and 90° when horizontal. Elbows/knees show the interior angle, with 180° when straight; these are geometric angles calculated from joint positions. The bottom also shows the WRM alpha and calibration status associated with that BODY frame.
 
-独立诊断端口不会与控制器/手部 UDP 8001 或 WRM/control UDP 8005 争抢数据。仅显式启用 teleop 时，人体渲染与 robot teleop 分属两个进程。接收频率由实际数据决定，`--hz` 仅控制窗口刷新频率。
+The separate diagnostic port does not compete for data with controller/hand UDP 8001 or WRM/control UDP 8005. Only when teleop is explicitly enabled do body rendering and robot teleop run in separate processes. The receive rate is determined by actual data; `--hz` controls only the window refresh rate.
 
-## PC 模块职责
+## PC module responsibilities
 
-项目对外名称为 **Airo-Doffy**，Python 模块名使用下划线 `doffy_teleop`。实现位于该包内。`teleop_body_visualizer.py` 只调用包入口，`doffy_teleop/body_visualization.py` 保留模块化前 BODY API 的兼容导出。
+The project's public name is **Airo-Doffy**, while the Python module name uses an underscore: `doffy_teleop`. The implementation resides in that package. `teleop_body_visualizer.py` only calls the package entry point; `doffy_teleop/body_visualization.py` retains compatibility exports for the BODY API from before modularization.
 
-| 模块 | 职责 |
+| Module | Responsibility |
 | --- | --- |
-| `protocol/body.py` | BODY v1 数据结构、关节名称/ID 和严格解析 |
-| `media/body.py` | 独立 BODY UDP 接收、最新帧和接收统计 |
-| `visualization/body_geometry.py` | 骨架连线、坐标投影和关节角度 |
-| `visualization/body.py` | `BodyDashboard`、Matplotlib 绘制和窗口控件 |
-| `visualization/body_demo.py` | 合成 BODY 演示帧 |
-| `visualization/body_pose.py` | 显示姿态缓存、追踪失效冻结与恢复 |
-| `runtime/body_viewer.py` | 窗口刷新循环、预检查和接收/窗口资源清理 |
-| `runtime/body_visualizer.py` | CLI 参数及可选 teleop 子进程生命周期 |
+| `protocol/body.py` | BODY v1 data structures, joint names/IDs, and strict parsing |
+| `media/body.py` | Separate BODY UDP reception, latest frame, and receive statistics |
+| `visualization/body_geometry.py` | Skeleton connections, coordinate projection, and joint angles |
+| `visualization/body.py` | `BodyDashboard`, Matplotlib rendering, and window controls |
+| `visualization/body_demo.py` | Synthetic BODY demo frames |
+| `visualization/body_pose.py` | Displayed pose cache, freezing on tracking loss, and recovery |
+| `runtime/body_viewer.py` | Window refresh loop, prechecks, and receiver/window resource cleanup |
+| `runtime/body_visualizer.py` | CLI arguments and optional teleop subprocess lifecycle |
 
-表中路径相对于 `doffy_teleop/`。运行时和绘图模块直接依赖各自的实现模块，兼容导出不参与内部依赖。
+Paths in the table are relative to `doffy_teleop/`. Runtime and plotting modules depend directly on their respective implementation modules; compatibility exports do not participate in internal dependencies.
 
-## 数据协议
+## Data protocol
 
-每帧一个 UTF-8 JSON UDP 数据报，最大 65507 字节。`joints` 使用 SDK 的固定 ID，UpperBody 为 0–69，FullBody 为 0–83；`name` 去掉 `Body_`/`FullBody_` 前缀。例如 Head=7、LeftHandWrist=19、RightHandWrist=45、LeftLowerLeg=71。
+Each frame is one UTF-8 JSON UDP datagram, with a maximum size of 65507 bytes. `joints` uses fixed SDK IDs: 0–69 for UpperBody and 0–83 for FullBody; `name` omits the `Body_`/`FullBody_` prefix. Examples include Head=7, LeftHandWrist=19, RightHandWrist=45, and LeftLowerLeg=71.
 
 ```json
 {
@@ -101,11 +101,11 @@ Unity 项目位于 [AIRO-DOFFY-APP / AIRO-Doffy](https://github.com/XDL0-0/AIRO-
 }
 ```
 
-无效位置或旋转发送 `null` 和相应 `false`。PC 拒绝非有限数、重复/越界 joint ID、错误名称、错误坐标空间和不兼容协议版本。SDK confidence 表示 SDK 输出状态，不能单独证明每个关节与人的真实姿态一致；可视化的目的就是检查该输出。
+Invalid positions or rotations are sent as `null` with the corresponding `false` flag. The PC rejects non-finite numbers, duplicate/out-of-range joint IDs, incorrect names, incorrect coordinate spaces, and incompatible protocol versions. SDK confidence represents the SDK output state and alone cannot prove that every joint matches the person's actual pose; the visualization is intended to inspect that output.
 
-`position_tracked` / `orientation_tracked` 为 BODY v1 的新增可选布尔字段。0.9.6 及更新版 APP 保留 SDK 的实际标记，BODY 显示质量采用 Meta `OVRBody` 的高置信度门槛 `confidence > 0.5`；低质量帧仍发送失效通知和诊断置信度。此规则仅用于 BODY 可视化，不改变 WRM 或机器人控制。旧 APP 缺少 tracked 字段时仍可解析，但只能按原有效性和置信度冻结，无法识别高置信度的 untracked 回退姿态。
+`position_tracked` / `orientation_tracked` are new optional boolean fields in BODY v1. APP version 0.9.6 and newer retain the actual SDK flags, and BODY display quality uses Meta `OVRBody`'s high-confidence threshold, `confidence > 0.5`; low-quality frames still send invalidity notifications and diagnostic confidence. This rule applies only to BODY visualization and does not change WRM or robot control. Older APP versions without tracked fields can still be parsed, but can freeze only according to the original validity and confidence checks; they cannot identify high-confidence untracked fallback poses.
 
-## 验证
+## Validation
 
 ```bash
 cd /path/to/AIRO-Doffy
@@ -117,4 +117,4 @@ cd /path/to/AIRO-Doffy
   --save-preview output/body_visualization/preview.png
 ```
 
-软件验证记录和 APK 构建结果见 [validation.md](validation.md)。合成预览、C# 编译和本机 UDP 回环不等同于实际 Quest 姿态验证。
+See [validation.md](validation.md) for software validation records and APK build results. Synthetic previews, C# compilation, and local UDP loopback do not constitute validation of actual Quest poses.
