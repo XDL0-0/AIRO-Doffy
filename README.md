@@ -1,6 +1,6 @@
-# Airo-Doffy
+# AIRO-Doffy
 
-Airo-Doffy is a VR teleoperation system for controlling UR and RealMan robots with a Meta Quest headset. It supports controller and hand tracking, live camera streaming, and demonstration recording.
+AIRO-Doffy is a VR teleoperation system for controlling UR and RealMan robots with a Meta Quest headset. It supports controller and hand tracking, live camera streaming, and demonstration recording.
 
 This repository contains the Python runtime and Quest APK. The Unity app is maintained in [AIRO-DOFFY-APP](https://github.com/XDL0-0/AIRO-DOFFY-APP/tree/main/AIRO-Doffy).
 
