@@ -86,4 +86,5 @@ git checkout 811d0b4f9e9d6368a7fb2402943b41eb324c7167
 - [Detailed usage: teleoperation, teaching, replay, and protocols](docs/usage.md)
 - [BODY visualization](docs/body_visualization/README.md)
 - [Python module layout](docs/module-layout.md)
+- [Teleoperation Python environment](docs/teleop-environment.md)
 - [Release notes](apk/RELEASE.md)

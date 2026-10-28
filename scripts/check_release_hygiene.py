@@ -32,12 +32,11 @@ REVIEWED_PRIVATE_IPS = {
     "192.168.1.18": {
         "README.md", "doffy_teleop/config.py", "doffy_teleop/recording/replay.py",
         "test_tool/freedrive.py", "test_tool/revo2_keyboard_teleop_single_send.py",
-        "tests/test_realman_canfd.py", "docs/teleop_refactor/python-audit-20260928.md",
-        "docs/teleop_refactor/python-fixes-20260928.md", "docs/teleop_refactor/v2-reference-inventory.md",
+        "tests/test_realman_canfd.py",
         "docs/release-hygiene.md", "scripts/check_release_hygiene.py",
     },
     "192.168.1.100": {
-        "README.md", "doffy_teleop/config.py", "docs/teleop_refactor/python-fixes-20260928.md",
+        "README.md", "doffy_teleop/config.py",
         "docs/release-hygiene.md", "scripts/check_release_hygiene.py",
     },
 }

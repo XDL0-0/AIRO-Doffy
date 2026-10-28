@@ -53,7 +53,7 @@ python realman_teleop.py
 ```
 
 Run from the repository root in your teleop Python environment. See the
-[teleop environment notes](teleop_refactor/teleop-environment.md) for dependency
+[teleop environment notes](teleop-environment.md) for dependency
 constraints and setup.
 
 Set `ROBOT_TYPE="realman"`, choose `TELEOP_COMMAND_MODE="joint"` or `"tcp"`,
