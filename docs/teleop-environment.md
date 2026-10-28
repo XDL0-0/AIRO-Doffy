@@ -1,7 +1,7 @@
 # Teleoperation Python environment
 
 The current teleoperation compatibility set is recorded in
-[`../../requirements-teleop-constraints.txt`](../../requirements-teleop-constraints.txt).
+[`../requirements-teleop-constraints.txt`](../requirements-teleop-constraints.txt).
 It pins packages that must agree across LeRobot recording, dataset rollback,
 and WebRTC media: LeRobot, `aiortc`, `aiohttp`, `datasets`, PyAV, Hugging Face
 Hub/transfer, `fsspec`, `packaging`, and `setuptools`.
